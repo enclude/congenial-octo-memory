@@ -438,7 +438,7 @@ class ColorButton(QPushButton):
             f"QPushButton {{"
             f"background-color: #3c3c3c;"
             f"color: #e0e0e0;"
-            f"border-left: 6px solid rgba({r},{g},{b},{a});"
+            f"border-left: 20px solid rgba({r},{g},{b},{a});"
             f"border-top: 1px solid #555; border-bottom: 1px solid #555; border-right: 1px solid #555;"
             f"padding: 3px 8px;"
             f"}}"
