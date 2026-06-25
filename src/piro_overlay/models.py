@@ -116,6 +116,9 @@ class OverlayStyle:
     start_banner_scale: float = 1.0
     start_banner_bg_color: tuple[int, int, int, int] = (0, 0, 0, 200)
     start_banner_text_color: tuple[int, int, int, int] = (255, 196, 0, 255)
+    start_banner_border_enabled: bool = True
+    start_banner_border_color: tuple[int, int, int, int] = (255, 196, 0, 220)
+    start_banner_border_width: int = 3
 
     def __post_init__(self) -> None:
         if self.position not in ANCHOR_POSITIONS:

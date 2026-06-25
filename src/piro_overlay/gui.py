@@ -434,7 +434,15 @@ class ColorButton(QPushButton):
     def _refresh(self):
         r, g, b, a = self._rgba
         self.setText(f"RGBA {r},{g},{b},{a}")
-        self.setStyleSheet(f"background-color: rgba({r},{g},{b},{a});")
+        self.setStyleSheet(
+            f"QPushButton {{"
+            f"background-color: #3c3c3c;"
+            f"color: #e0e0e0;"
+            f"border-left: 6px solid rgba({r},{g},{b},{a});"
+            f"border-top: 1px solid #555; border-bottom: 1px solid #555; border-right: 1px solid #555;"
+            f"padding: 3px 8px;"
+            f"}}"
+        )
 
 
 class MainWindow(QMainWindow):
@@ -641,6 +649,19 @@ class MainWindow(QMainWindow):
         self.banner_text_btn.changed.connect(self._update_preview)
         form.addRow("Kolor tekstu START", self.banner_text_btn)
 
+        self.banner_border_btn = ColorButton((255, 196, 0, 220))
+        self.banner_border_btn.changed.connect(self._update_preview)
+        form.addRow("Obramowanie START", self.banner_border_btn)
+
+        self.banner_border_chk = QCheckBox("Włącz obramowanie START")
+        self.banner_border_chk.setChecked(True)
+        self.banner_border_chk.stateChanged.connect(self._update_preview)
+        form.addRow(self.banner_border_chk)
+
+        self.banner_border_w = _ispin(1, 30, 3)
+        self.banner_border_w.valueChanged.connect(self._update_preview)
+        form.addRow("Grubość obramowania START", self.banner_border_w)
+
         return box
 
     def _output_group(self):
@@ -683,6 +704,9 @@ class MainWindow(QMainWindow):
             start_banner_scale=self.banner_scale_spin.value(),
             start_banner_bg_color=self.banner_bg_btn.rgba(),
             start_banner_text_color=self.banner_text_btn.rgba(),
+            start_banner_border_enabled=self.banner_border_chk.isChecked(),
+            start_banner_border_color=self.banner_border_btn.rgba(),
+            start_banner_border_width=self.banner_border_w.value(),
         )
 
     def _choose_video(self):

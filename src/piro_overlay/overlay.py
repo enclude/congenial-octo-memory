@@ -141,6 +141,9 @@ def render_start_banner(style: OverlayStyle, video_size: tuple[int, int]) -> Ima
         style,
         scale=style.scale * style.start_banner_scale,
         bg_color=style.start_banner_bg_color,
+        border_enabled=style.start_banner_border_enabled,
+        border_color=style.start_banner_border_color,
+        border_width=style.start_banner_border_width,
     )
     base = _base_font_size(video_size[1], banner_style)
     f_start = _font(int(base * 3.0), bold=True)
