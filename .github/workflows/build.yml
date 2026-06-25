@@ -44,7 +44,7 @@ jobs:
       - name: Build
         run: pyinstaller build_exe.spec --noconfirm
       - name: Upload artefaktu
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: PiroOverlay-windows
           path: dist/PiroOverlay.exe
@@ -59,7 +59,7 @@ jobs:
       contents: write
     steps:
       - name: Pobierz artefakt
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: PiroOverlay-windows
       - name: Aktualizuj rolling release
@@ -86,7 +86,7 @@ jobs:
       contents: write
     steps:
       - name: Pobierz artefakt
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: PiroOverlay-windows
       - name: Utwórz release wersjonowany
