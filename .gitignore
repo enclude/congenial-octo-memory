@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Środowiska
+.venv/
+venv/
+env/
+
+# Narzędzia
+.pytest_cache/
+
+# Wyniki buildu PyInstaller (katalogi dist/ i build/ ze wszystkimi plikami)
+dist/
+build/
+
+# Dołączany pełny FFmpeg (pobierany przez build.ps1 -WithFfmpeg)
+assets/bin/
+
+# Pliki robocze
+*.mp4
+!tests/**/*.mp4
