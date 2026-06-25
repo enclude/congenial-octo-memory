@@ -628,6 +628,19 @@ class MainWindow(QMainWindow):
 
         self.banner_spin = _dspin(0.0, 10.0, 0.5, " s", 1.0)
         form.addRow("Czas planszy START", self.banner_spin)
+
+        self.banner_scale_spin = _dspin(0.3, 5.0, 0.1, "", 1.0)
+        self.banner_scale_spin.valueChanged.connect(self._update_preview)
+        form.addRow("Rozmiar planszy START (skala)", self.banner_scale_spin)
+
+        self.banner_bg_btn = ColorButton((0, 0, 0, 200))
+        self.banner_bg_btn.changed.connect(self._update_preview)
+        form.addRow("Tło / przezroczystość START", self.banner_bg_btn)
+
+        self.banner_text_btn = ColorButton((255, 196, 0, 255))
+        self.banner_text_btn.changed.connect(self._update_preview)
+        form.addRow("Kolor tekstu START", self.banner_text_btn)
+
         return box
 
     def _output_group(self):
@@ -667,6 +680,9 @@ class MainWindow(QMainWindow):
             accent_color=self.accent_btn.rgba(), border_color=self.border_btn.rgba(),
             border_enabled=self.border_chk.isChecked(), border_width=self.border_w.value(),
             start_banner_duration=self.banner_spin.value(),
+            start_banner_scale=self.banner_scale_spin.value(),
+            start_banner_bg_color=self.banner_bg_btn.rgba(),
+            start_banner_text_color=self.banner_text_btn.rgba(),
         )
 
     def _choose_video(self):

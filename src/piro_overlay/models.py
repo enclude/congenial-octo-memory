@@ -113,6 +113,9 @@ class OverlayStyle:
 
     # Plansza START
     start_banner_duration: float = 1.0
+    start_banner_scale: float = 1.0
+    start_banner_bg_color: tuple[int, int, int, int] = (0, 0, 0, 200)
+    start_banner_text_color: tuple[int, int, int, int] = (255, 196, 0, 255)
 
     def __post_init__(self) -> None:
         if self.position not in ANCHOR_POSITIONS:

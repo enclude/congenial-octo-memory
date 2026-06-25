@@ -11,7 +11,7 @@ testy snapshotowe.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -94,9 +94,10 @@ def render_shot_panel(session: Session, idx: int, style: OverlayStyle,
     f_body = _font(base)
 
     lines: list[_Line] = []
-    header = " · ".join(p for p in (session.nazwa_toru, session.uczestnik) if p)
-    if header:
-        lines.append(_Line(header, f_head, style.text_color))
+    if session.nazwa_toru:
+        lines.append(_Line(session.nazwa_toru, f_head, style.text_color))
+    if session.uczestnik:
+        lines.append(_Line(session.uczestnik, f_head, style.text_color))
 
     counter = f"{tr('shot')} {shot.numer} {tr('of')} {session.total_shots}"
     lines.append(_Line(counter, f_big, style.accent_color))
@@ -136,9 +137,14 @@ def render_summary_panel(session: Session, style: OverlayStyle,
 def render_start_banner(style: OverlayStyle, video_size: tuple[int, int]) -> Image.Image:
     """Duża plansza „START" (wyśrodkowywana przez render.py)."""
     tr = get_translator(style.lang)
-    base = _base_font_size(video_size[1], style)
+    banner_style = replace(
+        style,
+        scale=style.scale * style.start_banner_scale,
+        bg_color=style.start_banner_bg_color,
+    )
+    base = _base_font_size(video_size[1], banner_style)
     f_start = _font(int(base * 3.0), bold=True)
-    return _render_panel([_Line(tr("start"), f_start, style.accent_color)], style, base)
+    return _render_panel([_Line(tr("start"), f_start, style.start_banner_text_color)], banner_style, base)
 
 
 def panel_origin(panel_size: tuple[int, int], video_size: tuple[int, int],

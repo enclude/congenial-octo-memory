@@ -27,6 +27,7 @@ jobs:
   build-windows:
     name: Build .exe (Windows)
     needs: test
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,8 +48,35 @@ jobs:
           path: dist/PiroOverlay.exe
           if-no-files-found: error
 
-  release:
-    name: Dołącz .exe do release
+  release-latest:
+    name: Rolling release (latest)
+    needs: build-windows
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Pobierz artefakt
+        uses: actions/download-artifact@v4
+        with:
+          name: PiroOverlay-windows
+      - name: Aktualizuj rolling release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: latest
+          name: "Latest (main)"
+          body: |
+            Automatyczny build z brancha `main`.
+            Commit: ${{ github.sha }}
+            Data: ${{ github.event.head_commit.timestamp }}
+          prerelease: true
+          makeLatest: false
+          allowUpdates: true
+          removeArtifacts: true
+          artifacts: PiroOverlay.exe
+
+  release-versioned:
+    name: Dołącz .exe do release (tag)
     needs: build-windows
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -59,7 +87,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: PiroOverlay-windows
-      - name: Utwórz/aktualizuj release
+      - name: Utwórz release wersjonowany
         uses: softprops/action-gh-release@v2
         with:
           files: PiroOverlay.exe
