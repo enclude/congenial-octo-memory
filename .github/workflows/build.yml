@@ -31,6 +31,9 @@ jobs:
     needs: test
     if: github.event_name != 'pull_request'
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      exe_name: ${{ steps.ver.outputs.exe_name }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -41,13 +44,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
           pip install pyinstaller
+      - name: Odczytaj wersję
+        id: ver
+        shell: python
+        run: |
+          import re, os
+          m = re.search(r'__version__\s*=\s*["\'](.+?)["\']',
+                        open('src/piro_overlay/__init__.py').read())
+          v = m.group(1)
+          exe = f'PiroOverlay-v{v}.exe'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'version={v}\n')
+              f.write(f'exe_name={exe}\n')
       - name: Build
         run: pyinstaller build_exe.spec --noconfirm
+      - name: Zmień nazwę .exe
+        shell: bash
+        run: mv dist/PiroOverlay.exe "dist/${{ steps.ver.outputs.exe_name }}"
       - name: Upload artefaktu
         uses: actions/upload-artifact@v5
         with:
           name: PiroOverlay-windows
-          path: dist/PiroOverlay.exe
+          path: dist/PiroOverlay-v*.exe
           if-no-files-found: error
 
   release-or-tag:
@@ -85,7 +103,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
-          files: PiroOverlay.exe
+          files: ${{ needs.build-windows.outputs.exe_name }}
       - name: Rolling release (latest) — zawsze
         uses: ncipollo/release-action@v1
         with:
@@ -99,7 +117,7 @@ jobs:
           makeLatest: false
           allowUpdates: true
           removeArtifacts: true
-          artifacts: PiroOverlay.exe
+          artifacts: ${{ needs.build-windows.outputs.exe_name }}
 
   release-versioned:
     name: Dołącz .exe do release (tag ręczny)
@@ -116,4 +134,4 @@ jobs:
       - name: Utwórz release wersjonowany
         uses: softprops/action-gh-release@v2
         with:
-          files: PiroOverlay.exe
+          files: ${{ needs.build-windows.outputs.exe_name }}

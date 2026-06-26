@@ -20,6 +20,10 @@ from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from pathlib import Path
 
+import urllib.request
+import urllib.error
+import json
+
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
@@ -1355,6 +1359,55 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
 
 
+# ----------------------------- autoaktualizacja -----------------------------
+_RELEASES_API = "https://api.github.com/repos/enclude/congenial-octo-memory/releases/latest"
+_RELEASES_PAGE = "https://github.com/enclude/congenial-octo-memory/releases/latest"
+
+
+class UpdateChecker(QThread):
+    update_available = Signal(str)  # nowa wersja
+
+    def run(self):
+        try:
+            req = urllib.request.Request(
+                _RELEASES_API, headers={"User-Agent": f"PiroOverlay/{__version__}"},
+                method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+            tag = data.get("tag_name", "")
+            remote = tag.lstrip("v")
+            if remote and remote != __version__ and _is_newer(remote, __version__):
+                self.update_available.emit(remote)
+        except Exception:  # noqa: BLE001 — brak sieci lub błąd API: ignoruj cicho
+            pass
+
+
+def _is_newer(remote: str, local: str) -> bool:
+    """Zwraca True gdy remote > local (porównanie semver po liczbach)."""
+    def parts(v):
+        try:
+            return tuple(int(x) for x in v.split(".")[:3])
+        except ValueError:
+            return (0,)
+    return parts(remote) > parts(local)
+
+
+def _show_update_dialog(parent, new_version: str) -> None:
+    box = QMessageBox(parent)
+    box.setWindowTitle("Dostępna aktualizacja")
+    box.setIcon(QMessageBox.Information)
+    box.setText(
+        f"Dostępna jest nowa wersja <b>v{new_version}</b> "
+        f"(aktualna: v{__version__}).<br><br>"
+        f"Pobierz ze strony projektu."
+    )
+    download_btn = box.addButton("Pobierz", QMessageBox.AcceptRole)
+    box.addButton("Pomiń", QMessageBox.RejectRole)
+    box.exec()
+    if box.clickedButton() == download_btn:
+        QDesktopServices.openUrl(QUrl(_RELEASES_PAGE))
+
+
 # ----------------------------- helpery -----------------------------
 def _wrap(layout):
     w = QWidget(); w.setLayout(layout); return w
@@ -1381,6 +1434,11 @@ def main():
     win = MainWindow()
     win.resize(1180, 760)
     win.show()
+
+    checker = UpdateChecker()
+    checker.update_available.connect(lambda v: _show_update_dialog(win, v))
+    checker.start()
+
     return app.exec()
 
 
