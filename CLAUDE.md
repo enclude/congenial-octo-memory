@@ -118,3 +118,8 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
 - Snapshoty (`tests/snapshots/*.png`) zależą od bundlowanego fontu DejaVu i wersji Pillow;
   porównanie ma tolerancję `MAX_MEAN_DIFF`. Przy zmianie fontu/renderu — regeneruj.
 - Detekcja onsetów jest prosta (RMS); przy hałaśliwym audio użyj ręcznej korekty T0 w GUI.
+- **Podgląd vs. render — rozbieżność metadanych:** `_update_preview` używa `self.session`
+  (ustawionego przez `_fetch_id`, zawiera `nazwa_toru`/`uczestnik`). `_build_session()` w
+  trybie tekstowym musi zawsze wywołać `replace(self.session, shots=shots)` gdy `self.session`
+  nie jest `None` — inaczej render dostaje `Session` bez metadanych a podgląd je pokazuje.
+  Zasada: podgląd i render muszą korzystać z tej samej sesji (te same metadane).

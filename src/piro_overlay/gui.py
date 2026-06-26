@@ -15,6 +15,7 @@ import math
 import subprocess
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
@@ -749,7 +750,10 @@ class MainWindow(QMainWindow):
     def _build_session(self):
         if self.rb_id.isChecked():
             return api.fetch_session(self.id_spin.value())
-        return Session(shots=parse_timeline(self.timeline_edit.toPlainText()))
+        shots = parse_timeline(self.timeline_edit.toPlainText())
+        if self.session is not None:
+            return replace(self.session, shots=shots)
+        return Session(shots=shots)
 
     def _fetch_id(self):
         try:
