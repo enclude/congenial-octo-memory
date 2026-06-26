@@ -50,19 +50,43 @@ jobs:
           path: dist/PiroOverlay.exe
           if-no-files-found: error
 
-  release-latest:
-    name: Rolling release (latest)
+  release-or-tag:
+    name: Release (wersjonowany + rolling latest)
     needs: build-windows
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - name: Pobierz artefakt
         uses: actions/download-artifact@v5
         with:
           name: PiroOverlay-windows
-      - name: Aktualizuj rolling release
+      - name: Odczytaj wersję i utwórz tag jeśli nowy
+        id: ver
+        run: |
+          VERSION=$(python -c "import re; m=re.search(r'__version__\s*=\s*[\"\'](.*?)[\"\']', open('src/piro_overlay/__init__.py').read()); print(m.group(1))")
+          TAG="v$VERSION"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "new_tag=false" >> $GITHUB_OUTPUT
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$TAG"
+            git push origin "$TAG"
+            echo "new_tag=true" >> $GITHUB_OUTPUT
+          fi
+      - name: Trwały release dla nowego tagu
+        if: steps.ver.outputs.new_tag == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          files: PiroOverlay.exe
+      - name: Rolling release (latest) — zawsze
         uses: ncipollo/release-action@v1
         with:
           tag: latest
@@ -78,7 +102,7 @@ jobs:
           artifacts: PiroOverlay.exe
 
   release-versioned:
-    name: Dołącz .exe do release (tag)
+    name: Dołącz .exe do release (tag ręczny)
     needs: build-windows
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest

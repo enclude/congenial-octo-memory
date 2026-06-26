@@ -15,10 +15,12 @@ import math
 import subprocess
 import sys
 import tempfile
-from dataclasses import replace
+import uuid
+from dataclasses import dataclass, field, replace
+from enum import Enum, auto
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QColorDialog, QComboBox, QCheckBox, QDoubleSpinBox,
@@ -143,6 +145,260 @@ class WaveformWorker(QThread):
             self.done.emit(env, dur, onsets)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
+
+
+# ----------------------------- kolejka renderów -----------------------------
+class JobStatus(Enum):
+    PENDING = auto()
+    RUNNING = auto()
+    DONE    = auto()
+    FAILED  = auto()
+
+
+@dataclass
+class RenderJob:
+    id:     str
+    label:  str
+    kwargs: dict
+    status: JobStatus = field(default=JobStatus.PENDING, compare=False)
+
+
+class RenderQueueRunner(QObject):
+    job_progress        = Signal(str, float)      # (job_id, 0.0–1.0)
+    job_status_changed  = Signal(str, object)     # (job_id, JobStatus)
+    queue_finished      = Signal()
+
+    def __init__(self, get_busy, set_busy, parent=None):
+        super().__init__(parent)
+        self._jobs: list[RenderJob] = []
+        self._active_worker: RenderWorker | None = None
+        self._get_busy = get_busy
+        self._set_busy = set_busy
+        self._running = False
+
+    def add_job(self, job: RenderJob) -> None:
+        self._jobs.append(job)
+
+    def remove_job(self, job_id: str) -> bool:
+        for i, j in enumerate(self._jobs):
+            if j.id == job_id and j.status == JobStatus.PENDING:
+                del self._jobs[i]
+                return True
+        return False
+
+    def jobs(self) -> list[RenderJob]:
+        return list(self._jobs)
+
+    def clear_finished(self) -> None:
+        self._jobs = [j for j in self._jobs
+                      if j.status not in (JobStatus.DONE, JobStatus.FAILED)]
+
+    def start_queue(self) -> bool:
+        if self._running or self._get_busy():
+            return False
+        self._running = True
+        self._run_next()
+        return True
+
+    def _run_next(self) -> None:
+        pending = [j for j in self._jobs if j.status == JobStatus.PENDING]
+        if not pending:
+            self._running = False
+            self._set_busy(False)
+            self.queue_finished.emit()
+            return
+        job = pending[0]
+        job.status = JobStatus.RUNNING
+        self._set_busy(True)
+        self.job_status_changed.emit(job.id, JobStatus.RUNNING)
+        w = RenderWorker(job.kwargs)
+        self._active_worker = w
+        w.progress.connect(lambda p, jid=job.id: self.job_progress.emit(jid, p))
+        w.finished_ok.connect(lambda _, jid=job.id: self._on_job_done(jid))
+        w.failed.connect(lambda msg, jid=job.id: self._on_job_failed(jid, msg))
+        w.start()
+
+    def _on_job_done(self, job_id: str) -> None:
+        self._mark(job_id, JobStatus.DONE)
+        self._active_worker = None
+        self._set_busy(False)
+        self._run_next()
+
+    def _on_job_failed(self, job_id: str, _msg: str) -> None:
+        self._mark(job_id, JobStatus.FAILED)
+        self._active_worker = None
+        self._set_busy(False)
+        self._run_next()
+
+    def _mark(self, job_id: str, status: JobStatus) -> None:
+        for j in self._jobs:
+            if j.id == job_id:
+                j.status = status
+                self.job_status_changed.emit(job_id, status)
+                return
+
+
+class JobRowWidget(QWidget):
+    remove_requested = Signal(str)
+
+    _STATUS_COLORS = {
+        JobStatus.PENDING: "#6688aa",
+        JobStatus.RUNNING: "#f0c040",
+        JobStatus.DONE:    "#44cc88",
+        JobStatus.FAILED:  "#e05555",
+    }
+
+    def __init__(self, job: RenderJob, parent=None):
+        super().__init__(parent)
+        self._job_id = job.id
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(4, 2, 4, 2)
+
+        self._status_icon = QLabel()
+        self._status_icon.setFixedSize(14, 14)
+        lay.addWidget(self._status_icon)
+
+        self._label = QLabel(job.label)
+        self._label.setMinimumWidth(200)
+        lay.addWidget(self._label, 1)
+
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 100)
+        self._progress.setValue(0)
+        self._progress.setFixedWidth(120)
+        lay.addWidget(self._progress)
+
+        self._del_btn = QPushButton("Usuń")
+        self._del_btn.setFixedWidth(50)
+        self._del_btn.clicked.connect(lambda: self.remove_requested.emit(self._job_id))
+        lay.addWidget(self._del_btn)
+
+        self._apply_status(job.status)
+
+    def update_progress(self, p: float) -> None:
+        self._progress.setValue(int(p * 100))
+
+    def update_status(self, status: JobStatus) -> None:
+        self._apply_status(status)
+
+    def _apply_status(self, status: JobStatus) -> None:
+        color = self._STATUS_COLORS.get(status, "#888888")
+        self._status_icon.setStyleSheet(
+            f"background:{color}; border-radius:7px;"
+        )
+        self._del_btn.setVisible(status == JobStatus.PENDING)
+        if status == JobStatus.RUNNING:
+            self._progress.setRange(0, 0)
+        elif status == JobStatus.DONE:
+            self._progress.setRange(0, 100)
+            self._progress.setValue(100)
+        elif status == JobStatus.FAILED:
+            self._progress.setRange(0, 100)
+            self._progress.setStyleSheet("QProgressBar::chunk { background: #e05555; }")
+
+
+class RenderQueueWindow(QWidget):
+    def __init__(self, runner: RenderQueueRunner, parent=None):
+        super().__init__(parent, Qt.Window)
+        self.setWindowTitle("Kolejka renderów")
+        self.setMinimumWidth(560)
+        self._runner = runner
+        self._rows: dict[str, JobRowWidget] = {}
+
+        root = QVBoxLayout(self)
+
+        self._list_widget = QWidget()
+        self._list_layout = QVBoxLayout(self._list_widget)
+        self._list_layout.setSpacing(2)
+        self._list_layout.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self._list_widget)
+        scroll.setMinimumHeight(200)
+        root.addWidget(scroll, 1)
+
+        self._status_label = QLabel("Gotowy")
+        root.addWidget(self._status_label)
+
+        btn_row = QHBoxLayout()
+        self._start_btn = QPushButton("Start kolejki")
+        self._start_btn.clicked.connect(self._on_start)
+        self._clear_btn = QPushButton("Wyczyść zakończone")
+        self._clear_btn.clicked.connect(self._on_clear_finished)
+        btn_row.addWidget(self._start_btn)
+        btn_row.addWidget(self._clear_btn)
+        btn_row.addStretch(1)
+        root.addLayout(btn_row)
+
+        runner.job_progress.connect(self._on_job_progress)
+        runner.job_status_changed.connect(self._on_job_status_changed)
+        runner.queue_finished.connect(self._on_queue_finished)
+
+    def add_job(self, job: RenderJob) -> None:
+        row = JobRowWidget(job)
+        row.remove_requested.connect(self._on_remove)
+        self._rows[job.id] = row
+        self._list_layout.insertWidget(self._list_layout.count() - 1, row)
+        self._runner.add_job(job)
+        self._refresh_start_btn()
+
+    def closeEvent(self, event):
+        if self._runner._running:
+            self.hide()
+            event.ignore()
+        else:
+            event.accept()
+
+    def _on_start(self) -> None:
+        started = self._runner.start_queue()
+        if not started:
+            self._status_label.setText("Renderowanie już trwa — poczekaj na koniec.")
+        else:
+            self._status_label.setText("Renderowanie kolejki…")
+        self._refresh_start_btn()
+
+    def _on_clear_finished(self) -> None:
+        for job_id, row in list(self._rows.items()):
+            job = next((j for j in self._runner.jobs() if j.id == job_id), None)
+            if job and job.status in (JobStatus.DONE, JobStatus.FAILED):
+                self._list_layout.removeWidget(row)
+                row.deleteLater()
+                del self._rows[job_id]
+        self._runner.clear_finished()
+
+    def _on_remove(self, job_id: str) -> None:
+        if self._runner.remove_job(job_id):
+            row = self._rows.pop(job_id, None)
+            if row:
+                self._list_layout.removeWidget(row)
+                row.deleteLater()
+
+    def _on_job_progress(self, job_id: str, p: float) -> None:
+        if row := self._rows.get(job_id):
+            row.update_progress(p)
+            if self._progress_bar_indeterminate(job_id):
+                row._progress.setRange(0, 100)
+
+    def _progress_bar_indeterminate(self, job_id: str) -> bool:
+        row = self._rows.get(job_id)
+        return row is not None and row._progress.maximum() == 0
+
+    def _on_job_status_changed(self, job_id: str, status) -> None:
+        if row := self._rows.get(job_id):
+            row.update_status(status)
+        self._refresh_start_btn()
+
+    def _on_queue_finished(self) -> None:
+        self._status_label.setText("Kolejka zakończona.")
+        self._refresh_start_btn()
+        QMessageBox.information(self, "Kolejka renderów",
+                                "Wszystkie zadania zostały ukończone.")
+
+    def _refresh_start_btn(self) -> None:
+        has_pending = any(j.status == JobStatus.PENDING
+                         for j in self._runner.jobs())
+        self._start_btn.setEnabled(has_pending and not self._runner._running)
 
 
 # ----------------------------- waveform -----------------------------
@@ -455,6 +711,9 @@ class MainWindow(QMainWindow):
         self.wave_worker: WaveformWorker | None = None
         self.last_output: str | None = None
         self._used_encoder: str | None = None
+        self._render_busy: bool = False
+        self._queue_runner: RenderQueueRunner | None = None
+        self._queue_window: RenderQueueWindow | None = None
         # Podgląd — cache klatki + timer debouncujący ekstrakcję FFmpeg
         self._cached_frame: Image.Image | None = None
         self._cached_frame_t: float = -1.0
@@ -539,7 +798,7 @@ class MainWindow(QMainWindow):
 
         self.rb_text = QRadioButton("Tekst")
         self.rb_id = QRadioButton("ID (API)")
-        self.rb_text.setChecked(True)
+        self.rb_id.setChecked(True)
         grp = QButtonGroup(self); grp.addButton(self.rb_text); grp.addButton(self.rb_id)
         srow = QHBoxLayout(); srow.addWidget(self.rb_text); srow.addWidget(self.rb_id)
         form.addRow("Źródło", _wrap(srow))
@@ -554,6 +813,16 @@ class MainWindow(QMainWindow):
         fetch = QPushButton("Pobierz"); fetch.clicked.connect(self._fetch_id)
         idrow = QHBoxLayout(); idrow.addWidget(self.id_spin); idrow.addWidget(fetch)
         form.addRow("ID", _wrap(idrow))
+
+        self.api_meta_label = QLabel()
+        self.api_meta_label.setStyleSheet("color: #aaaaaa;")
+        self.api_meta_label.hide()
+        form.addRow("", self.api_meta_label)
+        self.rb_id.toggled.connect(
+            lambda checked: self.api_meta_label.setVisible(
+                checked and bool(self.api_meta_label.text())
+            )
+        )
         return box
 
     def _sync_group(self):
@@ -684,10 +953,17 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar(); v.addWidget(self.progress)
         brow = QHBoxLayout()
         self.render_btn = QPushButton("Renderuj"); self.render_btn.clicked.connect(self._start_render)
+        self.queue_add_btn = QPushButton("Dodaj do kolejki")
+        self.queue_add_btn.clicked.connect(self._add_to_queue)
+        self.queue_show_btn = QPushButton("Kolejka")
+        self.queue_show_btn.clicked.connect(self._show_queue_window)
         self.open_btn = QPushButton("Otwórz folder z wynikiem")
         self.open_btn.setEnabled(False)
         self.open_btn.clicked.connect(self._open_output_folder)
-        brow.addWidget(self.render_btn); brow.addWidget(self.open_btn)
+        brow.addWidget(self.render_btn)
+        brow.addWidget(self.queue_add_btn)
+        brow.addWidget(self.queue_show_btn)
+        brow.addWidget(self.open_btn)
         v.addLayout(brow)
         return box
 
@@ -760,7 +1036,14 @@ class MainWindow(QMainWindow):
             self.session = api.fetch_session(self.id_spin.value())
             self.timeline_edit.setPlainText(
                 " | ".join(self._shot_to_text(s) for s in self.session.shots))
-            self._update_preview()  # sukces = bez okna potwierdzenia, po prostu wypełnij dane
+            parts = []
+            if self.session.nazwa_toru:
+                parts.append(f"Tor: {self.session.nazwa_toru}")
+            if self.session.uczestnik:
+                parts.append(f"Zawodnik: {self.session.uczestnik}")
+            self.api_meta_label.setText("  |  ".join(parts))
+            self.api_meta_label.setVisible(bool(parts))
+            self._update_preview()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Błąd API", str(exc))
 
@@ -898,29 +1181,37 @@ class MainWindow(QMainWindow):
             self.preview_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.preview_label.setPixmap(pix)
 
-    def _start_render(self):
+    def _collect_render_kwargs(self) -> dict | None:
         if not self.video_path:
-            QMessageBox.warning(self, "Brak wideo", "Wybierz plik wideo."); return
+            QMessageBox.warning(self, "Brak wideo", "Wybierz plik wideo."); return None
         if not self.out_edit.text():
-            QMessageBox.warning(self, "Brak wyjścia", "Podaj plik wyjściowy."); return
+            QMessageBox.warning(self, "Brak wyjścia", "Podaj plik wyjściowy."); return None
         try:
             session = self._build_session()
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Błąd danych", str(exc)); return
-
+            QMessageBox.critical(self, "Błąd danych", str(exc)); return None
         mode = self._anchor_mode()
         t0 = audio_sync.resolve_t0(self.t0_spin.value(), mode, session.shots[0].czas)
         ts = self.trim_start_spin.value()
         te = self.trim_end_spin.value()
-
-        self.render_btn.setEnabled(False)
-        self.worker = RenderWorker(dict(
+        return dict(
             video_path=self.video_path, session=session, t0=t0,
             style=self.current_style(), mode=mode, out_path=self.out_edit.text(),
             trim_start=ts if ts > 0 else None,
             trim_end=te if te > 0 else None,
             encoder="auto" if self.gpu_chk.isChecked() else "cpu",
-        ))
+        )
+
+    def _start_render(self):
+        if self._render_busy:
+            QMessageBox.warning(self, "Zajęty",
+                                "Render jest już w toku (kolejka lub bezpośredni)."); return
+        kwargs = self._collect_render_kwargs()
+        if kwargs is None:
+            return
+        self._render_busy = True
+        self.render_btn.setEnabled(False)
+        self.worker = RenderWorker(kwargs)
         self._used_encoder = None
         self._render_warn = None
         self.worker.progress.connect(lambda p: self.progress.setValue(int(p * 100)))
@@ -979,6 +1270,7 @@ class MainWindow(QMainWindow):
             self.nvenc_label.setStyleSheet("color:#e0a030;")
 
     def _on_done(self, path: str):
+        self._render_busy = False
         self.render_btn.setEnabled(True)
         self.last_output = path
         self.open_btn.setEnabled(True)
@@ -991,8 +1283,49 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Gotowe", msg)
 
     def _on_fail(self, msg: str):
+        self._render_busy = False
         self.render_btn.setEnabled(True)
         QMessageBox.critical(self, "Błąd renderowania", msg)
+
+    def _add_to_queue(self):
+        kwargs = self._collect_render_kwargs()
+        if kwargs is None:
+            return
+        job = RenderJob(
+            id=uuid.uuid4().hex,
+            label=f"{Path(str(kwargs['video_path'])).name} → {Path(str(kwargs['out_path'])).name}",
+            kwargs=kwargs,
+        )
+        win = self._get_queue_window()
+        win.add_job(job)
+        win.show()
+        win.raise_()
+
+    def _show_queue_window(self):
+        win = self._get_queue_window()
+        win.show()
+        win.raise_()
+
+    def _get_queue_window(self) -> RenderQueueWindow:
+        if self._queue_window is None:
+            runner = RenderQueueRunner(
+                get_busy=lambda: self._render_busy,
+                set_busy=lambda v: setattr(self, "_render_busy", v),
+            )
+            self._queue_runner = runner
+            runner.queue_finished.connect(
+                lambda: self.render_btn.setEnabled(True)
+            )
+            self._queue_window = RenderQueueWindow(runner, parent=None)
+        return self._queue_window
+
+    def closeEvent(self, event):
+        if self._queue_runner is not None and self._queue_runner._running:
+            w = self._queue_runner._active_worker
+            if w is not None:
+                w.quit()
+                w.wait()
+        event.accept()
 
     def _open_output_folder(self):
         """Otwiera folder z wynikiem; na Windows zaznacza plik w eksploratorze."""
