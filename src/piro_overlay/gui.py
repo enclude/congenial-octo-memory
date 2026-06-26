@@ -99,9 +99,18 @@ class RenderWorker(QThread):
 
     def run(self):
         try:
-            render.render_video(progress_cb=self.progress.emit,
-                                on_encoder=self.encoder_used.emit,
-                                on_warn=self.warn.emit, **self._kwargs)
+            kw = dict(self._kwargs)
+            no_overlay = kw.pop("no_overlay", False)
+            callbacks = dict(progress_cb=self.progress.emit,
+                             on_encoder=self.encoder_used.emit,
+                             on_warn=self.warn.emit)
+            if no_overlay:
+                render.trim_video(
+                    video_path=kw["video_path"], out_path=kw["out_path"],
+                    trim_start=kw.get("trim_start"), trim_end=kw.get("trim_end"),
+                    encoder=kw.get("encoder", "auto"), **callbacks)
+            else:
+                render.render_video(**callbacks, **kw)
             self.finished_ok.emit(str(self._kwargs["out_path"]))
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
@@ -932,6 +941,7 @@ class MainWindow(QMainWindow):
         self.banner_border_w.valueChanged.connect(self._update_preview)
         form.addRow("Grubość obramowania START", self.banner_border_w)
 
+        self.appearance_box = box
         return box
 
     def _output_group(self):
@@ -941,6 +951,9 @@ class MainWindow(QMainWindow):
         out_browse = QPushButton("…"); out_browse.clicked.connect(self._choose_output)
         orow = QHBoxLayout(); orow.addWidget(self.out_edit); orow.addWidget(out_browse)
         v.addLayout(orow)
+        self.no_overlay_chk = QCheckBox("Bez nakładki (tylko przycięcie)")
+        self.no_overlay_chk.stateChanged.connect(self._on_no_overlay_toggled)
+        v.addWidget(self.no_overlay_chk)
         self.gpu_chk = QCheckBox("Akceleracja GPU (NVENC, jeśli dostępna)")
         self.gpu_chk.setChecked(True)
         v.addWidget(self.gpu_chk)
@@ -1200,6 +1213,7 @@ class MainWindow(QMainWindow):
             trim_start=ts if ts > 0 else None,
             trim_end=te if te > 0 else None,
             encoder="auto" if self.gpu_chk.isChecked() else "cpu",
+            no_overlay=self.no_overlay_chk.isChecked(),
         )
 
     def _start_render(self):
@@ -1268,6 +1282,9 @@ class MainWindow(QMainWindow):
         else:
             self.nvenc_label.setText("NVENC: niedostępny — render na CPU (zainstaluj pełny FFmpeg)")
             self.nvenc_label.setStyleSheet("color:#e0a030;")
+
+    def _on_no_overlay_toggled(self, state):
+        self.appearance_box.setDisabled(bool(state))
 
     def _on_done(self, path: str):
         self._render_busy = False

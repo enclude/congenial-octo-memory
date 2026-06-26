@@ -280,6 +280,56 @@ def render_video(video_path: str | Path, session: Session, t0: float,
     return out_path
 
 
+def trim_video(video_path: str | Path, out_path: str | Path,
+               trim_start: float | None = None,
+               trim_end: float | None = None,
+               encoder: str = "auto",
+               progress_cb: ProgressCb | None = None,
+               on_encoder: Callable[[str], None] | None = None,
+               on_warn: Callable[[str], None] | None = None) -> Path:
+    """Przycina wideo bez nakładki. Zachowuje audio, re-enkoduje wideo.
+
+    Parametry trim_start / trim_end i encoder działają tak samo jak w render_video.
+    """
+    video_path, out_path = str(video_path), Path(out_path)
+    info = ffmpeg.probe(video_path)
+    src_start = max(trim_start, 0.0) if trim_start is not None else 0.0
+    src_end = trim_end if trim_end is not None else info.duration
+    if src_end <= src_start:
+        raise ValueError("Koniec przycięcia musi być późniejszy niż początek.")
+    out_duration = src_end - src_start
+
+    seek = ["-ss", f"{src_start:.3f}"] if src_start > 0 else []
+
+    def build_cmd(enc: str) -> list[str]:
+        hw = ["-hwaccel", "cuda"] if enc == "h264_nvenc" else []
+        return [
+            ffmpeg.ffmpeg_exe(), "-y", *hw, *seek, "-i", video_path,
+            "-t", f"{out_duration:.3f}",
+            "-map", "0:v", "-map", "0:a?",
+            *_video_encoder_args(enc),
+            "-c:a", "aac", "-movflags", "+faststart",
+            str(out_path),
+        ]
+
+    chosen = _resolve_encoder(encoder)
+    try:
+        _run_with_progress(build_cmd(chosen), out_duration, progress_cb)
+        if on_encoder:
+            on_encoder(chosen)
+    except RuntimeError as exc:
+        if chosen == "libx264":
+            raise
+        if on_warn:
+            on_warn(f"Enkoder {chosen} zawiódł, używam CPU (x264).\n\n"
+                    f"Powód (z FFmpeg):\n{_short_err(exc)}")
+        _run_with_progress(build_cmd("libx264"), out_duration, progress_cb)
+        if on_encoder:
+            on_encoder("libx264")
+
+    return out_path
+
+
 def _short_err(exc: Exception) -> str:
     """Skraca komunikat błędu FFmpeg do najistotniejszych linii (NVENC)."""
     text = str(exc)
