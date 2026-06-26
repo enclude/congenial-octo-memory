@@ -250,8 +250,9 @@ def render_video(video_path: str | Path, session: Session, t0: float,
         filtergraph = ";".join(filter_parts)
 
         def build_cmd(enc: str) -> list[str]:
+            hw = ["-hwaccel", "cuda"] if enc == "h264_nvenc" else []
             return [
-                ffmpeg.ffmpeg_exe(), "-y", *inputs,
+                ffmpeg.ffmpeg_exe(), "-y", *hw, *inputs,
                 "-t", f"{out_duration:.3f}",
                 "-filter_complex", filtergraph,
                 "-map", f"[{cur}]", "-map", "0:a?",
