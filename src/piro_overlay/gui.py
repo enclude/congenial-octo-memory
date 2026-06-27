@@ -1075,7 +1075,7 @@ class MainWindow(QMainWindow):
 
         self.tail_spin = _dspin(0.0, 60.0, 0.5, " s", 5.0)
         self.tail_spin.setToolTip("Margines (s) doliczany po ostatnim strzale przy auto-przycięciu.")
-        self.tail_spin.setMaximumWidth(90)  # węższe pole — wartość mieści się z zapasem
+        self.tail_spin.setMaximumWidth(120)  # węższe pole, ale bez ucinania sufiksu „ s"
         autotrim_btn = QPushButton("Auto-przycięcie")
         autotrim_btn.setToolTip(
             "Ustaw zakres przycięcia: 5 s przed startem → ostatni strzał + margines.")
