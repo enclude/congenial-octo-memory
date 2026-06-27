@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.8.1
+> **Wersja:** 0.11.0
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
 **osi czasu strzałów** nakłada na film informacyjną grafikę (numer strzału, czas od startu,
@@ -90,7 +90,27 @@ piro-overlay --video in.mp4 --id 5 --auto-trim --tail 5 --encoder gpu
 
 # ręczne przycięcie fragmentu źródła
 piro-overlay --video in.mp4 --id 5 --trim-start 12 --trim-end 80
+
+# AUTO: wykryj T0 (bzyczek) i przytnij wg strzałów, z płynącym czasem w rogu
+piro-overlay --video in.mp4 --id 5 --auto --clock --clock-position top-right -o out.mp4
+
+# AUTO bez nakładki — samo przycięcie 5 s przed T0 → 75 s po T0
+piro-overlay --video in.mp4 --auto --auto-window 75 --no-overlay -o out.mp4
 ```
+
+### Tryb bezgłowy z `.exe`
+
+Ten sam `PiroOverlay.exe` po podaniu argumentów działa jak CLI (bez GUI) — wygodne do
+automatyzacji/skryptów:
+
+```powershell
+PiroOverlay.exe --video in.mp4 --id 5 --auto --clock -o out.mp4
+```
+
+Najważniejsze flagi: `--auto` (wykryj T0=bzyczek + auto-przytnij), `--auto-window N`
+(stałe okno N s po T0 zamiast „ostatni strzał + margines”), `--lead-in N` (s przed T0,
+domyślnie 5), `--no-overlay` (tylko przycięcie), `--clock` + `--clock-position`
+(`auto`/rogi) + `--clock-offset-x/y`. Pełna lista: `PiroOverlay.exe --help`.
 
 Bez `--t0` aplikacja sama wykrywa kotwicę w audio (jeśli podasz `--trim-start/--trim-end`,
 detekcja szuka tylko w tym oknie). Bez `-o` plik zapisuje się obok źródła z sufiksem
@@ -133,10 +153,12 @@ przezroczystość), obramowanie (kolor/grubość/wł.-wył.), kolor napisów (te
 czas trwania planszy „START" oraz język (PL/EN). Podgląd aktualizuje się na żywo, a
 **Ctrl+klik na waveformie** pokazuje klatkę wideo z nałożonym podglądem nakładki.
 
-- **Płynący czas od T0:** opcjonalny zegar **„T+x.xs"** nad nakładką ze strzałami, liczony
-  od sygnału startu i widoczny już od STARTU (jeszcze przed pierwszym strzałem). Włącz
-  checkboxem w sekcji wyglądu. Przy pełnym FFmpeg zegar tyka płynnie (dziesiąte sekundy);
-  na okrojonej binarce (bez `drawtext`) działa fallback co 1 s — funkcja jest dostępna zawsze.
+- **Płynący czas od T0:** opcjonalny zegar **„T+x.xs"** liczony od sygnału startu i widoczny
+  już od STARTU (jeszcze przed pierwszym strzałem). Włącz checkboxem w sekcji wyglądu.
+  **Pozycję** wybierasz w „Pozycja zegara": *Nad nakładką (auto)* albo dowolny z 6 rogów
+  (wtedy działa „Offset zegara X/Y"). Przy pełnym FFmpeg zegar tyka płynnie z dokładnością
+  do **dziesiątych sekundy**; na okrojonej binarce (bez filtra `drawtext`) działa fallback
+  co 1 s — funkcja jest dostępna zawsze.
 - **Zapisz/wczytaj presety:** ustawienia wyglądu można eksportować i wczytywać z pliku
   **JSON** (przyciski w sekcji wyglądu).
 - **Auto-zapis:** ostatnio użyte ustawienia wyglądu oraz katalog zapisują się automatycznie
@@ -149,6 +171,20 @@ W sekcji „Wyjście" wybierasz format renderu:
 - **MP4** (H.264, domyślny) — z dźwiękiem, do publikacji.
 - **WebM** (VP9) — lekki format webowy.
 - **GIF** — zapętlona animacja bez dźwięku (np. do social media).
+
+Render można **przerwać** przyciskiem „Zatrzymaj" (np. po pomyłce) — ubija proces FFmpeg
+i usuwa niedokończony plik. Można też kolejkować wiele zadań („Dodaj do kolejki" → „Kolejka").
+
+## Synchronizacja po API — „Pobierz" vs „Pobierz i przytnij"
+
+Przy źródle **ID (API)** są dwa przyciski:
+
+- **Pobierz** — pobiera samą oś czasu i metadane (nie rusza przycięcia).
+- **Pobierz i przytnij** — pobiera dane, ustala T0 (używa wykrytego przy imporcie, a gdy
+  brak — wykrywa bzyczek) i przycina film: **5 s przed T0 → ostatni strzał + 5 s**.
+
+Po samym **wczytaniu pliku** aplikacja również od razu wykrywa T0 i ustawia przycięcie
+(5 s przed T0 → maks. 75 s po T0).
 
 ## Testy
 
