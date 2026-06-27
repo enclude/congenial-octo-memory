@@ -41,3 +41,40 @@ def load_last_style() -> OverlayStyle | None:
         return OverlayStyle.from_json(path)
     except Exception:  # noqa: BLE001
         return None
+
+
+def _last_dirs_path() -> Path:
+    return config_dir() / "last_dirs.json"
+
+
+def save_last_dir(key: str, path: str | Path) -> None:
+    """Zapisuje ostatnio używany katalog dla danego klucza (np. 'video', 'output', 'preset')."""
+    try:
+        import json
+        p = _last_dirs_path()
+        data: dict[str, str] = {}
+        if p.exists():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                pass
+        data[key] = str(path)
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def load_last_dir(key: str) -> str | None:
+    """Wczytuje ostatnio używany katalog dla klucza. Zwraca None jeśli nie zapisany lub nie istnieje."""
+    try:
+        import json
+        p = _last_dirs_path()
+        if not p.exists():
+            return None
+        data = json.loads(p.read_text(encoding="utf-8"))
+        value = data.get(key)
+        if value and Path(value).is_dir():
+            return value
+        return None
+    except Exception:  # noqa: BLE001
+        return None

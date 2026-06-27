@@ -41,11 +41,12 @@ def _has_nvenc_binary(path: str) -> bool:
 
 @functools.lru_cache(maxsize=1)
 def _resolve_ffmpeg() -> str:
-    """Wybiera binarkę ffmpeg, preferując wersję z NVENC.
+    """Wybiera binarkę ffmpeg, unikając wyciągania pliku przez imageio-ffmpeg.
 
     Kolejność: 1) env PIRO_FFMPEG, 2) pełny ffmpeg dołączony do paczki (assets/bin),
-    3) systemowy ffmpeg z PATH (jeśli ma NVENC), 4) binarka z imageio-ffmpeg
-    (zawsze obecna, ale zwykle bez NVENC). Akceleracja GPU wymaga którejś z 1–3.
+    3) systemowy ffmpeg z PATH, 4) binarka z imageio-ffmpeg (ostateczność — wyciąga
+    plik do %TEMP% przy każdym starcie procesu, co na Windows powoduje skan Defendera).
+    Obsługa NVENC sprawdzana jest osobno przez has_nvenc() w render.py.
     """
     import os
     from . import resources
@@ -55,15 +56,15 @@ def _resolve_ffmpeg() -> str:
         return env
 
     bundled_full = resources.bundled_ffmpeg_path()
-    if bundled_full and _has_nvenc_binary(bundled_full):
+    if bundled_full:
         return bundled_full
 
     imageio_bin = imageio_ffmpeg.get_ffmpeg_exe()
     sys_ff = shutil.which("ffmpeg")
-    if sys_ff and sys_ff != imageio_bin and _has_nvenc_binary(sys_ff):
+    if sys_ff and sys_ff != imageio_bin:
         return sys_ff
 
-    return bundled_full or imageio_bin
+    return imageio_bin
 
 
 def ffmpeg_exe() -> str:

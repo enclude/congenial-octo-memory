@@ -1,4 +1,8 @@
-"""Diagnostyka czasu analizy audio — uruchom: python diag_audio.py"""
+"""Diagnostyka czasu analizy audio — uruchom z aktywnym venv:
+    .venv\\Scripts\\python diag_audio.py
+lub:
+    python diag_audio.py   (jeśli aktywny venv z numpy/imageio-ffmpeg)
+"""
 import sys, time, subprocess, io, shutil, struct, tempfile
 from pathlib import Path
 
@@ -7,10 +11,24 @@ LRF = r"C:\Users\jaroslaw.zjawinski\Zjawa.IT - Jarosław Zjawiński\PIFPAF.FUN -
 try:
     import imageio_ffmpeg
     FF = imageio_ffmpeg.get_ffmpeg_exe()
+    FF_SOURCE = "imageio-ffmpeg"
 except Exception:
     FF = shutil.which("ffmpeg") or "ffmpeg"
+    FF_SOURCE = "PATH"
 
-print(f"FFmpeg: {FF}")
+# Sprawdź czy system ma ffmpeg na PATH (preferowane przez aplikację)
+sys_ff = shutil.which("ffmpeg")
+if sys_ff and sys_ff != FF:
+    print(f"UWAGA: Systemowy ffmpeg z PATH różni się od imageio-ffmpeg!")
+    print(f"  PATH:         {sys_ff}")
+    print(f"  imageio:      {FF}")
+    print(f"  Aplikacja użyje: PATH (po poprawce _resolve_ffmpeg)")
+    FF_APP = sys_ff
+else:
+    FF_APP = FF
+
+print(f"FFmpeg (diag):  {FF}  [{FF_SOURCE}]")
+print(f"FFmpeg (app):   {FF_APP}")
 print(f"LRF istnieje: {Path(LRF).exists()}, rozmiar: {Path(LRF).stat().st_size // 1_000_000} MB")
 print()
 
@@ -26,13 +44,13 @@ print("=== KROKI ===")
 
 # 1. probe LRF
 step("probe LRF (ffmpeg -i)", lambda: subprocess.run(
-    [FF, "-i", LRF], capture_output=True, creationflags=CREATE_NO_WINDOW))
+    [FF_APP, "-i", LRF], capture_output=True, creationflags=CREATE_NO_WINDOW))
 
 # 2. ekstrakcja → plik tmp
 def do_extract_file():
     with tempfile.TemporaryDirectory() as tmp:
         wav = Path(tmp) / "audio.wav"
-        subprocess.run([FF, "-y", "-i", LRF, "-vn", "-ac", "1", "-ar", "16000",
+        subprocess.run([FF_APP, "-y", "-i", LRF, "-vn", "-ac", "1", "-ar", "16000",
                         "-f", "wav", str(wav)], capture_output=True, creationflags=CREATE_NO_WINDOW)
         return wav.stat().st_size if wav.exists() else 0
 size = step("ekstrakcja audio → plik tmp", do_extract_file)
@@ -40,7 +58,7 @@ print(f"         (rozmiar WAV: {size // 1024} KB)")
 
 # 3. ekstrakcja → pipe
 def do_pipe():
-    cmd = [FF, "-y", "-i", LRF, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", "pipe:1"]
+    cmd = [FF_APP, "-y", "-i", LRF, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", "pipe:1"]
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        creationflags=CREATE_NO_WINDOW)
     return r.stdout
@@ -48,7 +66,15 @@ wav_bytes = step("ekstrakcja audio → pipe", do_pipe)
 print(f"         (bajty: {len(wav_bytes) // 1024} KB)")
 
 # 4. numpy WAV parse (bez soundfile/libsndfile)
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    print()
+    print("BŁĄD: Brak modułu 'numpy'.")
+    print("Uruchom skrypt z venv aplikacji:")
+    print("  .venv\\Scripts\\python diag_audio.py")
+    sys.exit(1)
+
 def parse_wav(data):
     i = 12
     sr_found = 16000
@@ -70,7 +96,7 @@ print(f"         ({samples.size} próbek, sr={sr})")
 try:
     import soundfile as sf
     def do_sf():
-        cmd = [FF, "-y", "-i", LRF, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", "pipe:1"]
+        cmd = [FF_APP, "-y", "-i", LRF, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", "pipe:1"]
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            creationflags=CREATE_NO_WINDOW)
         s, sr2 = sf.read(io.BytesIO(r.stdout))
@@ -78,11 +104,11 @@ try:
     n, sr2 = step("soundfile decode z pipe (dla porównania)", do_sf)
     print(f"         ({n} próbek, sr={sr2})")
 except ImportError:
-    print("  (soundfile niedostępne — pomijam)")
+    print("  (soundfile niedostępne — OK, aplikacja używa numpy)")
 
 # 6. pełny pipeline (pipe + numpy + waveform + onsety)
 def do_full():
-    cmd = [FF, "-y", "-i", LRF, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", "pipe:1"]
+    cmd = [FF_APP, "-y", "-i", LRF, "-vn", "-ac", "1", "-ar", "16000", "-f", "wav", "pipe:1"]
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        creationflags=CREATE_NO_WINDOW)
     smp, sr2 = parse_wav(r.stdout)

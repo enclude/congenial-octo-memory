@@ -1056,22 +1056,27 @@ class MainWindow(QMainWindow):
         self._update_preview()
 
     def _save_preset(self) -> None:
+        start_dir = config.load_last_dir("preset") or ""
+        default_name = str(Path(start_dir) / "preset_nakładki.json") if start_dir else "preset_nakładki.json"
         path, _ = QFileDialog.getSaveFileName(
-            self, "Zapisz preset wyglądu", "preset_nakładki.json",
+            self, "Zapisz preset wyglądu", default_name,
             "Preset JSON (*.json)")
         if not path:
             return
+        config.save_last_dir("preset", Path(path).parent)
         try:
             self.current_style().to_json(path)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Błąd zapisu", str(exc))
 
     def _load_preset(self) -> None:
+        start_dir = config.load_last_dir("preset") or ""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Wczytaj preset wyglądu", "",
+            self, "Wczytaj preset wyglądu", start_dir,
             "Preset JSON (*.json)")
         if not path:
             return
+        config.save_last_dir("preset", Path(path).parent)
         try:
             style = OverlayStyle.from_json(path)
             self._apply_style(style)
@@ -1145,9 +1150,11 @@ class MainWindow(QMainWindow):
         )
 
     def _choose_video(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Wybierz wideo", "",
+        start_dir = config.load_last_dir("video") or ""
+        path, _ = QFileDialog.getOpenFileName(self, "Wybierz wideo", start_dir,
                                               "Wideo (*.mp4 *.mov *.mkv *.avi)")
         if path:
+            config.save_last_dir("video", Path(path).parent)
             self._set_video(path)
 
     def _set_video(self, path: str):
@@ -1189,11 +1196,17 @@ class MainWindow(QMainWindow):
             "webm": "Wideo WebM (*.webm)",
             "gif":  "Animowany GIF (*.gif)",
         }
-        default_name = self.out_edit.text() or "output.mp4"
+        current_text = self.out_edit.text()
+        if current_text:
+            default_name = current_text
+        else:
+            start_dir = config.load_last_dir("output") or ""
+            default_name = str(Path(start_dir) / "output.mp4") if start_dir else "output.mp4"
         path, _ = QFileDialog.getSaveFileName(
             self, "Plik wyjściowy", default_name,
             filters.get(fmt, "Wideo (*.mp4)"))
         if path:
+            config.save_last_dir("output", Path(path).parent)
             self.out_edit.setText(path)
 
     def _build_session(self):
