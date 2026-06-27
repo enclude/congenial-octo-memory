@@ -913,8 +913,18 @@ class MainWindow(QMainWindow):
         form.addRow("Oś czasu", self.timeline_edit)
 
         self.id_spin = QSpinBox(); self.id_spin.setRange(1, 10_000_000)
-        fetch = QPushButton("Pobierz"); fetch.clicked.connect(self._fetch_id)
-        idrow = QHBoxLayout(); idrow.addWidget(self.id_spin); idrow.addWidget(fetch)
+        fetch = QPushButton("Pobierz")
+        fetch.setToolTip("Pobiera oś czasu i metadane z API (bez zmiany przycięcia).")
+        fetch.clicked.connect(self._fetch_id)
+        fetch_trim = QPushButton("Pobierz i przytnij")
+        fetch_trim.setToolTip(
+            "Pobiera z API, wykrywa sygnał startu (T0) i przycina film:\n"
+            "5 s przed T0 → ostatni strzał + 5 s.")
+        fetch_trim.clicked.connect(self._fetch_id_and_trim)
+        for b in (fetch, fetch_trim):
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        idrow = QHBoxLayout(); idrow.addWidget(self.id_spin)
+        idrow.addWidget(fetch); idrow.addWidget(fetch_trim)
         form.addRow("ID", _wrap(idrow))
 
         self.api_meta_label = QLabel()
@@ -1312,7 +1322,7 @@ class MainWindow(QMainWindow):
             return replace(self.session, shots=shots)
         return Session(shots=shots)
 
-    def _fetch_id(self):
+    def _fetch_id(self) -> bool:
         try:
             self.session = api.fetch_session(self.id_spin.value())
             self.timeline_edit.setPlainText(
@@ -1325,10 +1335,20 @@ class MainWindow(QMainWindow):
             self.api_meta_label.setText("  |  ".join(parts))
             self.api_meta_label.setVisible(bool(parts))
             self._update_preview()
-            # Po pobraniu danych wykryj T0 i przytnij: 5 s przed → ostatni strzał + 5 s.
-            self._auto_detect_t0("api")
+            return True
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Błąd API", str(exc))
+            return False
+
+    def _fetch_id_and_trim(self):
+        """Pobiera dane z API, po czym wykrywa T0 i przycina film:
+        5 s przed T0 → ostatni strzał + 5 s."""
+        if not self.video_path:
+            QMessageBox.warning(self, "Brak wideo",
+                                "Najpierw wybierz plik wideo — przycięcie wymaga audio.")
+            return
+        if self._fetch_id():
+            self._auto_detect_t0("api")
 
     @staticmethod
     def _shot_to_text(shot):

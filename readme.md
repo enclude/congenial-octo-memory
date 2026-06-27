@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.6.11
+> **Wersja:** 0.8.1
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
 **osi czasu strzałów** nakłada na film informacyjną grafikę (numer strzału, czas od startu,
@@ -27,12 +27,21 @@ W sekcji „Synchronizacja i przycięcie" są trzy przyciski:
 
 - **Wykryj kotwicę** — pierwszy wyraźny onset w zaznaczonym fragmencie (uniwersalne).
 - **Następna proponowana kotwica** — przeskakuje do kolejnego wykrytego onsetu.
-- **Wykryj sygnał startu** — detekcja bzyczka shot-timera przez filtr pasmowy
-  **2000–4500 Hz** + wybór najgłośniejszego impulsu w paśmie (odporne na strzały i szum
-  tła, dopracowane pod nagrania DJI Osmo). Ustawia typ kotwicy na „Sygnał startu" i wpisuje
-  wykryty bzyczek jako T0.
+- **Wykryj sygnał startu** — detekcja bzyczka shot-timera w paśmie **2000–4500 Hz**
+  rozpoznawanego po **tonalności** (koncentracja energii w paśmie ≥ 0.7) i **ciągłości**
+  (≥150 ms czystego tonu), z fallbackiem po stabilności częstotliwości. Odporne na strzały
+  (szerokopasmowe, krótkie) i szum — dopracowane pod nagrania DJI Osmo. Ustawia typ kotwicy
+  na „Sygnał startu" i wpisuje wykryty bzyczek jako T0.
 
 Można też kliknąć bezpośrednio na waveformie, by ręcznie ustawić kotwicę.
+
+**Automatyka przycięcia:**
+
+- **Po wczytaniu pliku** aplikacja od razu wykrywa T0 (bzyczek) i ustawia przycięcie na
+  **5 s przed T0 → maks. 75 s po T0**.
+- Przycisk **„Pobierz i przytnij"** (obok „Pobierz") pobiera dane z API, wykrywa T0 i
+  przycina film na **5 s przed T0 → ostatni strzał + 5 s**. Zwykły **„Pobierz"** tylko
+  pobiera oś czasu i metadane (bez zmiany przycięcia).
 
 Format osi czasu:
 
@@ -124,6 +133,10 @@ przezroczystość), obramowanie (kolor/grubość/wł.-wył.), kolor napisów (te
 czas trwania planszy „START" oraz język (PL/EN). Podgląd aktualizuje się na żywo, a
 **Ctrl+klik na waveformie** pokazuje klatkę wideo z nałożonym podglądem nakładki.
 
+- **Płynący czas od T0:** opcjonalny zegar **„T+x.xs"** nad nakładką ze strzałami, liczony
+  od sygnału startu i widoczny już od STARTU (jeszcze przed pierwszym strzałem). Włącz
+  checkboxem w sekcji wyglądu. Przy pełnym FFmpeg zegar tyka płynnie (dziesiąte sekundy);
+  na okrojonej binarce (bez `drawtext`) działa fallback co 1 s — funkcja jest dostępna zawsze.
 - **Zapisz/wczytaj presety:** ustawienia wyglądu można eksportować i wczytywać z pliku
   **JSON** (przyciski w sekcji wyglądu).
 - **Auto-zapis:** ostatnio użyte ustawienia wyglądu oraz katalog zapisują się automatycznie
