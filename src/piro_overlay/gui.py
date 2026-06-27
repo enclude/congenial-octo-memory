@@ -720,6 +720,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.session: Session | None = None
         self.video_path: str | None = None
+        self.lrf_path: str | None = None
         self.worker: RenderWorker | None = None
         self.wave_worker: WaveformWorker | None = None
         self.last_output: str | None = None
@@ -1017,8 +1018,14 @@ class MainWindow(QMainWindow):
         # Inwaliduj cache — nowe wideo, stara klatka nieaktualna
         self._cached_frame = None
         self._cached_frame_t = -1.0
-        self.preview_label.setText("Analiza audio…")
-        self.wave_worker = WaveformWorker(path)
+
+        lrf = ffmpeg.find_lrf(path)
+        self.lrf_path = str(lrf) if lrf else None
+        audio_src = self.lrf_path or path
+        msg = "Analiza audio (proxy LRF)…" if self.lrf_path else "Analiza audio…"
+        self.preview_label.setText(msg)
+
+        self.wave_worker = WaveformWorker(audio_src)
         self.wave_worker.done.connect(self._on_wave_done)
         self.wave_worker.failed.connect(lambda m: self.preview_label.setText("Błąd audio: " + m))
         self.wave_worker.start()
@@ -1075,7 +1082,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Brak wideo", "Najpierw wybierz plik wideo.")
             return
         detected = audio_sync.detect_start(
-            self.video_path, start=self.trim_start_spin.value(),
+            self.lrf_path or self.video_path, start=self.trim_start_spin.value(),
             end=self.trim_end_spin.value() or None)
         if detected is None:
             QMessageBox.warning(self, "Detekcja", "Nie wykryto sygnału — ustaw ręcznie.")

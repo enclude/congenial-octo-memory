@@ -110,6 +110,10 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
 - **Szybkie iterowanie:** do testów zmian NIE buduj .exe — uruchom ze źródła
   (`python app.py`). Build .exe rób tylko do dystrybucji; nie używaj `-Clean` bez potrzeby
   (cache `build/` przyspiesza kolejne buildy), UPX wyłączony (`upx=False`).
+- **Proxy LRF (DJI Osmo):** `ffmpeg.find_lrf(mp4_path)` szuka pliku `.LRF`/`.lrf` obok
+  MP4, weryfikuje go przez `probe` i zwraca `Path | None`. `gui._set_video` ustawia
+  `self.lrf_path` i przekazuje go do `WaveformWorker` oraz `audio_sync.detect_start` —
+  analiza audio chodzi na małym pliku, render zawsze na oryginalnym `video_path`.
 
 ## Uwagi / pułapki
 

@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.4.0
+> **Wersja:** 0.5.2
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
 **osi czasu strzałów** nakłada na film informacyjną grafikę (numer strzału, czas od startu,
@@ -75,6 +75,12 @@ detekcja szuka tylko w tym oknie). Bez `-o` plik zapisuje się obok źródła z 
 `_PiRoOverlay`.
 
 ## Przyśpieszanie
+
+- **Proxy LRF (DJI Osmo):** kamery DJI nagrywają obok każdego MP4 plik `.LRF` — to ta
+  sama treść w niskiej rozdzielczości (~480p). Aplikacja automatycznie go wykrywa i używa
+  do analizy audio (detekcja T0, waveforma), co **znacznie przyspiesza wczytywanie** przy
+  dużych plikach 4K/60fps. Render końcowy zawsze odbywa się z oryginalnego MP4.
+  Żadnej konfiguracji — wystarczy mieć plik `.LRF` obok `.MP4`.
 
 - **Render na GPU (NVENC):** w GUI zaznacz „Akceleracja GPU", w CLI `--encoder gpu/auto`.
   Status NVENC widać w GUI pod tym polem; po renderze komunikat pokazuje faktyczny enkoder.

@@ -176,6 +176,27 @@ def extract_audio(video_path: str | Path, out_wav: str | Path,
     return out_wav
 
 
+def find_lrf(video_path: str | Path) -> Path | None:
+    """Szuka niskorozdzielczego proxy LRF obok pliku MP4 (DJI Osmo).
+
+    Kamery DJI nagrywają obok każdego MP4 plik .LRF (ten sam obraz i audio,
+    ~480p). Jeśli istnieje i ffmpeg może go odczytać, zwraca jego ścieżkę
+    — można go użyć do analizy audio zamiast pełnego pliku, co znacznie
+    przyspiesza detekcję T0 i generowanie waveformy dla dużych nagrań 4K.
+    Zwraca None jeśli plik nie istnieje lub jest nieczytelny dla ffmpeg.
+    """
+    p = Path(video_path)
+    for suffix in (".LRF", ".lrf"):
+        candidate = p.with_suffix(suffix)
+        if candidate.exists():
+            try:
+                probe(candidate)
+                return candidate
+            except Exception:  # noqa: BLE001
+                pass
+    return None
+
+
 def extract_frame(video_path: str | Path, timestamp: float, out_png: str | Path,
                   scale_height: int | None = None) -> Path:
     """Zapisuje pojedynczą klatkę wideo w danym czasie (do podglądu w GUI).
