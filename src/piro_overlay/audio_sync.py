@@ -15,11 +15,11 @@ pracują na załadowanych próbkach w pamięci — bez ponownego odczytu dysku.
 from __future__ import annotations
 
 import io
+import struct
 import subprocess
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 
 from . import ffmpeg
 from .models import AnchorMode
@@ -31,12 +31,37 @@ _WINDOW_S = 0.02  # 20 ms okna analizy
 # Warstwa I/O — tylko tutaj trafia FFmpeg + dysk
 # ---------------------------------------------------------------------------
 
+def _parse_pcm_wav(data: bytes) -> tuple[np.ndarray, int]:
+    """Parsuje bajty WAV PCM (int16) z FFmpega bez libsndfile — tylko numpy.
+
+    FFmpeg z `-f wav -ac 1 -ar N` zawsze generuje standardowy RIFF/PCM WAV.
+    Omijamy soundfile/libsndfile, które w PyInstaller wymagają wyciągnięcia DLL
+    do %TEMP% i wywołują skanowanie Windows Defender.
+    """
+    if len(data) < 12 or data[:4] != b'RIFF' or data[8:12] != b'WAVE':
+        raise RuntimeError("Nieoczekiwany format audio (oczekiwano RIFF/WAVE)")
+
+    sr = 16000   # fallback — nadpisany z fmt chunk poniżej
+    i = 12
+    while i + 8 <= len(data):
+        chunk_id = data[i:i+4]
+        chunk_size = struct.unpack_from('<I', data, i + 4)[0]
+        if chunk_id == b'fmt ':
+            sr = struct.unpack_from('<I', data, i + 12)[0]
+        elif chunk_id == b'data':
+            raw = np.frombuffer(data[i+8:i+8+chunk_size], dtype=np.int16)
+            return raw.astype(np.float64) / 32768.0, sr
+        i += 8 + chunk_size
+
+    raise RuntimeError("Nie znaleziono danych PCM w strumieniu WAV")
+
+
 def _load_audio(video_path: str | Path) -> tuple[np.ndarray, int]:
     """Ekstrahuje audio z pliku i zwraca (próbki mono float64, sample_rate).
 
-    Jedyne miejsce w module, które wywołuje FFmpeg. Audio trafia przez pipe
-    bezpośrednio do pamięci — żaden plik tymczasowy nie jest zapisywany na dysk,
-    co eliminuje opóźnienia Windows Defender skanującego pliki w %TEMP%.
+    Dane płyną przez pipe bezpośrednio do RAM; żaden plik tymczasowy nie trafia
+    na dysk. WAV parsowany jest przez _parse_pcm_wav (numpy) bez libsndfile,
+    co eliminuje wyciąganie DLL przez PyInstaller i skanowanie Windows Defender.
     """
     cmd = [
         ffmpeg.ffmpeg_exe(), "-y", "-i", str(video_path),
@@ -47,11 +72,9 @@ def _load_audio(video_path: str | Path) -> tuple[np.ndarray, int]:
                           creationflags=ffmpeg.CREATE_NO_WINDOW)
     if proc.returncode != 0:
         raise RuntimeError(
-            f"Ekstrakcja audio nie powiodła się:\n{proc.stderr[-2000:].decode('utf-8', errors='replace')}")
-    samples, sr = sf.read(io.BytesIO(proc.stdout))
-    if samples.ndim > 1:
-        samples = samples.mean(axis=1)
-    return samples, int(sr)
+            f"Ekstrakcja audio nie powiodła się:\n"
+            f"{proc.stderr[-2000:].decode('utf-8', errors='replace')}")
+    return _parse_pcm_wav(proc.stdout)
 
 
 # ---------------------------------------------------------------------------
