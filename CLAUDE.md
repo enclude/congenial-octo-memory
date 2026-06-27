@@ -145,6 +145,14 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   wyglądała jak brak działania). Detekcja po imporcie nadal w tle: token pokolenia
   (`_detect_gen`) w `_on_autodetect_t0` odrzuca przestarzałe wyniki; workery trzymane
   w `_detect_workers` do `finished` (inaczej QThread niszczony w trakcie = crash).
+- **Przeciąganie pozycji w podglądzie:** `gui.PreviewLabel` (QLabel) w trybie edycji
+  (`edit_pos_btn`) mapuje mysz → piksele klatki (uwzględnia wyśrodkowany pixmap z letterboxem)
+  i emituje `grabbed/dragged/dropped`. `MainWindow` trafia w `_preview_rects` ('panel'/'clock',
+  zegar ma priorytet), a `_invert_offset` (odwrotność `overlay.panel_origin`) liczy offset z
+  nowego lewego-górnego rogu wg rogu kotwicy. WAŻNE: podgląd renderuje z `_scaled_style`
+  (offsety × `frame_h/video_h`), więc podgląd ≈ render (WYSIWYG); drag dzieli deltę przez ten
+  sam współczynnik → offsety w pikselach WYJŚCIA. `_video_size` z `probe` przy wczytaniu.
+  Zegar w trybie „auto" przy przeciąganiu przełącza się na konkretny róg (róg panelu).
 - **Tryb bezgłowy (.exe = GUI + CLI):** `app.py` rozgałęzia: bez argumentów → GUI, z
   argumentami → `cli.main()`. Na Windows `_attach_parent_console()` podpina konsolę rodzica
   (`AttachConsole(-1)` + reopen `CONOUT$`), bo exe budujemy jako GUI (`console=False`) i bez

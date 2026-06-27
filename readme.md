@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.11.0
+> **Wersja:** 0.12.0
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
 **osi czasu strzałów** nakłada na film informacyjną grafikę (numer strzału, czas od startu,
@@ -152,6 +152,12 @@ W GUI konfigurowalne: rozmiar (skala), pozycja (róg + offset X/Y), tło (kolor 
 przezroczystość), obramowanie (kolor/grubość/wł.-wył.), kolor napisów (tekst + akcent),
 czas trwania planszy „START" oraz język (PL/EN). Podgląd aktualizuje się na żywo, a
 **Ctrl+klik na waveformie** pokazuje klatkę wideo z nałożonym podglądem nakładki.
+
+- **Przeciąganie pozycji w podglądzie:** włącz „✥ Edytuj pozycje (przeciąganie)" nad
+  podglądem i przeciągnij **panel strzału** lub **zegar** myszą, by ustawić ich pozycję
+  (aktualizuje offsety na żywo). W tym trybie podgląd pokazuje panel strzału także przy
+  kotwicy „Sygnał startu". Offsety przeliczane są na rozdzielczość wyjściową, więc podgląd
+  odpowiada renderowi.
 
 - **Płynący czas od T0:** opcjonalny zegar **„T+x.xs"** liczony od sygnału startu i widoczny
   już od STARTU (jeszcze przed pierwszym strzałem). Włącz checkboxem w sekcji wyglądu.

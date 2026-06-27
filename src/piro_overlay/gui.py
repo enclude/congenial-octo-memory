@@ -24,7 +24,7 @@ import urllib.request
 import urllib.error
 import json
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QRect, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QColorDialog, QComboBox, QCheckBox, QDoubleSpinBox,
@@ -763,6 +763,57 @@ class WaveformWidget(QWidget):
             self.setCursor(Qt.CrossCursor)
 
 
+class PreviewLabel(QLabel):
+    """QLabel podglądu z trybem edycji pozycji — przeciąganie nakładek myszą.
+
+    Mapuje współrzędne kliknięcia (w widżecie) na piksele wyświetlanej klatki,
+    uwzględniając wyśrodkowany pixmap (KeepAspectRatio z letterboxem). Emituje
+    zdarzenia w pikselach klatki; logikę „co złapano i jak przesunąć offset"
+    obsługuje MainWindow.
+    """
+    grabbed = Signal(float, float)   # (fx, fy) w pikselach klatki podglądu
+    dragged = Signal(float, float)
+    dropped = Signal()
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self._disp: QRect | None = None    # gdzie leży pixmap wewnątrz widżetu
+        self._frame_size: tuple[int, int] | None = None
+        self.edit_mode = False
+
+    def set_frame_geometry(self, disp: QRect, frame_size: tuple[int, int]) -> None:
+        self._disp = disp
+        self._frame_size = frame_size
+
+    def _to_frame(self, pos) -> tuple[float, float] | None:
+        if not self._disp or not self._frame_size or self._disp.width() <= 0:
+            return None
+        fx = (pos.x() - self._disp.x()) / self._disp.width() * self._frame_size[0]
+        fy = (pos.y() - self._disp.y()) / self._disp.height() * self._frame_size[1]
+        return fx, fy
+
+    def mousePressEvent(self, e):
+        if self.edit_mode and e.button() == Qt.LeftButton:
+            f = self._to_frame(e.position())
+            if f:
+                self.grabbed.emit(*f)
+                return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e):
+        if self.edit_mode and (e.buttons() & Qt.LeftButton):
+            f = self._to_frame(e.position())
+            if f:
+                self.dragged.emit(*f)
+                return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        if self.edit_mode and e.button() == Qt.LeftButton:
+            self.dropped.emit()
+        super().mouseReleaseEvent(e)
+
+
 # ----------------------------- okno główne -----------------------------
 class ColorButton(QPushButton):
     changed = Signal()
@@ -808,6 +859,10 @@ class MainWindow(QMainWindow):
         self.wave_worker: WaveformWorker | None = None
         self._detect_workers: list[StartDetectWorker] = []
         self._detect_gen: int = 0
+        self._video_size: tuple[int, int] | None = None  # (w, h) — do skalowania podglądu
+        # Edycja pozycji w podglądzie (przeciąganie nakładek).
+        self._preview_rects: dict[str, tuple[int, int, int, int]] = {}
+        self._grab: dict | None = None
         self.last_output: str | None = None
         self._used_encoder: str | None = None
         self._render_busy: bool = False
@@ -867,10 +922,23 @@ class MainWindow(QMainWindow):
 
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
-        self.preview_label = QLabel("Przeciągnij tu plik wideo lub użyj „…”")
+
+        self.edit_pos_btn = QPushButton("✥ Edytuj pozycje (przeciąganie)")
+        self.edit_pos_btn.setCheckable(True)
+        self.edit_pos_btn.setToolTip(
+            "Tryb edycji: przeciągaj w podglądzie panel strzału i zegar, by ustawić ich\n"
+            "pozycję (offsety). W tym trybie podgląd pokazuje panel strzału także przy\n"
+            "kotwicy „Sygnał startu”.")
+        self.edit_pos_btn.toggled.connect(self._on_edit_pos_toggled)
+        right.addWidget(self.edit_pos_btn)
+
+        self.preview_label = PreviewLabel("Przeciągnij tu plik wideo lub użyj „…”")
         self.preview_label.setMinimumSize(480, 270)
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setStyleSheet("background:#222;color:#aaa;")
+        self.preview_label.grabbed.connect(self._on_preview_grab)
+        self.preview_label.dragged.connect(self._on_preview_drag)
+        self.preview_label.dropped.connect(self._on_preview_drop)
         right.addWidget(self.preview_label, 3)
 
         self.waveform = WaveformWidget()
@@ -1032,7 +1100,7 @@ class MainWindow(QMainWindow):
         self.pos_combo.currentIndexChanged.connect(self._update_preview)
         form.addRow("Pozycja", self.pos_combo)
 
-        self.off_x = _ispin(0, 2000, 32); self.off_y = _ispin(0, 2000, 32)
+        self.off_x = _ispin(0, 8000, 32); self.off_y = _ispin(0, 8000, 32)
         self.off_x.valueChanged.connect(self._update_preview)
         self.off_y.valueChanged.connect(self._update_preview)
         orow = QHBoxLayout(); orow.addWidget(self.off_x); orow.addWidget(self.off_y)
@@ -1073,7 +1141,7 @@ class MainWindow(QMainWindow):
         self.clock_pos_combo.currentIndexChanged.connect(self._update_preview)
         form.addRow("Pozycja zegara", self.clock_pos_combo)
 
-        self.clock_off_x = _ispin(0, 2000, 32); self.clock_off_y = _ispin(0, 2000, 32)
+        self.clock_off_x = _ispin(0, 8000, 32); self.clock_off_y = _ispin(0, 8000, 32)
         self.clock_off_x.setToolTip("Offset zegara X (używany, gdy pozycja ≠ „auto”).")
         self.clock_off_y.setToolTip("Offset zegara Y (używany, gdy pozycja ≠ „auto”).")
         self.clock_off_x.valueChanged.connect(self._update_preview)
@@ -1287,6 +1355,12 @@ class MainWindow(QMainWindow):
         # Inwaliduj cache — nowe wideo, stara klatka nieaktualna
         self._cached_frame = None
         self._cached_frame_t = -1.0
+        # Rozmiar wideo (do skalowania offsetów w podglądzie ≈ render).
+        try:
+            info = ffmpeg.probe(path)
+            self._video_size = (info.width, info.height)
+        except Exception:  # noqa: BLE001
+            self._video_size = None
 
         lrf = ffmpeg.find_lrf(path)
         self.lrf_path = str(lrf) if lrf else None
@@ -1560,11 +1634,11 @@ class MainWindow(QMainWindow):
                 return
             style = self.current_style()
             mode = self._anchor_mode()
+            pstyle = self._scaled_style(style, frame.size[1])
             t0 = audio_sync.resolve_t0(self.t0_spin.value(), mode, session.shots[0].czas)
             duration = self.waveform.duration or (t + 10)
-            events = render.build_events(session, t0, style, mode, frame.size, duration)
+            events = render.build_events(session, t0, pstyle, mode, frame.size, duration)
             composite = frame.copy()
-            panel_xy = None
             for ev in events:
                 if ev.start <= t < ev.end:
                     panel = ev.image
@@ -1572,12 +1646,11 @@ class MainWindow(QMainWindow):
                         x = (frame.size[0] - panel.size[0]) // 2
                         y = (frame.size[1] - panel.size[1]) // 2
                     else:
-                        x, y = overlay.panel_origin(panel.size, frame.size, style)
-                        panel_xy = (x, y)
+                        x, y = overlay.panel_origin(panel.size, frame.size, pstyle)
                     composite.alpha_composite(panel, (x, y))
                     break
             if style.show_running_clock and t >= t0 - 1e-6:
-                self._composite_clock(composite, style, session, t - t0)
+                self._composite_clock(composite, pstyle, session, t - t0)
             self._show_image(composite)
         except Exception:  # noqa: BLE001
             self._show_image(frame)
@@ -1634,21 +1707,48 @@ class MainWindow(QMainWindow):
             style = self.current_style()
             mode = self._anchor_mode()
             frame = self._cached_frame.copy()
-            if mode == AnchorMode.START_SIGNAL:
-                panel = overlay.render_start_banner(style, frame.size)
+            # Skaluj offsety do rozdzielczości podglądu — podgląd ≈ render (WYSIWYG).
+            pstyle = self._scaled_style(style, frame.size[1])
+            self._preview_rects = {}
+            edit = self.edit_pos_btn.isChecked()
+            # W trybie edycji pokazujemy panel strzału (zamiast planszy START), by
+            # dało się go przeciągać; plansza START i tak jest wyśrodkowana.
+            if mode == AnchorMode.START_SIGNAL and not edit:
+                panel = overlay.render_start_banner(pstyle, frame.size)
                 x = (frame.size[0] - panel.size[0]) // 2
                 y = (frame.size[1] - panel.size[1]) // 2
             else:
-                panel = overlay.render_shot_panel(session, 0, style, frame.size)
-                x, y = overlay.panel_origin(panel.size, frame.size, style)
+                panel = overlay.render_shot_panel(session, 0, pstyle, frame.size)
+                x, y = overlay.panel_origin(panel.size, frame.size, pstyle)
+                self._preview_rects["panel"] = (x, y, panel.size[0], panel.size[1])
             frame.alpha_composite(panel, (x, y))
             if style.show_running_clock:
-                elapsed = 0.0 if mode == AnchorMode.START_SIGNAL else session.shots[0].czas
-                self._composite_clock(frame, style, session, elapsed)
+                elapsed = (session.shots[0].czas
+                           if (mode != AnchorMode.START_SIGNAL or edit) else 0.0)
+                self._composite_clock(frame, pstyle, session, elapsed)
             self._show_image(frame)
         except Exception:  # noqa: BLE001
             pass
         self._autosave_timer.start(1000)
+
+    def _preview_scale(self, frame_h: int) -> float:
+        """Współczynnik klatka_podglądu / wideo (do skalowania offsetów). 1.0 gdy brak."""
+        if self._video_size and self._video_size[1] > 0:
+            return frame_h / self._video_size[1]
+        return 1.0
+
+    def _scaled_style(self, style, frame_h: int):
+        """Kopia stylu z offsetami przeskalowanymi do rozdzielczości podglądu."""
+        s = self._preview_scale(frame_h)
+        if s == 1.0:
+            return style
+        return replace(
+            style,
+            offset_x=int(round(style.offset_x * s)),
+            offset_y=int(round(style.offset_y * s)),
+            clock_offset_x=int(round(style.clock_offset_x * s)),
+            clock_offset_y=int(round(style.clock_offset_y * s)),
+        )
 
     def _composite_clock(self, frame, style, session, elapsed: float) -> None:
         """Nakłada panel płynącego zegara na klatkę podglądu — pozycja jak w renderze
@@ -1661,6 +1761,77 @@ class MainWindow(QMainWindow):
         else:
             xy = render._clock_xy(style, frame.size, clock.size, 0, 0)
         frame.alpha_composite(clock, xy)
+        self._preview_rects["clock"] = (xy[0], xy[1], clock.size[0], clock.size[1])
+
+    # --- edycja pozycji nakładek przez przeciąganie w podglądzie ---
+    def _on_edit_pos_toggled(self, on: bool) -> None:
+        self.preview_label.edit_mode = on
+        self.preview_label.setCursor(Qt.OpenHandCursor if on else Qt.ArrowCursor)
+        self._grab = None
+        if on:
+            self.statusBar().showMessage(
+                "Tryb edycji pozycji: przeciągnij panel strzału lub zegar w podglądzie.", 6000)
+        self._update_preview()
+
+    @staticmethod
+    def _invert_offset(position: str, topleft, panel_size, video_size):
+        """Z lewego-górnego rogu (px) → offset (px) względem kotwicy (odwrotność panel_origin).
+        Zwraca (ox, oy, horiz) — ox=None gdy poziom = center (offset nieużywany)."""
+        x, y = topleft
+        pw, ph = panel_size
+        vw, vh = video_size
+        vert, _, horiz = position.partition("-")
+        if horiz == "left":
+            ox = max(0, x)
+        elif horiz == "right":
+            ox = max(0, vw - pw - x)
+        else:  # center — offset X nieużywany
+            ox = None
+        oy = max(0, y) if vert == "top" else max(0, vh - ph - y)
+        return ox, oy, horiz
+
+    def _on_preview_grab(self, fx: float, fy: float) -> None:
+        # Zegar rysowany na wierzchu → ma priorytet w trafieniu.
+        for key in ("clock", "panel"):
+            r = self._preview_rects.get(key)
+            if r and r[0] <= fx <= r[0] + r[2] and r[1] <= fy <= r[1] + r[3]:
+                self._grab = {"key": key, "fx": fx, "fy": fy,
+                              "x0": r[0], "y0": r[1], "w": r[2], "h": r[3]}
+                self.preview_label.setCursor(Qt.ClosedHandCursor)
+                return
+        self._grab = None
+
+    def _on_preview_drag(self, fx: float, fy: float) -> None:
+        if not self._grab or self._cached_frame is None:
+            return
+        g = self._grab
+        fw, fh = self._cached_frame.size
+        nx = max(0, min(g["x0"] + (fx - g["fx"]), fw - g["w"]))
+        ny = max(0, min(g["y0"] + (fy - g["fy"]), fh - g["h"]))
+        scale = self._preview_scale(fh) or 1.0
+        if g["key"] == "panel":
+            pos = self.pos_combo.currentText()
+            ox, oy, horiz = self._invert_offset(pos, (nx, ny), (g["w"], g["h"]), (fw, fh))
+            if ox is not None:
+                self.off_x.setValue(int(round(ox / scale)))
+            self.off_y.setValue(int(round(oy / scale)))
+        else:  # zegar
+            cp = self.clock_pos_combo.currentData()
+            if cp == "auto":
+                # Przeciąganie wymaga konkretnego rogu — przejdź na róg panelu.
+                cp = self.pos_combo.currentText()
+                cidx = self.clock_pos_combo.findData(cp)
+                if cidx >= 0:
+                    self.clock_pos_combo.setCurrentIndex(cidx)
+            ox, oy, horiz = self._invert_offset(cp, (nx, ny), (g["w"], g["h"]), (fw, fh))
+            if ox is not None:
+                self.clock_off_x.setValue(int(round(ox / scale)))
+            self.clock_off_y.setValue(int(round(oy / scale)))
+
+    def _on_preview_drop(self) -> None:
+        self._grab = None
+        if self.edit_pos_btn.isChecked():
+            self.preview_label.setCursor(Qt.OpenHandCursor)
 
     def _safe_session(self):
         try:
@@ -1669,10 +1840,17 @@ class MainWindow(QMainWindow):
             return None
 
     def _show_image(self, pil_img):
-        qim = ImageQt(pil_img.convert("RGBA"))
+        img = pil_img.convert("RGBA")
+        fw, fh = img.size
+        qim = ImageQt(img)
+        lbl = self.preview_label.size()
         pix = QPixmap.fromImage(QImage(qim)).scaled(
-            self.preview_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            lbl, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.preview_label.setPixmap(pix)
+        # Geometria wyświetlanego (wyśrodkowanego) obrazka — do mapowania myszy w edycji.
+        dx = (lbl.width() - pix.width()) // 2
+        dy = (lbl.height() - pix.height()) // 2
+        self.preview_label.set_frame_geometry(QRect(dx, dy, pix.width(), pix.height()), (fw, fh))
 
     def _collect_render_kwargs(self) -> dict | None:
         if not self.video_path:
