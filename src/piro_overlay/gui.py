@@ -175,6 +175,30 @@ class WaveformWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class StartDetectWorker(QThread):
+    """Wykrywa bzyczek shot-timera (T0) w tle — FFT nie blokuje UI.
+
+    `purpose` ("import"/"api") wraca w sygnale, by handler wiedział jak ustawić
+    przycięcie po wykryciu (różne reguły dla importu pliku i pobrania z API).
+    """
+    done = Signal(str, object)   # (purpose, detected_t0 lub None)
+
+    def __init__(self, video_path: str, purpose: str,
+                 start: float | None = None, end: float | None = None):
+        super().__init__()
+        self.video_path = video_path
+        self.purpose = purpose
+        self.start = start
+        self.end = end
+
+    def run(self):
+        try:
+            t0 = audio_sync.detect_dji_start(self.video_path, start=self.start, end=self.end)
+        except Exception:  # noqa: BLE001
+            t0 = None
+        self.done.emit(self.purpose, t0)
+
+
 # ----------------------------- kolejka renderów -----------------------------
 class JobStatus(Enum):
     PENDING = auto()
@@ -761,6 +785,7 @@ class MainWindow(QMainWindow):
         self.lrf_path: str | None = None
         self.worker: RenderWorker | None = None
         self.wave_worker: WaveformWorker | None = None
+        self.detect_worker: StartDetectWorker | None = None
         self.last_output: str | None = None
         self._used_encoder: str | None = None
         self._render_busy: bool = False
@@ -1210,6 +1235,44 @@ class MainWindow(QMainWindow):
         self.trim_start_spin.setValue(0.0); self.trim_end_spin.setValue(dur)
         self.trim_start_spin.blockSignals(False); self.trim_end_spin.blockSignals(False)
         self._update_preview()
+        # Po wczytaniu pliku od razu wykryj T0 (buzzer) i ustaw przycięcie.
+        self._auto_detect_t0("import")
+
+    def _auto_detect_t0(self, purpose: str) -> None:
+        """Startuje detekcję bzyczka (T0) w tle; po wykryciu ustawia kotwicę + trim.
+
+        purpose="import" — przycięcie: 5 s przed T0 → max 75 s po T0.
+        purpose="api"    — przycięcie: 5 s przed T0 → ostatni strzał + 5 s.
+        """
+        if not self.video_path:
+            return
+        src = self.lrf_path or self.video_path
+        self.detect_worker = StartDetectWorker(src, purpose)
+        self.detect_worker.done.connect(self._on_autodetect_t0)
+        self.detect_worker.start()
+
+    def _on_autodetect_t0(self, purpose: str, detected) -> None:
+        if detected is None:
+            return  # nie wykryto — użytkownik ustawi ręcznie, bez komunikatu
+        # Wykryty bzyczek JEST sygnałem startu → wymuś tryb START_SIGNAL.
+        idx = self.anchor_combo.findData(AnchorMode.START_SIGNAL.value)
+        if idx >= 0:
+            self.anchor_combo.setCurrentIndex(idx)
+        self.t0_spin.setValue(detected)
+        dur = self.waveform.duration or None
+        if purpose == "import":
+            start = max(0.0, detected - 5.0)
+            end = detected + 75.0
+            if dur:
+                end = min(end, dur)
+        else:  # "api" — domknij na ostatnim strzale + 5 s
+            session = self.session
+            if not (session and session.shots):
+                return
+            start, end = render.auto_trim_window(
+                detected, session.shots[-1].czas, tail=5.0, lead_in=5.0, duration=dur)
+        self.trim_start_spin.setValue(start)
+        self.trim_end_spin.setValue(end)
 
     def _choose_output(self):
         fmt = self.format_combo.currentData()
@@ -1252,6 +1315,8 @@ class MainWindow(QMainWindow):
             self.api_meta_label.setText("  |  ".join(parts))
             self.api_meta_label.setVisible(bool(parts))
             self._update_preview()
+            # Po pobraniu danych wykryj T0 i przytnij: 5 s przed → ostatni strzał + 5 s.
+            self._auto_detect_t0("api")
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Błąd API", str(exc))
 
