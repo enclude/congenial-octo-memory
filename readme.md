@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.5.2
+> **Wersja:** 0.6.11
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
 **osi czasu strzałów** nakłada na film informacyjną grafikę (numer strzału, czas od startu,
@@ -17,9 +17,22 @@ wzbogacają nagłówek i podsumowanie.
 
 1. Wybierasz plik wideo i podajesz oś czasu (tekst lub ID).
 2. Aplikacja wykrywa w audio **sygnał startu / pierwszy strzał** (T0) — z możliwością
-   ręcznej korekty.
+   ręcznej korekty na waveformie.
 3. Każdy panel pojawia się o `T0 + czas_strzału`; render to **jeden przebieg FFmpeg**
    (szybko, audio zachowane).
+
+### Wykrywanie T0 (kotwicy)
+
+W sekcji „Synchronizacja i przycięcie" są trzy przyciski:
+
+- **Wykryj kotwicę** — pierwszy wyraźny onset w zaznaczonym fragmencie (uniwersalne).
+- **Następna proponowana kotwica** — przeskakuje do kolejnego wykrytego onsetu.
+- **Wykryj sygnał startu** — detekcja bzyczka shot-timera przez filtr pasmowy
+  **2000–4500 Hz** + wybór najgłośniejszego impulsu w paśmie (odporne na strzały i szum
+  tła, dopracowane pod nagrania DJI Osmo). Ustawia typ kotwicy na „Sygnał startu" i wpisuje
+  wykryty bzyczek jako T0.
+
+Można też kliknąć bezpośrednio na waveformie, by ręcznie ustawić kotwicę.
 
 Format osi czasu:
 
@@ -108,7 +121,21 @@ systemowy z NVENC → `imageio-ffmpeg` (CPU).
 
 W GUI konfigurowalne: rozmiar (skala), pozycja (róg + offset X/Y), tło (kolor +
 przezroczystość), obramowanie (kolor/grubość/wł.-wył.), kolor napisów (tekst + akcent),
-czas trwania planszy „START" oraz język (PL/EN). Podgląd aktualizuje się na żywo.
+czas trwania planszy „START" oraz język (PL/EN). Podgląd aktualizuje się na żywo, a
+**Ctrl+klik na waveformie** pokazuje klatkę wideo z nałożonym podglądem nakładki.
+
+- **Zapisz/wczytaj presety:** ustawienia wyglądu można eksportować i wczytywać z pliku
+  **JSON** (przyciski w sekcji wyglądu).
+- **Auto-zapis:** ostatnio użyte ustawienia wyglądu oraz katalog zapisują się automatycznie
+  w `AppData`, więc przy kolejnym uruchomieniu są przywracane.
+
+## Format wyjściowy
+
+W sekcji „Wyjście" wybierasz format renderu:
+
+- **MP4** (H.264, domyślny) — z dźwiękiem, do publikacji.
+- **WebM** (VP9) — lekki format webowy.
+- **GIF** — zapętlona animacja bez dźwięku (np. do social media).
 
 ## Testy
 

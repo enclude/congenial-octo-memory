@@ -108,7 +108,19 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   dokładany przez `build.ps1 -WithFfmpeg`) → systemowy z NVENC → imageio-ffmpeg (CPU).
   Binarka imageio-ffmpeg NIE ma NVENC.
 - **Waveform:** `audio_sync.compute_waveform` → `gui.WaveformWidget` (klik=kotwica,
-  uchwyty=trim, znaczniki=onsety).
+  uchwyty=trim, znaczniki=onsety). Ctrl+klik = podgląd klatki z nakładką (scrubber).
+- **Wykrywanie sygnału startu (bzyczek):** `audio_sync.detect_dji_start` filtruje audio
+  pasmowo do 2000–4500 Hz (`_bandpass_fft`, FFT bez scipy) i wybiera **najsilniejszy**
+  impuls w paśmie, po czym cofa się do narastającego zbocza (T0 = początek bzyczka).
+  WAŻNE: NIE bierze pierwszego przekroczenia progu — przypadkowy szum na starcie nagrania
+  kradł wtedy detekcję (bzyczek shot-timera to czysty, donośny ton ~2.7 kHz, więc w paśmie
+  jest zwykle najgłośniejszy). GUI: przycisk „Wykryj sygnał startu" (obok „Wykryj kotwicę")
+  wymusza `AnchorMode.START_SIGNAL` i ustawia wynik jako T0; zwykłe „Wykryj kotwicę" używa
+  `detect_start` (bez filtra, pierwszy onset).
+- **Format wyjściowy:** `format_combo` w GUI → `render.render_video` (MP4/H.264) /
+  `render_webm` (VP9) / `render_gif`. CLI renderuje tylko MP4.
+- **Presety wyglądu:** zapisz/wczytaj JSON z pliku; auto-zapis ostatnich ustawień i
+  katalogu do `AppData` (przywracane przy starcie).
 - **Ikona:** `assets/icon.png` (okno) + `assets/icon.ico` (.exe, w `build_exe.spec`),
   `resources.icon_path()`.
 - **Szybkie iterowanie:** do testów zmian NIE buduj .exe — uruchom ze źródła
