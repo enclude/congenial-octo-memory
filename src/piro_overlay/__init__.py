@@ -1,3 +1,3 @@
 """Piro Overlay — nakładka informacyjna o strzałach na wideo ze strzelania."""
 
-__version__ = "0.6.4"
+__version__ = "0.6.5"

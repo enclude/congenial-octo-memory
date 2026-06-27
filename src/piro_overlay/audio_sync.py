@@ -14,7 +14,8 @@ pracują na załadowanych próbkach w pamięci — bez ponownego odczytu dysku.
 
 from __future__ import annotations
 
-import tempfile
+import io
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -33,14 +34,21 @@ _WINDOW_S = 0.02  # 20 ms okna analizy
 def _load_audio(video_path: str | Path) -> tuple[np.ndarray, int]:
     """Ekstrahuje audio z pliku i zwraca (próbki mono float64, sample_rate).
 
-    Jedyne miejsce w module, które wywołuje FFmpeg i czyta z dysku.
-    Wynik przekazuj do funkcji _*_from_samples zamiast wielokrotnie wywoływać
-    tę funkcję dla tego samego pliku.
+    Jedyne miejsce w module, które wywołuje FFmpeg. Audio trafia przez pipe
+    bezpośrednio do pamięci — żaden plik tymczasowy nie jest zapisywany na dysk,
+    co eliminuje opóźnienia Windows Defender skanującego pliki w %TEMP%.
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        wav = ffmpeg.extract_audio(video_path, Path(tmp) / "audio.wav")
-        samples, sr = sf.read(str(wav))
-
+    cmd = [
+        ffmpeg.ffmpeg_exe(), "-y", "-i", str(video_path),
+        "-vn", "-ac", "1", "-ar", "16000",
+        "-f", "wav", "pipe:1",
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          creationflags=ffmpeg.CREATE_NO_WINDOW)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"Ekstrakcja audio nie powiodła się:\n{proc.stderr[-2000:].decode('utf-8', errors='replace')}")
+    samples, sr = sf.read(io.BytesIO(proc.stdout))
     if samples.ndim > 1:
         samples = samples.mean(axis=1)
     return samples, int(sr)
