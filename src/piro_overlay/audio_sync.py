@@ -118,6 +118,64 @@ def detect_start(video_path: str | Path,
     return onsets[0] if onsets else None
 
 
+def _bandpass_fft(samples: np.ndarray, sr: int, f_low: float, f_high: float) -> np.ndarray:
+    """Zero-phase filtr pasmowy przez FFT. Nie wymaga scipy."""
+    n = samples.size
+    spec = np.fft.rfft(samples.astype(np.float64))
+    freqs = np.fft.rfftfreq(n, 1.0 / sr)
+    mask = (freqs >= f_low) & (freqs <= f_high)
+    spec[~mask] = 0.0
+    return np.fft.irfft(spec, n)
+
+
+def detect_dji_start(video_path: str | "Path",
+                     start: float | None = None,
+                     end: float | None = None) -> float | None:
+    """Detekcja bzyczka startu zoptymalizowana pod nagrania DJI.
+
+    Stosuje filtr pasmowy 2000–4500 Hz (pasmo typowego buzzera shot-timera),
+    co odrzuca strzały (szeroki spektrum, dużo basu) i szumy tła. Szuka
+    pierwszego onset'u w przefiltrowanym sygnale.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        wav = ffmpeg.extract_audio(video_path, Path(tmp) / "audio.wav")
+        samples, sr = sf.read(str(wav))
+
+    if samples.ndim > 1:
+        samples = samples.mean(axis=1)
+    if samples.size == 0:
+        return None
+
+    lo = int(max(start, 0.0) * sr) if start is not None else 0
+    hi = int(end * sr) if end is not None else samples.size
+    lo = max(0, min(lo, samples.size))
+    hi = max(lo, min(hi, samples.size))
+    offset_s = lo / sr
+    samples = samples[lo:hi]
+    if samples.size == 0:
+        return None
+
+    samples = _bandpass_fft(samples, sr, 2000, 4500)
+
+    # Dłuższe okno (50 ms) — bzyczek to sygnał ciągły, nie impuls.
+    win = max(1, int(sr * 0.05))
+    n_windows = samples.size // win
+    if n_windows == 0:
+        return None
+
+    trimmed = samples[:n_windows * win].reshape(n_windows, win)
+    energy = np.sqrt((trimmed.astype(np.float64) ** 2).mean(axis=1))
+
+    median = np.median(energy)
+    mad = np.median(np.abs(energy - median)) + 1e-9
+    threshold = median + 5.0 * mad
+
+    for i in range(1, n_windows):
+        if energy[i] >= threshold and energy[i] > energy[i - 1]:
+            return round(offset_s + i * win / sr, 3)
+    return None
+
+
 def resolve_t0(anchor_time: float, mode: AnchorMode, first_shot_time: float) -> float:
     """Przelicza wykryty/wskazany punkt kotwicy na T0 (czas sygnału startu).
 

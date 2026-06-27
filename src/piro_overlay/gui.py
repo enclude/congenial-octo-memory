@@ -850,6 +850,13 @@ class MainWindow(QMainWindow):
         self.anchor_combo.addItem("Pierwszy strzał", AnchorMode.FIRST_SHOT.value)
         form.addRow("Typ kotwicy", self.anchor_combo)
 
+        self.dji_chk = QCheckBox("Filtr DJI (bzyczek 2–4.5 kHz)")
+        self.dji_chk.setToolTip(
+            "Przed detekcją stosuje filtr pasmowy 2000–4500 Hz.\n"
+            "Pomaga odróżnić bzyczek shot-timera od strzałów i szumów tła\n"
+            "na nagraniach DJI Osmo.")
+        form.addRow(self.dji_chk)
+
         detect = QPushButton("Wykryj kotwicę (w zaznaczonym fragmencie)")
         detect.clicked.connect(self._detect)
         nextc = QPushButton("Następna proponowana kotwica")
@@ -1151,9 +1158,13 @@ class MainWindow(QMainWindow):
         if not self.video_path:
             QMessageBox.warning(self, "Brak wideo", "Najpierw wybierz plik wideo.")
             return
-        detected = audio_sync.detect_start(
-            self.lrf_path or self.video_path, start=self.trim_start_spin.value(),
-            end=self.trim_end_spin.value() or None)
+        src = self.lrf_path or self.video_path
+        s = self.trim_start_spin.value()
+        e = self.trim_end_spin.value() or None
+        if self.dji_chk.isChecked():
+            detected = audio_sync.detect_dji_start(src, start=s, end=e)
+        else:
+            detected = audio_sync.detect_start(src, start=s, end=e)
         if detected is None:
             QMessageBox.warning(self, "Detekcja", "Nie wykryto sygnału — ustaw ręcznie.")
             return
