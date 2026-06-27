@@ -434,12 +434,14 @@ class WaveformWidget(QWidget):
     """Wizualizacja ścieżki audio z interakcją:
 
     - lewy klik (poza uchwytami) → ustawia kotwicę T0,
+    - Ctrl + lewy klik → podgląd klatki w danym czasie (bez zmiany T0),
     - przeciągnięcie uchwytu (zielony=start, czerwony=koniec) → przycięcie fragmentu,
     - cienkie znaczniki = wykryte onsety (pomoc w trafieniu sygnału/strzału).
     """
 
     anchorChanged = Signal(float)
     trimChanged = Signal(float, float)
+    previewAt = Signal(float)   # Ctrl+klik → podgląd w czasie t
 
     def __init__(self):
         super().__init__()
@@ -449,6 +451,7 @@ class WaveformWidget(QWidget):
         self.onsets: list[float] = []
         self.anchor: float | None = None
         self.anchor_label = "T0"      # "T0" (beep) lub "T1" (pierwszy strzał) wg trybu
+        self.preview_t: float | None = None   # czas aktualnie podglądu (Ctrl+klik)
         self.trim_start = 0.0
         self.trim_end = 0.0
         # okno widoku (zoom): widoczny zakres czasu [view_start, view_end]
@@ -457,8 +460,9 @@ class WaveformWidget(QWidget):
         self._drag: str | None = None  # "start" | "end" | None
         self._pan = None               # (x0, vs, ve) podczas przesuwania
         self.setCursor(Qt.CrossCursor)
-        self.setToolTip("Klik = ustaw kotwicę (snap do strzału) · kółko = zoom · "
-                        "prawy przycisk = przesuń · dwuklik = reset zoomu")
+        self.setToolTip("Klik = ustaw kotwicę (snap do strzału) · "
+                        "Ctrl+klik = podgląd klatki w danym czasie · "
+                        "kółko = zoom · prawy przycisk = przesuń · dwuklik = reset zoomu")
 
     def set_data(self, env, duration, onsets):
         self.env = env
@@ -467,6 +471,7 @@ class WaveformWidget(QWidget):
         self.trim_start = 0.0
         self.trim_end = duration
         self.anchor = None
+        self.preview_t = None
         self.view_start = 0.0
         self.view_end = duration
         self.update()
@@ -545,6 +550,12 @@ class WaveformWidget(QWidget):
             xa = int(self._t2x(self.anchor))
             p.drawLine(xa, 0, xa, plot_h)
 
+        # kursor podglądu (Ctrl+klik)
+        if self.preview_t is not None and self._in_view(self.preview_t):
+            p.setPen(QPen(QColor(255, 140, 0), 2, Qt.DashLine))
+            xp = int(self._t2x(self.preview_t))
+            p.drawLine(xp, 0, xp, plot_h)
+
         self._paint_markers(p, w, plot_h)
         self._paint_axis(p, w, h, plot_h)
 
@@ -586,6 +597,11 @@ class WaveformWidget(QWidget):
         if self.anchor is not None and self._in_view(self.anchor):
             self._tag(p, int(self._t2x(self.anchor)),
                       f"{self.anchor_label} {_fmt_axis_time(self.anchor)}", cyan, "center")
+
+        orange = QColor(255, 140, 0)
+        if self.preview_t is not None and self._in_view(self.preview_t):
+            self._tag(p, int(self._t2x(self.preview_t)),
+                      f"▶ {_fmt_axis_time(self.preview_t)}", orange, "center")
 
         # dolny rząd (nad osią): zakres przycięcia, zgodnie z kolorami uchwytów
         ty = plot_h - 16
@@ -657,12 +673,19 @@ class WaveformWidget(QWidget):
             self.setCursor(Qt.ClosedHandCursor)
             return
         x = e.position().x()
+        t = self._x2t(x)
+        # Ctrl+klik → podgląd w czasie t (bez zmiany kotwicy T0)
+        if e.modifiers() & Qt.ControlModifier:
+            self.preview_t = t
+            self.update()
+            self.previewAt.emit(t)
+            return
         if abs(x - self._t2x(self.trim_start)) <= _HANDLE_PX:
             self._drag = "start"
         elif abs(x - self._t2x(self.trim_end)) <= _HANDLE_PX:
             self._drag = "end"
         else:
-            self.set_anchor(self._snap_to_onset(self._x2t(x)))
+            self.set_anchor(self._snap_to_onset(t))
             self.anchorChanged.emit(self.anchor)
 
     def mouseMoveEvent(self, e):
@@ -750,6 +773,11 @@ class MainWindow(QMainWindow):
         self._preview_timer = QTimer()
         self._preview_timer.setSingleShot(True)
         self._preview_timer.timeout.connect(self._do_request_frame)
+        # Scrubber — timer debouncujący ekstrakcję klatki dla Ctrl+klik
+        self._scrubber_t: float | None = None
+        self._scrubber_timer = QTimer()
+        self._scrubber_timer.setSingleShot(True)
+        self._scrubber_timer.timeout.connect(self._do_scrubber_preview)
         self.setWindowTitle(f"Piro Overlay v{__version__}")
         self.setWindowIcon(QIcon(resources.icon_path()))
         self.setAcceptDrops(True)  # drag&drop pliku
@@ -797,6 +825,7 @@ class MainWindow(QMainWindow):
         self.waveform = WaveformWidget()
         self.waveform.anchorChanged.connect(self._on_wave_anchor)
         self.waveform.trimChanged.connect(self._on_wave_trim)
+        self.waveform.previewAt.connect(self._on_preview_at)
         right.addWidget(self.waveform, 1)
         root.addLayout(right, 3)
 
@@ -1249,6 +1278,51 @@ class MainWindow(QMainWindow):
 
     def _on_trim_spin(self):
         self.waveform.set_trim(self.trim_start_spin.value(), self.trim_end_spin.value())
+
+    def _on_preview_at(self, t: float) -> None:
+        """Ctrl+klik na waveformie → pokaż klatkę z nakładką odpowiednią dla czasu t."""
+        if not self.video_path:
+            return
+        self._scrubber_t = t
+        self._scrubber_timer.start(200)
+
+    def _do_scrubber_preview(self) -> None:
+        t = getattr(self, "_scrubber_t", None)
+        if t is None or not self.video_path:
+            return
+        if self._frame_worker and self._frame_worker.isRunning():
+            self._scrubber_timer.start(150)
+            return
+        self._frame_worker = FrameExtractWorker(self.video_path, t)
+        self._frame_worker.done.connect(self._on_scrubber_frame_ready)
+        self._frame_worker.start()
+
+    def _on_scrubber_frame_ready(self, frame: Image.Image, t: float) -> None:
+        """Klatka scrubber gotowa → nałóż panel aktywny dla czasu t."""
+        try:
+            session = self.session or self._safe_session()
+            if session is None or not session.shots:
+                self._show_image(frame)
+                return
+            style = self.current_style()
+            mode = self._anchor_mode()
+            t0 = audio_sync.resolve_t0(self.t0_spin.value(), mode, session.shots[0].czas)
+            duration = self.waveform.duration or (t + 10)
+            events = render.build_events(session, t0, style, mode, frame.size, duration)
+            composite = frame.copy()
+            for ev in events:
+                if ev.start <= t < ev.end:
+                    panel = ev.image
+                    if ev.centered:
+                        x = (frame.size[0] - panel.size[0]) // 2
+                        y = (frame.size[1] - panel.size[1]) // 2
+                    else:
+                        x, y = overlay.panel_origin(panel.size, frame.size, style)
+                    composite.alpha_composite(panel, (x, y))
+                    break
+            self._show_image(composite)
+        except Exception:  # noqa: BLE001
+            self._show_image(frame)
 
     def _request_frame(self):
         """Kotwica się zmieniła → wyciągnij nową klatkę w tle (debounce 250 ms)."""
