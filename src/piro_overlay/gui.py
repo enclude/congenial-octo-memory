@@ -29,8 +29,8 @@ from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter, QPe
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QColorDialog, QComboBox, QCheckBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSpinBox,
-    QPlainTextEdit, QVBoxLayout, QWidget,
+    QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
+    QSpinBox, QPlainTextEdit, QVBoxLayout, QWidget,
 )
 
 from PIL import Image
@@ -903,9 +903,11 @@ class MainWindow(QMainWindow):
         self.anchor_combo.addItem("Pierwszy strzał", AnchorMode.FIRST_SHOT.value)
         form.addRow("Typ kotwicy", self.anchor_combo)
 
-        detect = QPushButton("Wykryj kotwicę (w zaznaczonym fragmencie)")
+        detect = QPushButton("Wykryj kotwicę")
+        detect.setToolTip("Szuka pierwszego wyraźnego onsetu w zaznaczonym fragmencie.")
         detect.clicked.connect(self._detect)
-        nextc = QPushButton("Następna proponowana kotwica")
+        nextc = QPushButton("Następny kandydat")
+        nextc.setToolTip("Przeskakuje do kolejnego wykrytego onsetu.")
         nextc.clicked.connect(self._next_candidate)
         start_sig = QPushButton("Wykryj sygnał startu")
         start_sig.setToolTip(
@@ -913,6 +915,10 @@ class MainWindow(QMainWindow):
             "najgłośniejszego bzyczka. Ustawia typ kotwicy na „Sygnał startu”\n"
             "i przelicza T0. Działa dobrze na nagraniach DJI Osmo.")
         start_sig.clicked.connect(self._detect_start_signal)
+        # Przyciski nie wymuszają minimalnej szerokości tekstu — mogą się zwężać,
+        # by lewy panel nie rozpychał się przez długie etykiety.
+        for b in (detect, nextc, start_sig):
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         drow = QHBoxLayout()
         drow.addWidget(detect); drow.addWidget(nextc); drow.addWidget(start_sig)
         form.addRow(_wrap(drow))
@@ -930,7 +936,10 @@ class MainWindow(QMainWindow):
 
         self.tail_spin = _dspin(0.0, 60.0, 0.5, " s", 5.0)
         form.addRow("Margines po ostatnim strzale", self.tail_spin)
-        autotrim_btn = QPushButton("Auto-przycięcie (ustaw zakres: 5 s przed startem → ostatni strzał + margines)")
+        autotrim_btn = QPushButton("Auto-przycięcie")
+        autotrim_btn.setToolTip(
+            "Ustaw zakres przycięcia: 5 s przed startem → ostatni strzał + margines.")
+        autotrim_btn.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         autotrim_btn.clicked.connect(self._apply_auto_trim)
         form.addRow(autotrim_btn)
         return box
