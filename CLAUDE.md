@@ -3,6 +3,10 @@
 Kontekst dla przyszłych sesji Claude Code. Aplikacja nakłada na wideo ze strzelania
 informacje o strzałach (split/czas/„x z yy"/podsumowanie) i renderuje gotowy film.
 
+> **OBOWIĄZEK:** Przed każdą sesją roboczą przeczytaj także `AGENTS.md` — zawiera zasady
+> pracy z kodem, styl, przepływ pracy i szczegółowe reguły wersjonowania obowiązujące
+> wszystkich agentów AI (Claude Code, Codex, Copilot, Cursor itp.).
+
 ## Architektura — kluczowa zasada
 
 **Logika domenowa jest oddzielona od UI.** Moduły poniżej NIE importują PySide6:
