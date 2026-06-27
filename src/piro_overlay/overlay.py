@@ -51,8 +51,24 @@ def _text_size(font: ImageFont.FreeTypeFont, text: str) -> tuple[int, int]:
     return box[2] - box[0], box[3] - box[1]
 
 
-def _render_panel(lines: list[_Line], style: OverlayStyle, base: int) -> Image.Image:
-    """Składa panel z listy linii: tło z zaokrąglonymi rogami + obramowanie + tekst."""
+def _panel_size(lines: list[_Line], style: OverlayStyle, base: int) -> tuple[int, int]:
+    """Rozmiar panelu (px) dla danych linii — bez rysowania (do liczenia max rozmiaru)."""
+    pad = int(base * _PAD)
+    gap = int(base * _LINE_GAP)
+    sizes = [_text_size(ln.font, ln.text) for ln in lines]
+    content_w = max((w for w, _ in sizes), default=0)
+    content_h = sum(h for _, h in sizes) + gap * (len(lines) - 1 if lines else 0)
+    return content_w + 2 * pad, content_h + 2 * pad
+
+
+def _render_panel(lines: list[_Line], style: OverlayStyle, base: int,
+                  fixed_size: tuple[int, int] | None = None) -> Image.Image:
+    """Składa panel z listy linii: tło z zaokrąglonymi rogami + obramowanie + tekst.
+
+    `fixed_size` — wymuszony minimalny rozmiar panelu (px). Gdy podany, tło i
+    obramowanie mają stały rozmiar (max, jaki panel kiedykolwiek przyjmie), więc
+    nie „pulsują" przy zmianie długości tekstu (np. „Strzał 6 z 18" vs „18 z 18").
+    """
     pad = int(base * _PAD)
     gap = int(base * _LINE_GAP)
 
@@ -62,6 +78,9 @@ def _render_panel(lines: list[_Line], style: OverlayStyle, base: int) -> Image.I
 
     panel_w = content_w + 2 * pad
     panel_h = content_h + 2 * pad
+    if fixed_size is not None:
+        panel_w = max(panel_w, fixed_size[0])
+        panel_h = max(panel_h, fixed_size[1])
 
     img = Image.new("RGBA", (panel_w, panel_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -82,12 +101,10 @@ def _render_panel(lines: list[_Line], style: OverlayStyle, base: int) -> Image.I
     return img
 
 
-def render_shot_panel(session: Session, idx: int, style: OverlayStyle,
-                      video_size: tuple[int, int]) -> Image.Image:
-    """Panel dla strzału o indeksie `idx` (0-based) z listy `session.shots`."""
+def _shot_lines(session: Session, idx: int, style: OverlayStyle, base: int) -> list[_Line]:
+    """Linie panelu strzału (panel z informacjami o strzale)."""
     tr = get_translator(style.lang)
     shot = session.shots[idx]
-    base = _base_font_size(video_size[1], style)
 
     f_head = _font(int(base * 0.7))
     f_big = _font(int(base * 1.4), bold=True)
@@ -103,8 +120,31 @@ def render_shot_panel(session: Session, idx: int, style: OverlayStyle,
     lines.append(_Line(counter, f_big, style.accent_color))
     lines.append(_Line(_fmt_time(shot.czas), f_body, style.text_color))
     lines.append(_Line(f"{tr('split')}: {_fmt_split(shot.split)}", f_body, style.text_color))
+    return lines
 
-    return _render_panel(lines, style, base)
+
+def render_shot_panel(session: Session, idx: int, style: OverlayStyle,
+                      video_size: tuple[int, int],
+                      fixed_size: tuple[int, int] | None = None) -> Image.Image:
+    """Panel dla strzału o indeksie `idx` (0-based) z listy `session.shots`.
+
+    `fixed_size` — wymuszony rozmiar tła/obramowania (zwykle `shot_panel_max_size`),
+    by panel nie zmieniał szerokości/wysokości między kolejnymi strzałami."""
+    base = _base_font_size(video_size[1], style)
+    return _render_panel(_shot_lines(session, idx, style, base), style, base, fixed_size)
+
+
+def shot_panel_max_size(session: Session, style: OverlayStyle,
+                        video_size: tuple[int, int]) -> tuple[int, int]:
+    """Maksymalny rozmiar panelu strzału po WSZYSTKICH strzałach sesji (px).
+
+    Render.py renderuje każdy panel strzału z tym rozmiarem → stałe tło/obramowanie."""
+    base = _base_font_size(video_size[1], style)
+    w = h = 0
+    for idx in range(len(session.shots)):
+        pw, ph = _panel_size(_shot_lines(session, idx, style, base), style, base)
+        w, h = max(w, pw), max(h, ph)
+    return w, h
 
 
 def render_summary_panel(session: Session, style: OverlayStyle,
@@ -140,11 +180,22 @@ def clock_text(elapsed: float) -> str:
 
 
 def render_clock_panel(style: OverlayStyle, video_size: tuple[int, int],
-                       elapsed: float) -> Image.Image:
-    """Panel płynącego zegara „T+x.xs" (do podglądu; w renderze używamy drawtext)."""
+                       elapsed: float,
+                       fixed_size: tuple[int, int] | None = None) -> Image.Image:
+    """Panel płynącego zegara „T+x.xs". `fixed_size` (zwykle `clock_panel_max_size`)
+    daje stałe tło/obramowanie, by dolna/prawa krawędź nie skakały przy zmianie cyfr."""
     base = _base_font_size(video_size[1], style)
     f_clock = _font(int(base * 1.2), bold=True)
-    return _render_panel([_Line(clock_text(elapsed), f_clock, style.accent_color)], style, base)
+    return _render_panel([_Line(clock_text(elapsed), f_clock, style.accent_color)],
+                         style, base, fixed_size)
+
+
+def clock_panel_max_size(style: OverlayStyle, video_size: tuple[int, int],
+                         max_elapsed: float) -> tuple[int, int]:
+    """Maksymalny rozmiar panelu zegara (przy największym `max_elapsed` = najwięcej cyfr)."""
+    base = _base_font_size(video_size[1], style)
+    f_clock = _font(int(base * 1.2), bold=True)
+    return _panel_size([_Line(clock_text(max_elapsed), f_clock, style.accent_color)], style, base)
 
 
 def render_start_banner(style: OverlayStyle, video_size: tuple[int, int]) -> Image.Image:

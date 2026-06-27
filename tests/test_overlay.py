@@ -98,3 +98,26 @@ def test_style_scale_changes_size(session):
     small = overlay.render_shot_panel(session, 1, OverlayStyle(scale=1.0), VIDEO_SIZE)
     big = overlay.render_shot_panel(session, 1, OverlayStyle(scale=2.0), VIDEO_SIZE)
     assert big.size[0] > small.size[0] and big.size[1] > small.size[1]
+
+
+def test_shot_panel_fixed_size_uniform():
+    # „Strzał 1 z 18" .. „18 z 18" + różne czasy → różna szerokość; fixed_size ujednolica.
+    from piro_overlay.models import Shot
+    shots = [Shot(i, round(0.7 * i, 2), (None if i == 1 else 0.7)) for i in range(1, 19)]
+    sess = Session(shots=shots, nazwa_toru="Tor 1", uczestnik="Jan Kowalski",
+                   liczba_strzalow=18)
+    style = OverlayStyle()
+    raw = {overlay.render_shot_panel(sess, i, style, VIDEO_SIZE).size for i in range(18)}
+    assert len(raw) > 1                       # bez fixed_size rozmiary się różnią
+    fixed = overlay.shot_panel_max_size(sess, style, VIDEO_SIZE)
+    fx = {overlay.render_shot_panel(sess, i, style, VIDEO_SIZE, fixed).size for i in range(18)}
+    assert fx == {fixed}                      # z fixed_size wszystkie identyczne (= max)
+
+
+def test_clock_panel_fixed_size_uniform():
+    style = OverlayStyle(show_running_clock=True)
+    # max przy 99.9 s (najwięcej cyfr); wszystkie elapsed mieszczą się w stałym rozmiarze.
+    fixed = overlay.clock_panel_max_size(style, VIDEO_SIZE, 99.9)
+    sizes = {overlay.render_clock_panel(style, VIDEO_SIZE, e, fixed).size
+             for e in (0.0, 9.9, 10.0, 99.9)}
+    assert sizes == {fixed}

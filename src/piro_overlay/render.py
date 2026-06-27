@@ -59,7 +59,9 @@ def build_events(session: Session, t0: float, style: OverlayStyle, mode: AnchorM
                 start=banner_start, end=banner_end, centered=True,
             ))
 
-    # Panele strzałów.
+    # Panele strzałów — wszystkie o STAŁYM rozmiarze (max po wszystkich strzałach),
+    # by tło/obramowanie nie zmieniało szerokości między „Strzał 6 z 18" a „18 z 18".
+    shot_fixed = overlay.shot_panel_max_size(session, style, video_size)
     n = len(shots)
     for i in range(n):
         start = t0 + shots[i].czas
@@ -68,7 +70,7 @@ def build_events(session: Session, t0: float, style: OverlayStyle, mode: AnchorM
         else:
             end = min(start + _LAST_SHOT_HOLD, duration)
         events.append(_Event(
-            overlay.render_shot_panel(session, i, style, video_size),
+            overlay.render_shot_panel(session, i, style, video_size, shot_fixed),
             start=start, end=end,
         ))
 
@@ -202,12 +204,6 @@ class _ClockSeq:
     nframes: int
 
 
-def _clock_align(style: OverlayStyle) -> str:
-    """Poziome wyrównanie zegara (left/center/right) wg rogu kotwicy."""
-    pos = style.position if style.clock_position == "auto" else style.clock_position
-    return pos.partition("-")[2]
-
-
 def _write_clock_sequence(tmp_dir: Path, style: OverlayStyle,
                           video_size: tuple[int, int], events: list[_Event],
                           t0: float, src_start: float, src_end: float,
@@ -250,12 +246,12 @@ def _write_clock_sequence(tmp_dir: Path, style: OverlayStyle,
         k += 1
         fps = base_fps / k
         nframes = int(round(clock_end_out * fps)) + 1
-    # Płótno = najszerszy panel (maksymalny elapsed = ostatni strzał).
-    sample = overlay.render_clock_panel(style, video_size, max(0.0, freeze_elapsed))
-    canvas_w, canvas_h = sample.size
+    # Stały rozmiar panelu = max (przy największym elapsed = ostatni strzał).
+    # Każda klatka ma identyczny rozmiar tła/obramowania → krawędzie (w tym dolna)
+    # nie skaczą przy zmianie liczby cyfr, a pozycja nałożenia jest stała.
+    canvas_w, canvas_h = overlay.clock_panel_max_size(style, video_size, max(0.0, freeze_elapsed))
     gap = _clock_gap(video_size, style)
     xy = _clock_xy(style, video_size, (canvas_w, canvas_h), _max_panel_h(events), gap)
-    align = _clock_align(style)
 
     clk_dir = tmp_dir / "clock"
     clk_dir.mkdir(parents=True, exist_ok=True)
@@ -267,15 +263,10 @@ def _write_clock_sequence(tmp_dir: Path, style: OverlayStyle,
             blank.save(path)
             continue
         elapsed = min(elapsed, freeze_elapsed)   # zamrożenie na ostatnim strzale
-        panel = overlay.render_clock_panel(style, video_size, elapsed)
+        # fixed_size = rozmiar płótna → panel zawsze tej samej wielkości, klejony w (0,0).
+        panel = overlay.render_clock_panel(style, video_size, elapsed, (canvas_w, canvas_h))
         canvas = blank.copy()
-        if align == "left":
-            px = 0
-        elif align == "right":
-            px = canvas_w - panel.size[0]
-        else:
-            px = (canvas_w - panel.size[0]) // 2
-        canvas.alpha_composite(panel, (max(0, px), 0))
+        canvas.alpha_composite(panel, (0, 0))
         canvas.save(path)
     return _ClockSeq(str(clk_dir / "clk_%05d.png"), fps, xy, nframes)
 

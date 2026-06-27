@@ -1760,7 +1760,9 @@ class MainWindow(QMainWindow):
                 x = (frame.size[0] - panel.size[0]) // 2
                 y = (frame.size[1] - panel.size[1]) // 2
             else:
-                panel = overlay.render_shot_panel(session, 0, pstyle, frame.size)
+                # Stały rozmiar panelu (jak w renderze) — podgląd nie „pulsuje".
+                shot_fixed = overlay.shot_panel_max_size(session, pstyle, frame.size)
+                panel = overlay.render_shot_panel(session, 0, pstyle, frame.size, shot_fixed)
                 x, y = overlay.panel_origin(panel.size, frame.size, pstyle)
                 self._preview_rects["panel"] = (x, y, panel.size[0], panel.size[1])
             frame.alpha_composite(panel, (x, y))
@@ -1793,11 +1795,15 @@ class MainWindow(QMainWindow):
         )
 
     def _composite_clock(self, frame, style, session, elapsed: float) -> None:
-        """Nakłada panel płynącego zegara na klatkę podglądu — pozycja jak w renderze
-        (auto = nad panelem strzału, albo niezależny róg + offset zegara)."""
-        clock = overlay.render_clock_panel(style, frame.size, elapsed)
+        """Nakłada panel płynącego zegara na klatkę podglądu — pozycja i STAŁY rozmiar
+        jak w renderze (auto = nad panelem strzału, albo niezależny róg + offset zegara)."""
+        # Stały rozmiar = max przy ostatnim strzale (najwięcej cyfr) — bez pulsowania.
+        max_elapsed = session.shots[-1].czas if session.shots else elapsed
+        clock_fixed = overlay.clock_panel_max_size(style, frame.size, max_elapsed)
+        clock = overlay.render_clock_panel(style, frame.size, elapsed, clock_fixed)
         if style.clock_position == "auto":
-            ref_h = overlay.render_shot_panel(session, 0, style, frame.size).size[1]
+            shot_fixed = overlay.shot_panel_max_size(session, style, frame.size)
+            ref_h = shot_fixed[1]
             gap = render._clock_gap(frame.size, style)
             xy = render._clock_xy(style, frame.size, clock.size, ref_h, gap)
         else:

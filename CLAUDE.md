@@ -28,6 +28,13 @@ przyszły wariant WWW doda jedynie `web/` (backend + frontend) i zaimportuje ist
   `resolve_t0(anchor, mode, first_shot_time)` przelicza kotwicę na T0.
 - `overlay.py` — render paneli PNG (Pillow): `render_shot_panel`, `render_summary_panel`,
   `render_start_banner`, `panel_origin`. Deterministyczny (umożliwia snapshoty).
+  **Stały rozmiar panelu (v0.18.0):** `_render_panel(..., fixed_size)` wymusza min. rozmiar
+  tła/obramowania; `shot_panel_max_size(session, style, vs)` i `clock_panel_max_size(style,
+  vs, max_elapsed)` liczą max przez `_panel_size` (bez rysowania). Dzięki temu **panel strzału**
+  (= „panel z informacjami o strzale", `render_shot_panel`/`_shot_lines`) ma stałą szerokość
+  dla wszystkich strzałów (np. „Strzał 6 z 18" i „18 z 18" — to samo tło), a panel zegara nie
+  pulsuje przy 9.9→10.0. WAŻNE: snapshoty wołają render_*_panel BEZ `fixed_size` (None) →
+  rozmiary bez zmian; `fixed_size` używa tylko render.py/gui (podgląd WYSIWYG).
 - `render.py` — `build_events` (rozłączne okna czasowe) + `render_video` (filtergraph FFmpeg
   `overlay=...:enable='between(t,a,b)'`, jeden przebieg, audio zachowane, raport postępu).
 - `ffmpeg.py` — `probe` (ffprobe albo parse `ffmpeg -i`), `extract_audio`, `extract_frame`.
@@ -143,9 +150,11 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   czas od T0), potem ZAMARZA — sekwencja kończy się na ostatnim strzale (krótsza!), a
   `overlay=…:eof_action=repeat` (NIE `pass` — pass = zegar znika!) powtarza ostatnią
   (zamrożoną) klatkę do końca. drawtext: analogicznie `elapsed = min(t-c, last_shot_time)`.
-  Klatki przed STARTEM przezroczyste; każdy panel wklejany na płótno o stałym rozmiarze
-  (najszerszy panel = elapsed na ostatnim strzale) wyrównane wg rogu kotwicy (`_clock_align`),
-  by przy 9.9→10.0 krawędź nie drgała → stałe `xy`. Limit `_CLOCK_SEQ_MAX_FRAMES=1800`. W GIF
+  Klatki przed STARTEM przezroczyste; każdy panel renderowany z `fixed_size =
+  clock_panel_max_size(...)` (rozmiar przy elapsed ostatniego strzału = najwięcej cyfr),
+  więc WSZYSTKIE klatki są identycznego rozmiaru i klejone w (0,0) → krawędzie (w tym DOLNA)
+  nie skaczą przy 9.9→10.0, `xy` stałe (v0.18.0; wcześniej panel zmiennej wielkości klejony
+  top-align na płótnie → dolna krawędź skakała). Limit `_CLOCK_SEQ_MAX_FRAMES=1800`. W GIF
   paleta to kolejne wejście: `pal_idx = inputs.count("-i")` (NIE `used+1` — sekwencja zegara
   też zajmuje wejście). Pozycja zegara `_clock_xy`/`_max_panel_h` wg rogu kotwicy. Podgląd
   rysuje zegar przez `overlay.render_clock_panel`. WAŻNE (drawtext): dwukropki w `%{eif\:…\:d}`
