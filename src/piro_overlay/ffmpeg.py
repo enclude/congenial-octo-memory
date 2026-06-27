@@ -95,6 +95,19 @@ def has_nvenc() -> bool:
     return "h264_nvenc" in available_encoders()
 
 
+@functools.lru_cache(maxsize=1)
+def available_filters() -> frozenset[str]:
+    """Zbiór nazw filtrów dostępnych w binarce ffmpeg (cache)."""
+    res = _run([ffmpeg_exe(), "-hide_banner", "-filters"])
+    names = re.findall(r"^\s*[A-Z.]{3}\s+(\S+)", res.stdout, re.MULTILINE)
+    return frozenset(names)
+
+
+def has_filter(name: str) -> bool:
+    """Czy binarka ffmpeg ma dany filtr (np. 'drawtext' wymaga libfreetype)."""
+    return name in available_filters()
+
+
 def probe(video_path: str | Path) -> VideoInfo:
     """Zwraca podstawowe metadane wideo. Najpierw próbuje ffprobe, potem ffmpeg."""
     video_path = str(video_path)

@@ -112,6 +112,9 @@ class OverlayStyle:
     text_color: tuple[int, int, int, int] = (255, 255, 255, 255)
     accent_color: tuple[int, int, int, int] = (255, 196, 0, 255)
 
+    # Płynący zegar od T0 (nad nakładką ze strzałami, widoczny od STARTU)
+    show_running_clock: bool = False
+
     # Plansza START
     start_banner_duration: float = 1.0
     start_banner_scale: float = 1.0
@@ -144,6 +147,7 @@ class OverlayStyle:
             "border_width": self.border_width,
             "text_color": c(self.text_color),
             "accent_color": c(self.accent_color),
+            "show_running_clock": self.show_running_clock,
             "start_banner_duration": self.start_banner_duration,
             "start_banner_scale": self.start_banner_scale,
             "start_banner_bg_color": c(self.start_banner_bg_color),
@@ -178,6 +182,7 @@ class OverlayStyle:
             border_width=int(d.get("border_width", 3)),
             text_color=color("text_color", (255, 255, 255, 255)),
             accent_color=color("accent_color", (255, 196, 0, 255)),
+            show_running_clock=bool(d.get("show_running_clock", False)),
             start_banner_duration=float(d.get("start_banner_duration", 1.0)),
             start_banner_scale=float(d.get("start_banner_scale", 1.0)),
             start_banner_bg_color=color("start_banner_bg_color", (0, 0, 0, 200)),

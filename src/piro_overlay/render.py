@@ -29,6 +29,7 @@ class _Event:
     start: float
     end: float
     centered: bool = False
+    xy: tuple[int, int] | None = None  # wymusza pozycję (np. zegar nad panelem)
 
 
 def build_events(session: Session, t0: float, style: OverlayStyle, mode: AnchorMode,
@@ -78,11 +79,157 @@ def build_events(session: Session, t0: float, style: OverlayStyle, mode: AnchorM
 
 
 def _overlay_xy(ev: _Event, style: OverlayStyle, video_size: tuple[int, int]) -> tuple[int, int]:
+    if ev.xy is not None:
+        return ev.xy
     if ev.centered:
         vw, vh = video_size
         pw, ph = ev.image.size
         return (vw - pw) // 2, (vh - ph) // 2
     return overlay.panel_origin(ev.image.size, video_size, style)
+
+
+def _ff_color(rgba: tuple[int, int, int, int]) -> str:
+    """Krotka RGBA (0–255) → kolor drawtext FFmpeg „0xRRGGBB@alpha"."""
+    r, g, b, a = rgba
+    return f"0x{r:02X}{g:02X}{b:02X}@{a / 255:.3f}"
+
+
+def _max_panel_h(events: list[_Event]) -> int:
+    """Najwyższy panel strzału/podsumowania — nad nim umieszczamy zegar."""
+    hs = [ev.image.height for ev in events if not ev.centered and ev.xy is None]
+    return max(hs) if hs else 0
+
+
+def _clock_gap(video_size: tuple[int, int], style: OverlayStyle) -> int:
+    return max(2, int(overlay._base_font_size(video_size[1], style) * 0.3))
+
+
+def _clock_drawtext_seg(cur: str, style: OverlayStyle, video_size: tuple[int, int],
+                        events: list[_Event], t0: float, src_start: float) -> tuple[str, str]:
+    """Segment drawtext z płynącym zegarem od T0 (nad nakładką) + nowy label.
+
+    Zegar tyka per-klatkę (wyrażenie czasu), więc daje gładkie dziesiąte sekundy.
+    Wymaga filtra `drawtext` (libfreetype) — gdy go brak, używamy fallbacku PNG.
+    """
+    vh = video_size[1]
+    base = overlay._base_font_size(vh, style)
+    fontsize = max(12, int(base * 1.2))
+    gap = _clock_gap(video_size, style)
+    boxborderw = max(1, int(base * 0.25))
+    max_panel_h = _max_panel_h(events)
+    clock_out = t0 - src_start  # moment STARTU na osi wyjścia (po przycięciu)
+
+    vert, _, horiz = style.position.partition("-")
+    if horiz == "left":
+        x_expr = f"{style.offset_x}"
+    elif horiz == "right":
+        x_expr = f"w-text_w-{style.offset_x}"
+    else:
+        x_expr = "(w-text_w)/2"
+    if vert == "top":
+        y_expr = f"max(0,{style.offset_y}-text_h-{gap})"
+    else:  # bottom — zegar nad najwyższym panelem strzału
+        y_expr = f"max(0,h-{style.offset_y}-{max_panel_h}-text_h-{gap})"
+
+    font = str(overlay.font_path(bold=True)).replace("\\", "/")
+    c = f"{clock_out:.3f}"
+    # T+SS.s — część całkowita i dziesiąte sekundy (eif obsługuje tylko int).
+    # Dwukropki wewnątrz %{...} trzeba eskejpować (\:) — inaczej parser drawtext
+    # potraktuje je jak separator opcji filtra.
+    text = (f"T+%{{eif\\:trunc(t-{c})\\:d}}."
+            f"%{{eif\\:trunc(mod((t-{c})*10,10))\\:d}}s")
+    seg = (
+        f"[{cur}]drawtext=fontfile='{font}':text='{text}':"
+        f"x='{x_expr}':y='{y_expr}':fontsize={fontsize}:"
+        f"fontcolor={_ff_color(style.accent_color)}:"
+        f"box=1:boxcolor={_ff_color(style.bg_color)}:boxborderw={boxborderw}:"
+        f"enable='gte(t,{c})'[vclock]"
+    )
+    return seg, "vclock"
+
+
+_CLOCK_PNG_MAX = 300  # górny limit paneli PNG zegara (chroni filtergraph)
+
+
+def _clock_xy(style: OverlayStyle, video_size: tuple[int, int],
+              clock_size: tuple[int, int], max_panel_h: int, gap: int) -> tuple[int, int]:
+    """Pozycja panelu zegara — nad panelem strzału, zgodnie z rogiem kotwicy."""
+    x, y = overlay.panel_origin(clock_size, video_size, style)
+    if style.position.partition("-")[0] == "top":
+        y = y - clock_size[1] - gap
+    else:
+        y = y - max_panel_h - gap
+    return x, max(0, y)
+
+
+def _clock_png_events(style: OverlayStyle, video_size: tuple[int, int],
+                      events: list[_Event], t0: float, src_start: float,
+                      src_end: float) -> list[_Event]:
+    """Fallback zegara bez drawtext: panele PNG co sekundę (od STARTU do końca).
+
+    Mniej gładki niż drawtext (krok 1 s), ale działa na każdej binarce FFmpeg.
+    """
+    clock_start = max(t0, src_start)
+    if src_end <= clock_start:
+        return []
+    gap = _clock_gap(video_size, style)
+    max_panel_h = _max_panel_h(events)
+    span = src_end - clock_start
+    step = 1.0
+    if span / step > _CLOCK_PNG_MAX:
+        step = span / _CLOCK_PNG_MAX  # rzadziej, gdy okno bardzo długie
+    out: list[_Event] = []
+    e = max(0.0, clock_start - t0)  # sekund od T0 na pierwszym panelu
+    real = clock_start
+    while real < src_end:
+        img = overlay.render_clock_panel(style, video_size, e)
+        out.append(_Event(
+            img, start=real, end=min(real + step, src_end),
+            xy=_clock_xy(style, video_size, img.size, max_panel_h, gap),
+        ))
+        real += step
+        e += step
+    return out
+
+
+@functools.lru_cache(maxsize=1)
+def _drawtext_usable() -> bool:
+    """Czy drawtext realnie koduje klatkę z naszym wyrażeniem zegara.
+
+    Sama obecność filtra nie wystarcza — różne buildy/eskejpowanie bywają
+    kapryśne. Testujemy 1 klatkę z reprezentatywnym `drawtext`; gdy zawiedzie,
+    używamy pewnego fallbacku PNG. Wynik jest cache'owany.
+    """
+    if not ffmpeg.has_filter("drawtext"):
+        return False
+    font = str(overlay.font_path(bold=True)).replace("\\", "/")
+    text = r"T+%{eif\:trunc(t-0.000)\:d}.%{eif\:trunc(mod((t-0.000)*10,10))\:d}s"
+    seg = (f"drawtext=fontfile='{font}':text='{text}':x='10':y='10':"
+           f"fontsize=20:fontcolor=0xFFFFFF@1.000:box=1:boxcolor=0x000000@0.500:"
+           f"boxborderw=3:enable='gte(t,0.000)'")
+    cmd = [ffmpeg.ffmpeg_exe(), "-hide_banner", "-f", "lavfi",
+           "-i", "testsrc=duration=0.2:size=128x128:rate=5",
+           "-vf", seg, "-frames:v", "1", "-f", "null", "-"]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True,
+                             creationflags=ffmpeg.CREATE_NO_WINDOW)
+        return res.returncode == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def prepare_clock(style: OverlayStyle, video_size: tuple[int, int],
+                  events: list[_Event], t0: float, src_start: float,
+                  src_end: float) -> tuple[bool, list[_Event]]:
+    """Decyduje jak renderować zegar: (use_drawtext, dodatkowe_zdarzenia_PNG).
+
+    drawtext gdy filtr realnie działa (gładko); inaczej panele PNG co sekundę.
+    """
+    if not style.show_running_clock:
+        return False, []
+    if _drawtext_usable():
+        return True, []
+    return False, _clock_png_events(style, video_size, events, t0, src_start, src_end)
 
 
 AUTO_TRIM_LEAD_IN = 5.0  # ile sekund przed T0 (beep) zostawić w wyniku
@@ -213,6 +360,7 @@ def render_video(video_path: str | Path, session: Session, t0: float,
     events = build_events(session, t0, style, mode, video_size, src_end)
     if not events:
         raise ValueError("Brak zdarzeń do nałożenia (pusta oś czasu?).")
+    use_drawtext, clock_events = prepare_clock(style, video_size, events, t0, src_start, src_end)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
@@ -222,7 +370,7 @@ def render_video(video_path: str | Path, session: Session, t0: float,
         cur = "0:v"
 
         used = 0
-        for ev in events:
+        for ev in (*events, *clock_events):
             # Przytnij okno zdarzenia do fragmentu i przesuń na oś wyjścia (start 0).
             ev_start = max(ev.start, src_start)
             ev_end = min(ev.end, src_end)
@@ -247,6 +395,9 @@ def render_video(video_path: str | Path, session: Session, t0: float,
         if used == 0:
             raise ValueError("Wybrany fragment nie zawiera żadnego strzału.")
 
+        if use_drawtext:
+            seg, cur = _clock_drawtext_seg(cur, style, video_size, events, t0, src_start)
+            filter_parts.append(seg)
         filtergraph = ";".join(filter_parts)
 
         def build_cmd(enc: str) -> list[str]:
@@ -303,6 +454,7 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
     events = build_events(session, t0, style, mode, video_size, src_end)
     if not events:
         raise ValueError("Brak zdarzeń do nałożenia (pusta oś czasu?).")
+    use_drawtext, clock_events = prepare_clock(style, video_size, events, t0, src_start, src_end)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
@@ -312,7 +464,7 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
         cur = "0:v"
 
         used = 0
-        for ev in events:
+        for ev in (*events, *clock_events):
             ev_start = max(ev.start, src_start)
             ev_end = min(ev.end, src_end)
             if ev_end <= ev_start:
@@ -335,6 +487,10 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
 
         if used == 0:
             raise ValueError("Wybrany fragment nie zawiera żadnego strzału.")
+
+        if use_drawtext:
+            seg, cur = _clock_drawtext_seg(cur, style, video_size, events, t0, src_start)
+            filter_parts.append(seg)
 
         cmd = [
             ffmpeg.ffmpeg_exe(), "-y", *inputs,
@@ -376,6 +532,7 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
     events = build_events(session, t0, style, mode, video_size, src_end)
     if not events:
         raise ValueError("Brak zdarzeń do nałożenia (pusta oś czasu?).")
+    use_drawtext, clock_events = prepare_clock(style, video_size, events, t0, src_start, src_end)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
@@ -386,7 +543,7 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
         cur = "0:v"
 
         used = 0
-        for ev in events:
+        for ev in (*events, *clock_events):
             ev_start = max(ev.start, src_start)
             ev_end = min(ev.end, src_end)
             if ev_end <= ev_start:
@@ -409,6 +566,10 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
 
         if used == 0:
             raise ValueError("Wybrany fragment nie zawiera żadnego strzału.")
+
+        if use_drawtext:
+            seg, cur = _clock_drawtext_seg(cur, style, video_size, events, t0, src_start)
+            filter_parts.append(seg)
 
         scale_flt = f"fps={fps},scale={max_width}:-1:flags=lanczos"
         base_fg = ";".join(filter_parts)

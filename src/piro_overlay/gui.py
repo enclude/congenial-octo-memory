@@ -1024,6 +1024,13 @@ class MainWindow(QMainWindow):
         self.border_w.valueChanged.connect(self._update_preview)
         form.addRow("Grubość obramowania", self.border_w)
 
+        self.clock_chk = QCheckBox("Płynący czas od T0 (nad nakładką, od STARTU)")
+        self.clock_chk.setToolTip(
+            "Nad nakładką ze strzałami pokazuje płynący zegar „T+x.xs” liczony od\n"
+            "sygnału startu (T0). Widoczny już od STARTU, jeszcze przed pierwszym strzałem.")
+        self.clock_chk.stateChanged.connect(self._update_preview)
+        form.addRow(self.clock_chk)
+
         self.banner_spin = _dspin(0.0, 10.0, 0.5, " s", 1.0)
         form.addRow("Czas planszy START", self.banner_spin)
 
@@ -1070,6 +1077,7 @@ class MainWindow(QMainWindow):
             self.lang_combo, self.scale_spin, self.pos_combo,
             self.off_x, self.off_y, self.bg_btn, self.text_btn,
             self.accent_btn, self.border_btn, self.border_chk, self.border_w,
+            self.clock_chk,
             self.banner_spin, self.banner_scale_spin, self.banner_bg_btn,
             self.banner_text_btn, self.banner_border_btn, self.banner_border_chk,
             self.banner_border_w,
@@ -1090,6 +1098,7 @@ class MainWindow(QMainWindow):
         self.border_btn._rgba = style.border_color; self.border_btn._refresh()
         self.border_chk.setChecked(style.border_enabled)
         self.border_w.setValue(style.border_width)
+        self.clock_chk.setChecked(style.show_running_clock)
         self.banner_spin.setValue(style.start_banner_duration)
         self.banner_scale_spin.setValue(style.start_banner_scale)
         self.banner_bg_btn._rgba = style.start_banner_bg_color; self.banner_bg_btn._refresh()
@@ -1187,6 +1196,7 @@ class MainWindow(QMainWindow):
             bg_color=self.bg_btn.rgba(), text_color=self.text_btn.rgba(),
             accent_color=self.accent_btn.rgba(), border_color=self.border_btn.rgba(),
             border_enabled=self.border_chk.isChecked(), border_width=self.border_w.value(),
+            show_running_clock=self.clock_chk.isChecked(),
             start_banner_duration=self.banner_spin.value(),
             start_banner_scale=self.banner_scale_spin.value(),
             start_banner_bg_color=self.banner_bg_btn.rgba(),
@@ -1439,6 +1449,7 @@ class MainWindow(QMainWindow):
             duration = self.waveform.duration or (t + 10)
             events = render.build_events(session, t0, style, mode, frame.size, duration)
             composite = frame.copy()
+            panel_xy = None
             for ev in events:
                 if ev.start <= t < ev.end:
                     panel = ev.image
@@ -1447,8 +1458,14 @@ class MainWindow(QMainWindow):
                         y = (frame.size[1] - panel.size[1]) // 2
                     else:
                         x, y = overlay.panel_origin(panel.size, frame.size, style)
+                        panel_xy = (x, y)
                     composite.alpha_composite(panel, (x, y))
                     break
+            if style.show_running_clock and t >= t0 - 1e-6:
+                clock = overlay.render_clock_panel(style, frame.size, t - t0)
+                cx, py = panel_xy or overlay.panel_origin(clock.size, frame.size, style)
+                cy = max(0, py - clock.size[1] - max(2, clock.size[1] // 6))
+                composite.alpha_composite(clock, (cx, cy))
             self._show_image(composite)
         except Exception:  # noqa: BLE001
             self._show_image(frame)
@@ -1513,6 +1530,11 @@ class MainWindow(QMainWindow):
                 panel = overlay.render_shot_panel(session, 0, style, frame.size)
                 x, y = overlay.panel_origin(panel.size, frame.size, style)
             frame.alpha_composite(panel, (x, y))
+            if style.show_running_clock:
+                elapsed = 0.0 if mode == AnchorMode.START_SIGNAL else session.shots[0].czas
+                clock = overlay.render_clock_panel(style, frame.size, elapsed)
+                cy = max(0, y - clock.size[1] - max(2, clock.size[1] // 6))
+                frame.alpha_composite(clock, (x, cy))
             self._show_image(frame)
         except Exception:  # noqa: BLE001
             pass

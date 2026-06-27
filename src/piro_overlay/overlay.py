@@ -134,6 +134,19 @@ def render_summary_panel(session: Session, style: OverlayStyle,
     return _render_panel(lines, style, base)
 
 
+def clock_text(elapsed: float) -> str:
+    """Etykieta płynącego zegara od T0 — sekundy z jedną cyfrą po przecinku."""
+    return f"T+{max(0.0, elapsed):.1f}s"
+
+
+def render_clock_panel(style: OverlayStyle, video_size: tuple[int, int],
+                       elapsed: float) -> Image.Image:
+    """Panel płynącego zegara „T+x.xs" (do podglądu; w renderze używamy drawtext)."""
+    base = _base_font_size(video_size[1], style)
+    f_clock = _font(int(base * 1.2), bold=True)
+    return _render_panel([_Line(clock_text(elapsed), f_clock, style.accent_color)], style, base)
+
+
 def render_start_banner(style: OverlayStyle, video_size: tuple[int, int]) -> Image.Image:
     """Duża plansza „START" (wyśrodkowywana przez render.py)."""
     tr = get_translator(style.lang)
