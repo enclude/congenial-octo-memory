@@ -59,12 +59,13 @@ def _resolve_ffmpeg() -> str:
     if bundled_full:
         return bundled_full
 
-    imageio_bin = imageio_ffmpeg.get_ffmpeg_exe()
     sys_ff = shutil.which("ffmpeg")
-    if sys_ff and sys_ff != imageio_bin:
+    if sys_ff:
         return sys_ff
 
-    return imageio_bin
+    # Ostateczność: imageio-ffmpeg wyciąga binarki do %TEMP% przy pierwszym wywołaniu.
+    # W .exe (PyInstaller) Defender skanuje plik → wielosekundowe opóźnienie.
+    return imageio_ffmpeg.get_ffmpeg_exe()
 
 
 def ffmpeg_exe() -> str:
