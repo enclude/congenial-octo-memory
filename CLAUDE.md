@@ -130,18 +130,28 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   gładkie dziesiąte s, tani, bez plików) gdy drawtext REALNIE koduje (`_drawtext_usable()` —
   test 1 klatki, cache), inaczej fallback SEKWENCJA PNG. Integrację robi `_append_clock`
   (wspólne dla render_video/webm/gif): drawtext→1 seg, inaczej `_write_clock_sequence` →
-  JEDNO wejście `-framerate 10 -f image2 -i clk_%05d.png` + JEDEN `overlay=…:eof_action=pass`.
+  JEDNO wejście `-framerate {fps} -f image2 -i clk_%05d.png` + JEDEN `overlay=…:eof_action=repeat`.
   WAŻNE: NIE wracać do „panel PNG na każdy tick = osobne wejście+overlay" — przy 0.1 s to
-  setki wejść i przepełnienie linii poleceń Windows (~32 KB). Sekwencja 10 fps daje dziesiąte
-  s na KAŻDEJ binarce (image2 jest zawsze; imageio-ffmpeg NIE ma drawtext). Klatki przed
-  STARTEM przezroczyste; każdy panel wklejany na płótno o stałym rozmiarze (najszerszy panel
-  = max elapsed) wyrównane wg rogu kotwicy (`_clock_align`), by przy 9.9→10.0 krawędź nie
-  drgała → stałe `xy`. Limit `_CLOCK_SEQ_MAX_FRAMES=1800` (dłuższe okno → niższy fps). W GIF
+  setki wejść i przepełnienie linii poleceń Windows (~32 KB). Sekwencja daje dziesiąte
+  s na KAŻDEJ binarce (image2 jest zawsze; imageio-ffmpeg NIE ma drawtext).
+  **PŁYNNOŚĆ (v0.16.0):** fps sekwencji = fps wideo (`info.fps`), a nie stałe 10 — bo 10 fps
+  na wideo NTSC (29.97/59.94) dawało DUDNIENIE (nierówna kadencja = „zacinanie"). Teraz 1:1:
+  jedna klatka zegara na klatkę wyjścia → równo. Gdy klatek za dużo, fps redukujemy
+  CAŁKOWITYM dzielnikiem `base_fps/k` (nadal dzieli fps wideo bez dudnienia), nie dowolnym
+  ułamkiem. Treść i tak zaokrąglona do dziesiątych (cyfra zmienia się co 0.1 s).
+  **ZAMROŻENIE (v0.16.0):** zegar płynie tylko do `last_shot_time` (= `session.shots[-1].czas`,
+  czas od T0), potem ZAMARZA — sekwencja kończy się na ostatnim strzale (krótsza!), a
+  `overlay=…:eof_action=repeat` (NIE `pass` — pass = zegar znika!) powtarza ostatnią
+  (zamrożoną) klatkę do końca. drawtext: analogicznie `elapsed = min(t-c, last_shot_time)`.
+  Klatki przed STARTEM przezroczyste; każdy panel wklejany na płótno o stałym rozmiarze
+  (najszerszy panel = elapsed na ostatnim strzale) wyrównane wg rogu kotwicy (`_clock_align`),
+  by przy 9.9→10.0 krawędź nie drgała → stałe `xy`. Limit `_CLOCK_SEQ_MAX_FRAMES=1800`. W GIF
   paleta to kolejne wejście: `pal_idx = inputs.count("-i")` (NIE `used+1` — sekwencja zegara
   też zajmuje wejście). Pozycja zegara `_clock_xy`/`_max_panel_h` wg rogu kotwicy. Podgląd
   rysuje zegar przez `overlay.render_clock_panel`. WAŻNE (drawtext): dwukropki w `%{eif\:…\:d}`
-  MUSZĄ być eskejpowane `\:`, a wartości opcji (text/x/y/enable) w apostrofach; eif daje tylko
-  int, więc sekundy i dziesiąte liczone osobno przez `trunc`.
+  MUSZĄ być eskejpowane `\:` (przecinek w `%{…}`, np. `min(a,b)`/`mod(x,10)`, jest OK bez
+  eskejpu), a wartości opcji (text/x/y/enable) w apostrofach; eif daje tylko int, więc
+  sekundy i dziesiąte liczone osobno przez `trunc`.
 - **Auto-detekcja T0 + przycięcie:** `gui.StartDetectWorker` (QThread) odpala
   `detect_dji_start` w tle. Po wczytaniu pliku (`_on_wave_done` → `_auto_detect_t0("import")`):
   T0 + przycięcie 5 s przed → max 75 s po T0. Przycisk „Pobierz i przytnij"

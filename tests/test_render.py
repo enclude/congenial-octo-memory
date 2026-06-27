@@ -15,36 +15,64 @@ def test_prepare_clock_disabled():
 
 
 def test_clock_sequence_fallback(tmp_path):
-    # Fallback bez drawtext: sekwencja PNG 10 fps (dziesiąte sekundy) jako 1 wejście.
+    # Fallback bez drawtext: sekwencja PNG w kadencji wideo, ZAMROŻONA na ostatnim
+    # strzale (2.5 s), jako 1 wejście. fps = fps wideo (równa kadencja, brak dudnienia).
     sess = Session(shots=[Shot(1, 1.0), Shot(2, 2.5, 1.5)])
     style = OverlayStyle(show_running_clock=True, position="bottom-left")
     events = render.build_events(sess, 0.5, style, AnchorMode.START_SIGNAL, (640, 360), 8.0)
     seq = render._write_clock_sequence(
-        tmp_path, style, (640, 360), events, t0=0.5, src_start=0.0, src_end=8.0)
+        tmp_path, style, (640, 360), events, t0=0.5, src_start=0.0, src_end=8.0,
+        video_fps=30.0, last_shot_time=2.5)
     assert seq is not None
-    assert seq.fps == render._CLOCK_SEQ_FPS          # 10 fps → krok 0.1 s
-    # Okno wyjścia 8 s × 10 fps (+1) = 81 klatek; wszystkie zapisane na dysk.
-    assert seq.nframes == 81
+    assert seq.fps == 30.0                           # = fps wideo (1:1 z klatkami wyjścia)
+    # Zegar płynie tylko do ostatniego strzału: clock_end_out = (0.5+2.5)-0 = 3.0 s.
+    # 3.0 s × 30 fps (+1) = 91 klatek; potem klatka jest powtarzana (eof_action=repeat).
+    assert seq.nframes == 91
     written = sorted(tmp_path.glob("clock/clk_*.png"))
-    assert len(written) == 81
+    assert len(written) == 91
+
+
+def test_clock_sequence_freezes_at_last_shot(tmp_path):
+    # Bez podanego last_shot_time zegar płynie do końca okna (zachowanie awaryjne).
+    style = OverlayStyle(show_running_clock=True)
+    seq_full = render._write_clock_sequence(
+        tmp_path / "a", style, (640, 360), [], t0=0.0, src_start=0.0, src_end=8.0,
+        video_fps=10.0, last_shot_time=None)
+    # Z last_shot_time=2.0 sekwencja jest krótsza (zamarza po 2 s).
+    seq_frozen = render._write_clock_sequence(
+        tmp_path / "b", style, (640, 360), [], t0=0.0, src_start=0.0, src_end=8.0,
+        video_fps=10.0, last_shot_time=2.0)
+    assert seq_full.nframes > seq_frozen.nframes
+    assert seq_frozen.nframes == 21                  # 2.0 s × 10 fps (+1)
 
 
 def test_clock_sequence_caps_frames(tmp_path):
-    # Bardzo długie okno → fps zredukowany tak, by nie przekroczyć limitu klatek.
+    # Bardzo długie okno → fps zredukowany całkowitym dzielnikiem, by nie przekroczyć limitu.
     style = OverlayStyle(show_running_clock=True)
     seq = render._write_clock_sequence(
-        tmp_path, style, (640, 360), [], t0=0.0, src_start=0.0, src_end=100000.0)
+        tmp_path, style, (640, 360), [], t0=0.0, src_start=0.0, src_end=100000.0,
+        video_fps=30.0, last_shot_time=None)
     assert seq is not None
-    assert seq.nframes == render._CLOCK_SEQ_MAX_FRAMES
-    assert seq.fps < render._CLOCK_SEQ_FPS
+    assert seq.nframes <= render._CLOCK_SEQ_MAX_FRAMES
+    assert seq.fps < 30.0
 
 
 def test_clock_sequence_none_when_outside_window(tmp_path):
     # T0 po końcu okna → zegar się nie pojawia.
     style = OverlayStyle(show_running_clock=True)
     seq = render._write_clock_sequence(
-        tmp_path, style, (640, 360), [], t0=20.0, src_start=0.0, src_end=10.0)
+        tmp_path, style, (640, 360), [], t0=20.0, src_start=0.0, src_end=10.0,
+        video_fps=30.0, last_shot_time=5.0)
     assert seq is None
+
+
+def test_clock_drawtext_freezes_at_last_shot():
+    # drawtext: wyrażenie czasu zamrożone przez min(t-c, last_shot).
+    style = OverlayStyle(show_running_clock=True, position="bottom-left")
+    seg, label = render._clock_drawtext_seg(
+        "0:v", style, (640, 360), [], t0=0.5, src_start=0.0, last_shot_time=2.5)
+    assert label == "vclock"
+    assert "min(t-0.500,2.500)" in seg
 
 
 def test_clock_position_explicit():

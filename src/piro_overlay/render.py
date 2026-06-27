@@ -110,11 +110,13 @@ def _clock_gap(video_size: tuple[int, int], style: OverlayStyle) -> int:
 
 
 def _clock_drawtext_seg(cur: str, style: OverlayStyle, video_size: tuple[int, int],
-                        events: list[_Event], t0: float, src_start: float) -> tuple[str, str]:
+                        events: list[_Event], t0: float, src_start: float,
+                        last_shot_time: float | None = None) -> tuple[str, str]:
     """Segment drawtext z płynącym zegarem od T0 (nad nakładką) + nowy label.
 
     Zegar tyka per-klatkę (wyrażenie czasu), więc daje gładkie dziesiąte sekundy.
     Wymaga filtra `drawtext` (libfreetype) — gdy go brak, używamy fallbacku PNG.
+    Gdy znamy czas ostatniego strzału, zegar ZAMARZA na nim (nie płynie dalej).
     """
     vh = video_size[1]
     base = overlay._base_font_size(vh, style)
@@ -151,11 +153,16 @@ def _clock_drawtext_seg(cur: str, style: OverlayStyle, video_size: tuple[int, in
 
     font = str(overlay.font_path(bold=True)).replace("\\", "/")
     c = f"{clock_out:.3f}"
+    # Elapsed = czas od STARTU; zamrażamy na ostatnim strzale przez min(...).
+    if last_shot_time is not None and last_shot_time >= 0:
+        e = f"min(t-{c},{last_shot_time:.3f})"
+    else:
+        e = f"(t-{c})"
     # T+SS.s — część całkowita i dziesiąte sekundy (eif obsługuje tylko int).
     # Dwukropki wewnątrz %{...} trzeba eskejpować (\:) — inaczej parser drawtext
-    # potraktuje je jak separator opcji filtra.
-    text = (f"T+%{{eif\\:trunc(t-{c})\\:d}}."
-            f"%{{eif\\:trunc(mod((t-{c})*10,10))\\:d}}s")
+    # potraktuje je jak separator opcji filtra (przecinek w %{...} jest bezpieczny).
+    text = (f"T+%{{eif\\:trunc({e})\\:d}}."
+            f"%{{eif\\:trunc(mod({e}*10,10))\\:d}}s")
     seg = (
         f"[{cur}]drawtext=fontfile='{font}':text='{text}':"
         f"x='{x_expr}':y='{y_expr}':fontsize={fontsize}:"
@@ -203,34 +210,55 @@ def _clock_align(style: OverlayStyle) -> str:
 
 def _write_clock_sequence(tmp_dir: Path, style: OverlayStyle,
                           video_size: tuple[int, int], events: list[_Event],
-                          t0: float, src_start: float,
-                          src_end: float) -> _ClockSeq | None:
-    """Zapisuje sekwencję PNG zegara (10 fps) na całe okno wyjścia.
+                          t0: float, src_start: float, src_end: float,
+                          video_fps: float = _CLOCK_SEQ_FPS,
+                          last_shot_time: float | None = None) -> _ClockSeq | None:
+    """Zapisuje sekwencję PNG zegara na okno animacji (do ostatniego strzału).
 
     Daje płynne DZIESIĄTE sekundy na KAŻDEJ binarce FFmpeg (image2 jest zawsze),
     bez rozdmuchania linii poleceń: jedno wejście `-i clk_%05d.png` + jeden
     `overlay`, zamiast setek wejść PNG. Klatki przed STARTEM (t < T0) są
     przezroczyste; wszystkie panele wklejane na płótno o stałym rozmiarze
     (najszerszy panel), wyrównane wg rogu kotwicy, aby przy zmianie liczby cyfr
-    (9.9 → 10.0) anchorowana krawędź nie drgała. None gdy zegar nie wejdzie w okno.
+    (9.9 → 10.0) anchorowana krawędź nie drgała.
+
+    PŁYNNOŚĆ: fps sekwencji = fps wideo (lub jego całkowity dzielnik), więc na
+    KAŻDĄ klatkę wyjścia przypada jedna klatka zegara → kadencja jest równa i nie
+    „zacina się" (10 fps na wideo 29.97/59.94 dawało dudnienie). Treść i tak
+    zaokrąglamy do dziesiątych, więc cyfra zmienia się co 0.1 s.
+
+    ZAMROŻENIE: zegar tyka tylko do `last_shot_time` (czas ostatniego strzału),
+    potem ostatnia klatka jest powtarzana do końca (overlay `eof_action=repeat`).
+    None gdy zegar nie wejdzie w okno.
     """
     out_duration = src_end - src_start
     if src_end <= max(t0, src_start) or out_duration <= 0:
         return None
-    fps = _CLOCK_SEQ_FPS
-    nframes = int(round(out_duration * fps)) + 1
-    if nframes > _CLOCK_SEQ_MAX_FRAMES:
-        fps = _CLOCK_SEQ_MAX_FRAMES / out_duration
-        nframes = _CLOCK_SEQ_MAX_FRAMES
-    # Płótno = najszerszy panel (maksymalny elapsed = koniec okna).
-    sample = overlay.render_clock_panel(style, video_size, max(0.0, src_end - t0))
+    # Zegar płynie do ostatniego strzału, potem zamarza (klatka powtarzana do końca).
+    freeze_elapsed = last_shot_time if (last_shot_time is not None and last_shot_time >= 0) \
+        else (src_end - t0)
+    clock_end_out = min(out_duration, (t0 + freeze_elapsed) - src_start)
+    if clock_end_out <= 0:
+        return None
+    # fps = fps wideo (1:1 → równa kadencja); gdy klatek za dużo, redukujemy
+    # CAŁKOWITYM dzielnikiem, by sekwencja nadal dzieliła fps wideo bez dudnienia.
+    base_fps = video_fps if video_fps and video_fps > 0 else _CLOCK_SEQ_FPS
+    fps = base_fps
+    nframes = int(round(clock_end_out * fps)) + 1
+    k = 1
+    while nframes > _CLOCK_SEQ_MAX_FRAMES:
+        k += 1
+        fps = base_fps / k
+        nframes = int(round(clock_end_out * fps)) + 1
+    # Płótno = najszerszy panel (maksymalny elapsed = ostatni strzał).
+    sample = overlay.render_clock_panel(style, video_size, max(0.0, freeze_elapsed))
     canvas_w, canvas_h = sample.size
     gap = _clock_gap(video_size, style)
     xy = _clock_xy(style, video_size, (canvas_w, canvas_h), _max_panel_h(events), gap)
     align = _clock_align(style)
 
     clk_dir = tmp_dir / "clock"
-    clk_dir.mkdir(exist_ok=True)
+    clk_dir.mkdir(parents=True, exist_ok=True)
     blank = overlay.Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
     for i in range(nframes):
         path = clk_dir / f"clk_{i:05d}.png"
@@ -238,6 +266,7 @@ def _write_clock_sequence(tmp_dir: Path, style: OverlayStyle,
         if elapsed < 0:
             blank.save(path)
             continue
+        elapsed = min(elapsed, freeze_elapsed)   # zamrożenie na ostatnim strzale
         panel = overlay.render_clock_panel(style, video_size, elapsed)
         canvas = blank.copy()
         if align == "left":
@@ -289,23 +318,29 @@ def prepare_clock(style: OverlayStyle) -> bool:
 def _append_clock(style: OverlayStyle, video_size: tuple[int, int],
                   events: list[_Event], t0: float, src_start: float, src_end: float,
                   tmp_dir: Path, inputs: list[str], filter_parts: list[str],
-                  cur: str, next_idx: int, use_drawtext: bool) -> str:
+                  cur: str, next_idx: int, use_drawtext: bool,
+                  video_fps: float = _CLOCK_SEQ_FPS,
+                  last_shot_time: float | None = None) -> str:
     """Dopina zegar do filtergraphu (drawtext albo sekwencja PNG).
 
     Mutuje `inputs`/`filter_parts`; zwraca nową etykietę strumienia wideo (`cur`).
-    `next_idx` to indeks kolejnego wejścia FFmpeg (0=wideo, 1..N=panele zdarzeń)."""
+    `next_idx` to indeks kolejnego wejścia FFmpeg (0=wideo, 1..N=panele zdarzeń).
+    `last_shot_time` — zegar zamarza na nim; `video_fps` — kadencja sekwencji PNG."""
     if not style.show_running_clock:
         return cur
     if use_drawtext:
-        seg, cur = _clock_drawtext_seg(cur, style, video_size, events, t0, src_start)
+        seg, cur = _clock_drawtext_seg(cur, style, video_size, events, t0, src_start,
+                                       last_shot_time)
         filter_parts.append(seg)
         return cur
-    seq = _write_clock_sequence(tmp_dir, style, video_size, events, t0, src_start, src_end)
+    seq = _write_clock_sequence(tmp_dir, style, video_size, events, t0, src_start, src_end,
+                                video_fps, last_shot_time)
     if seq is None:
         return cur
     inputs += ["-framerate", f"{seq.fps:g}", "-f", "image2", "-i", seq.pattern]
+    # eof_action=repeat → po ostatniej (zamrożonej) klatce zegar zostaje widoczny do końca.
     filter_parts.append(
-        f"[{cur}][{next_idx}:v]overlay={seq.xy[0]}:{seq.xy[1]}:eof_action=pass[vclk]")
+        f"[{cur}][{next_idx}:v]overlay={seq.xy[0]}:{seq.xy[1]}:eof_action=repeat[vclk]")
     return "vclk"
 
 
@@ -474,7 +509,9 @@ def render_video(video_path: str | Path, session: Session, t0: float,
             raise ValueError("Wybrany fragment nie zawiera żadnego strzału.")
 
         cur = _append_clock(style, video_size, events, t0, src_start, src_end,
-                             tmp_dir, inputs, filter_parts, cur, used + 1, use_drawtext)
+                             tmp_dir, inputs, filter_parts, cur, used + 1, use_drawtext,
+                             info.fps,
+                             session.shots[-1].czas if session.shots else None)
         filtergraph = ";".join(filter_parts)
 
         def build_cmd(enc: str) -> list[str]:
@@ -567,7 +604,9 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
             raise ValueError("Wybrany fragment nie zawiera żadnego strzału.")
 
         cur = _append_clock(style, video_size, events, t0, src_start, src_end,
-                             tmp_dir, inputs, filter_parts, cur, used + 1, use_drawtext)
+                             tmp_dir, inputs, filter_parts, cur, used + 1, use_drawtext,
+                             info.fps,
+                             session.shots[-1].czas if session.shots else None)
 
         cmd = [
             ffmpeg.ffmpeg_exe(), "-y", *inputs,
@@ -646,7 +685,9 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
             raise ValueError("Wybrany fragment nie zawiera żadnego strzału.")
 
         cur = _append_clock(style, video_size, events, t0, src_start, src_end,
-                             tmp_dir, inputs, filter_parts, cur, used + 1, use_drawtext)
+                             tmp_dir, inputs, filter_parts, cur, used + 1, use_drawtext,
+                             info.fps,
+                             session.shots[-1].czas if session.shots else None)
 
         scale_flt = f"fps={fps},scale={max_width}:-1:flags=lanczos"
         base_fg = ";".join(filter_parts)
