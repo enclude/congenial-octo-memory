@@ -280,6 +280,170 @@ def render_video(video_path: str | Path, session: Session, t0: float,
     return out_path
 
 
+def render_webm(video_path: str | Path, session: Session, t0: float,
+                style: OverlayStyle, mode: AnchorMode, out_path: str | Path,
+                progress_cb: ProgressCb | None = None,
+                trim_start: float | None = None,
+                trim_end: float | None = None) -> Path:
+    """Renderuje WebM (VP9 + Opus) z wypalona nakładką.
+
+    Nie wspiera NVENC — VP9 jest zawsze programowy (libvpx-vp9). Dobry do
+    krótkich klipów na potrzeby Instagrama/Discord (mniejszy niż GIF, dobra jakość).
+    """
+    video_path, out_path = str(video_path), Path(out_path)
+    info = ffmpeg.probe(video_path)
+    video_size = (info.width, info.height)
+
+    src_start = max(trim_start, 0.0) if trim_start is not None else 0.0
+    src_end = trim_end if trim_end is not None else info.duration
+    if src_end <= src_start:
+        raise ValueError("Koniec przycięcia musi być późniejszy niż początek.")
+    out_duration = src_end - src_start
+
+    events = build_events(session, t0, style, mode, video_size, src_end)
+    if not events:
+        raise ValueError("Brak zdarzeń do nałożenia (pusta oś czasu?).")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        seek = ["-ss", f"{src_start:.3f}"] if src_start > 0 else []
+        inputs: list[str] = [*seek, "-i", video_path]
+        filter_parts: list[str] = []
+        cur = "0:v"
+
+        used = 0
+        for ev in events:
+            ev_start = max(ev.start, src_start)
+            ev_end = min(ev.end, src_end)
+            if ev_end <= ev_start:
+                continue
+            out_start = ev_start - src_start
+            out_end = ev_end - src_start
+
+            png = tmp_dir / f"ev_{used:03d}.png"
+            ev.image.save(png)
+            inputs += ["-i", str(png)]
+            x, y = _overlay_xy(ev, style, video_size)
+            in_label = used + 1
+            out_label = f"v{used}"
+            filter_parts.append(
+                f"[{cur}][{in_label}:v]overlay={x}:{y}:"
+                f"enable='between(t,{out_start:.3f},{out_end:.3f})'[{out_label}]"
+            )
+            cur = out_label
+            used += 1
+
+        if used == 0:
+            raise ValueError("Wybrany fragment nie zawiera żadnego strzału.")
+
+        cmd = [
+            ffmpeg.ffmpeg_exe(), "-y", *inputs,
+            "-t", f"{out_duration:.3f}",
+            "-filter_complex", ";".join(filter_parts),
+            "-map", f"[{cur}]", "-map", "0:a?",
+            "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0", "-pix_fmt", "yuv420p",
+            "-c:a", "libopus", "-b:a", "96k",
+            str(out_path),
+        ]
+        _run_with_progress(cmd, out_duration, progress_cb)
+
+    return out_path
+
+
+def render_gif(video_path: str | Path, session: Session, t0: float,
+               style: OverlayStyle, mode: AnchorMode, out_path: str | Path,
+               progress_cb: ProgressCb | None = None,
+               trim_start: float | None = None,
+               trim_end: float | None = None,
+               fps: int = 12,
+               max_width: int = 640) -> Path:
+    """Renderuje animowany GIF z wypalona nakładką (2-pass: palettegen + paletteuse).
+
+    fps — liczba klatek na sekundę GIF (domyślnie 12; przy 24+ plik rośnie drastycznie).
+    max_width — maksymalna szerokość; wysokość skalowana proporcjonalnie.
+    Nie wspiera audio — GIF jest niemą animacją.
+    """
+    video_path, out_path = str(video_path), Path(out_path)
+    info = ffmpeg.probe(video_path)
+    video_size = (info.width, info.height)
+
+    src_start = max(trim_start, 0.0) if trim_start is not None else 0.0
+    src_end = trim_end if trim_end is not None else info.duration
+    if src_end <= src_start:
+        raise ValueError("Koniec przycięcia musi być późniejszy niż początek.")
+    out_duration = src_end - src_start
+
+    events = build_events(session, t0, style, mode, video_size, src_end)
+    if not events:
+        raise ValueError("Brak zdarzeń do nałożenia (pusta oś czasu?).")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        palette = tmp_dir / "palette.png"
+        seek = ["-ss", f"{src_start:.3f}"] if src_start > 0 else []
+        inputs: list[str] = [*seek, "-i", video_path]
+        filter_parts: list[str] = []
+        cur = "0:v"
+
+        used = 0
+        for ev in events:
+            ev_start = max(ev.start, src_start)
+            ev_end = min(ev.end, src_end)
+            if ev_end <= ev_start:
+                continue
+            out_start = ev_start - src_start
+            out_end = ev_end - src_start
+
+            png = tmp_dir / f"ev_{used:03d}.png"
+            ev.image.save(png)
+            inputs += ["-i", str(png)]
+            x, y = _overlay_xy(ev, style, video_size)
+            in_label = used + 1
+            out_label = f"v{used}"
+            filter_parts.append(
+                f"[{cur}][{in_label}:v]overlay={x}:{y}:"
+                f"enable='between(t,{out_start:.3f},{out_end:.3f})'[{out_label}]"
+            )
+            cur = out_label
+            used += 1
+
+        if used == 0:
+            raise ValueError("Wybrany fragment nie zawiera żadnego strzału.")
+
+        scale_flt = f"fps={fps},scale={max_width}:-1:flags=lanczos"
+        base_fg = ";".join(filter_parts)
+
+        # Pass 1: wygeneruj paletę kolorów (wymagana dla animowanego GIF).
+        fg1 = base_fg + f";[{cur}]{scale_flt},palettegen[pal]"
+        cmd1 = [
+            ffmpeg.ffmpeg_exe(), "-y", *inputs,
+            "-t", f"{out_duration:.3f}",
+            "-filter_complex", fg1,
+            "-map", "[pal]",
+            str(palette),
+        ]
+        res = subprocess.run(cmd1, capture_output=True, text=True,
+                             creationflags=ffmpeg.CREATE_NO_WINDOW)
+        if res.returncode != 0:
+            raise RuntimeError("Błąd generowania palety GIF:\n" + res.stderr[-2000:])
+
+        # Pass 2: zakoduj GIF używając wygenerowanej palety.
+        pal_idx = used + 1
+        inputs2 = inputs + ["-i", str(palette)]
+        fg2 = base_fg + f";[{cur}]{scale_flt}[sc];[sc][{pal_idx}:v]paletteuse[out]"
+        cmd2 = [
+            ffmpeg.ffmpeg_exe(), "-y", *inputs2,
+            "-t", f"{out_duration:.3f}",
+            "-filter_complex", fg2,
+            "-map", "[out]",
+            "-loop", "0",
+            str(out_path),
+        ]
+        _run_with_progress(cmd2, out_duration, progress_cb)
+
+    return out_path
+
+
 def trim_video(video_path: str | Path, out_path: str | Path,
                trim_start: float | None = None,
                trim_end: float | None = None,

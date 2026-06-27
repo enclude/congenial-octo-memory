@@ -105,6 +105,7 @@ class RenderWorker(QThread):
         try:
             kw = dict(self._kwargs)
             no_overlay = kw.pop("no_overlay", False)
+            fmt = kw.pop("output_format", "mp4")
             callbacks = dict(progress_cb=self.progress.emit,
                              on_encoder=self.encoder_used.emit,
                              on_warn=self.warn.emit)
@@ -113,6 +114,20 @@ class RenderWorker(QThread):
                     video_path=kw["video_path"], out_path=kw["out_path"],
                     trim_start=kw.get("trim_start"), trim_end=kw.get("trim_end"),
                     encoder=kw.get("encoder", "auto"), **callbacks)
+            elif fmt == "gif":
+                render.render_gif(
+                    video_path=kw["video_path"], session=kw["session"],
+                    t0=kw["t0"], style=kw["style"], mode=kw["mode"],
+                    out_path=kw["out_path"],
+                    trim_start=kw.get("trim_start"), trim_end=kw.get("trim_end"),
+                    progress_cb=self.progress.emit)
+            elif fmt == "webm":
+                render.render_webm(
+                    video_path=kw["video_path"], session=kw["session"],
+                    t0=kw["t0"], style=kw["style"], mode=kw["mode"],
+                    out_path=kw["out_path"],
+                    trim_start=kw.get("trim_start"), trim_end=kw.get("trim_end"),
+                    progress_cb=self.progress.emit)
             else:
                 render.render_video(**callbacks, **kw)
             self.finished_ok.emit(str(self._kwargs["out_path"]))
@@ -1033,6 +1048,17 @@ class MainWindow(QMainWindow):
         out_browse = QPushButton("…"); out_browse.clicked.connect(self._choose_output)
         orow = QHBoxLayout(); orow.addWidget(self.out_edit); orow.addWidget(out_browse)
         v.addLayout(orow)
+
+        self.format_combo = QComboBox()
+        self.format_combo.addItem("MP4 (H.264)", "mp4")
+        self.format_combo.addItem("WebM (VP9)", "webm")
+        self.format_combo.addItem("GIF (animowany)", "gif")
+        self.format_combo.currentIndexChanged.connect(self._on_format_changed)
+        frow = QHBoxLayout()
+        frow.addWidget(QLabel("Format wyjścia:"))
+        frow.addWidget(self.format_combo)
+        v.addLayout(frow)
+
         self.no_overlay_chk = QCheckBox("Bez nakładki (tylko przycięcie)")
         self.no_overlay_chk.stateChanged.connect(self._on_no_overlay_toggled)
         v.addWidget(self.no_overlay_chk)
@@ -1091,7 +1117,9 @@ class MainWindow(QMainWindow):
         self.video_path = path
         self.video_edit.setText(path)
         p = Path(path)
-        self.out_edit.setText(str(p.with_name(p.stem + "_PiRoOverlay.mp4")))
+        ext_map = {"mp4": ".mp4", "webm": ".webm", "gif": ".gif"}
+        out_ext = ext_map.get(self.format_combo.currentData(), ".mp4")
+        self.out_edit.setText(str(p.with_name(p.stem + "_PiRoOverlay" + out_ext)))
         # Inwaliduj cache — nowe wideo, stara klatka nieaktualna
         self._cached_frame = None
         self._cached_frame_t = -1.0
@@ -1118,9 +1146,16 @@ class MainWindow(QMainWindow):
         self._update_preview()
 
     def _choose_output(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Plik wyjściowy",
-                                              self.out_edit.text() or "output.mp4",
-                                              "Wideo (*.mp4)")
+        fmt = self.format_combo.currentData()
+        filters = {
+            "mp4":  "Wideo MP4 (*.mp4)",
+            "webm": "Wideo WebM (*.webm)",
+            "gif":  "Animowany GIF (*.gif)",
+        }
+        default_name = self.out_edit.text() or "output.mp4"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Plik wyjściowy", default_name,
+            filters.get(fmt, "Wideo (*.mp4)"))
         if path:
             self.out_edit.setText(path)
 
@@ -1306,6 +1341,7 @@ class MainWindow(QMainWindow):
             trim_end=te if te > 0 else None,
             encoder="auto" if self.gpu_chk.isChecked() else "cpu",
             no_overlay=self.no_overlay_chk.isChecked(),
+            output_format=self.format_combo.currentData(),
         )
 
     def _start_render(self):
@@ -1374,6 +1410,19 @@ class MainWindow(QMainWindow):
         else:
             self.nvenc_label.setText("NVENC: niedostępny — render na CPU (zainstaluj pełny FFmpeg)")
             self.nvenc_label.setStyleSheet("color:#e0a030;")
+
+    def _on_format_changed(self, *_):
+        """Aktualizuje rozszerzenie pliku wyjściowego gdy zmienia się format."""
+        current = self.out_edit.text()
+        if not current:
+            return
+        p = Path(current)
+        fmt = self.format_combo.currentData()
+        ext_map = {"mp4": ".mp4", "webm": ".webm", "gif": ".gif"}
+        new_ext = ext_map.get(fmt, ".mp4")
+        # Zamień obecne rozszerzenie tylko jeśli jest znane (mp4/webm/gif/mov/avi/mkv).
+        if p.suffix.lower() in (".mp4", ".webm", ".gif", ".mov", ".avi", ".mkv"):
+            self.out_edit.setText(str(p.with_suffix(new_ext)))
 
     def _on_no_overlay_toggled(self, state):
         self.appearance_box.setDisabled(bool(state))
