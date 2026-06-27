@@ -903,18 +903,18 @@ class MainWindow(QMainWindow):
         self.anchor_combo.addItem("Pierwszy strzał", AnchorMode.FIRST_SHOT.value)
         form.addRow("Typ kotwicy", self.anchor_combo)
 
-        self.dji_chk = QCheckBox("Filtr DJI (bzyczek 2–4.5 kHz)")
-        self.dji_chk.setToolTip(
-            "Przed detekcją stosuje filtr pasmowy 2000–4500 Hz.\n"
-            "Pomaga odróżnić bzyczek shot-timera od strzałów i szumów tła\n"
-            "na nagraniach DJI Osmo.")
-        form.addRow(self.dji_chk)
-
         detect = QPushButton("Wykryj kotwicę (w zaznaczonym fragmencie)")
         detect.clicked.connect(self._detect)
         nextc = QPushButton("Następna proponowana kotwica")
         nextc.clicked.connect(self._next_candidate)
-        drow = QHBoxLayout(); drow.addWidget(detect); drow.addWidget(nextc)
+        start_sig = QPushButton("Wykryj sygnał startu")
+        start_sig.setToolTip(
+            "Filtr pasmowy 2000–4500 Hz (pasmo buzzera shot-timera) + wybór\n"
+            "najgłośniejszego bzyczka. Ustawia typ kotwicy na „Sygnał startu”\n"
+            "i przelicza T0. Działa dobrze na nagraniach DJI Osmo.")
+        start_sig.clicked.connect(self._detect_start_signal)
+        drow = QHBoxLayout()
+        drow.addWidget(detect); drow.addWidget(nextc); drow.addWidget(start_sig)
         form.addRow(_wrap(drow))
 
         self.t0_spin = _dspin(0, 100000, 0.05, " s")
@@ -1247,13 +1247,32 @@ class MainWindow(QMainWindow):
         src = self.lrf_path or self.video_path
         s = self.trim_start_spin.value()
         e = self.trim_end_spin.value() or None
-        if self.dji_chk.isChecked():
-            detected = audio_sync.detect_dji_start(src, start=s, end=e)
-        else:
-            detected = audio_sync.detect_start(src, start=s, end=e)
+        detected = audio_sync.detect_start(src, start=s, end=e)
         if detected is None:
             QMessageBox.warning(self, "Detekcja", "Nie wykryto sygnału — ustaw ręcznie.")
             return
+        self.t0_spin.setValue(detected)  # wywoła _on_t0_spin → waveform + podgląd
+
+    def _detect_start_signal(self):
+        """Wykrywa bzyczek shot-timera (filtr 2–4.5 kHz) i ustawia go jako T0.
+
+        Wymusza tryb kotwicy „Sygnał startu” — wykryty bzyczek JEST sygnałem
+        startu, więc T0 = czas bzyczka (bez przesunięcia o pierwszy strzał).
+        """
+        if not self.video_path:
+            QMessageBox.warning(self, "Brak wideo", "Najpierw wybierz plik wideo.")
+            return
+        src = self.lrf_path or self.video_path
+        s = self.trim_start_spin.value()
+        e = self.trim_end_spin.value() or None
+        detected = audio_sync.detect_dji_start(src, start=s, end=e)
+        if detected is None:
+            QMessageBox.warning(self, "Detekcja",
+                                "Nie wykryto sygnału startu — ustaw ręcznie.")
+            return
+        idx = self.anchor_combo.findData(AnchorMode.START_SIGNAL.value)
+        if idx >= 0:
+            self.anchor_combo.setCurrentIndex(idx)
         self.t0_spin.setValue(detected)  # wywoła _on_t0_spin → waveform + podgląd
 
     def _next_candidate(self):

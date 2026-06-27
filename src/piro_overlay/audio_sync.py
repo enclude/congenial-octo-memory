@@ -223,10 +223,22 @@ def detect_dji_start(video_path: str | Path,
     mad = np.median(np.abs(energy - median)) + 1e-9
     threshold = median + 5.0 * mad
 
-    for i in range(1, n_windows):
-        if energy[i] >= threshold and energy[i] > energy[i - 1]:
-            return round(offset_s + i * win / sr, 3)
-    return None
+    # Bzyczek to czysty, donośny ton w paśmie 2–4.5 kHz — w tym paśmie jest
+    # zwykle NAJGŁOŚNIEJSZYM zdarzeniem (głośniejszym niż strzały, które mają
+    # energię rozłożoną szeroko). Wybieramy więc najsilniejszy impuls, a NIE
+    # pierwszy przekraczający próg — dzięki temu przypadkowy szum w pierwszych
+    # sekundach nagrania nie „kradnie" detekcji przed właściwym sygnałem.
+    peak = int(np.argmax(energy))
+    if energy[peak] < threshold:
+        return None  # brak wyraźnego bzyczka w paśmie
+
+    # Cofnij się do początku impulsu (narastającego zbocza) — T0 to moment
+    # ROZPOCZĘCIA bzyczka, nie jego najgłośniejsza chwila.
+    edge_thr = max(threshold, energy[peak] * 0.25)
+    onset = peak
+    while onset > 0 and energy[onset - 1] >= edge_thr:
+        onset -= 1
+    return round(offset_s + onset * win / sr, 3)
 
 
 def resolve_t0(anchor_time: float, mode: AnchorMode, first_shot_time: float) -> float:
