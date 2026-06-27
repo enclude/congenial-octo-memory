@@ -1075,13 +1075,17 @@ class MainWindow(QMainWindow):
 
         self.tail_spin = _dspin(0.0, 60.0, 0.5, " s", 5.0)
         self.tail_spin.setToolTip("Margines (s) doliczany po ostatnim strzale przy auto-przycięciu.")
-        form.addRow("Margines końcowy", self.tail_spin)
+        self.tail_spin.setMaximumWidth(90)  # węższe pole — wartość mieści się z zapasem
         autotrim_btn = QPushButton("Auto-przycięcie")
         autotrim_btn.setToolTip(
             "Ustaw zakres przycięcia: 5 s przed startem → ostatni strzał + margines.")
         autotrim_btn.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         autotrim_btn.clicked.connect(self._apply_auto_trim)
-        form.addRow(autotrim_btn)
+        # Margines i przycisk w jednej linii (przycisk wypełnia resztę szerokości).
+        mrow = QHBoxLayout()
+        mrow.addWidget(self.tail_spin)
+        mrow.addWidget(autotrim_btn, 1)
+        form.addRow("Margines końcowy", _wrap(mrow))
         return box
 
     def _appearance_group(self):

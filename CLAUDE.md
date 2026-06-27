@@ -126,14 +126,22 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   `detect_start` (bez filtra, pierwszy onset).
 - **Płynący zegar od T0:** `OverlayStyle.show_running_clock` (checkbox „Płynący czas od T0").
   Nad nakładką ze strzałami tyka „T+x.xs" liczone od sygnału startu, widoczne od STARTU
-  (t ≥ T0). `render.prepare_clock` wybiera ścieżkę: `_clock_drawtext_seg` (filtr `drawtext`,
-  gładkie dziesiąte s, tani) gdy drawtext REALNIE koduje (`_drawtext_usable()` — test 1 klatki,
-  cache), inaczej fallback `_clock_png_events` (panele PNG co 1 s — działa na każdej binarce;
-  imageio-ffmpeg NIE ma drawtext). Pozycja nad najwyższym panelem strzału (`_clock_xy`/
-  `_max_panel_h`), zgodnie z rogiem kotwicy; `_Event.xy` wymusza tę pozycję. Podgląd rysuje
-  zegar przez `overlay.render_clock_panel`. WAŻNE (drawtext): dwukropki w `%{eif\:…\:d}` MUSZĄ
-  być eskejpowane `\:`, a wartości opcji (text/x/y/enable) w apostrofach; eif daje tylko int,
-  więc sekundy i dziesiąte liczone osobno przez `trunc`.
+  (t ≥ T0). `render.prepare_clock(style)` zwraca bool: `_clock_drawtext_seg` (filtr `drawtext`,
+  gładkie dziesiąte s, tani, bez plików) gdy drawtext REALNIE koduje (`_drawtext_usable()` —
+  test 1 klatki, cache), inaczej fallback SEKWENCJA PNG. Integrację robi `_append_clock`
+  (wspólne dla render_video/webm/gif): drawtext→1 seg, inaczej `_write_clock_sequence` →
+  JEDNO wejście `-framerate 10 -f image2 -i clk_%05d.png` + JEDEN `overlay=…:eof_action=pass`.
+  WAŻNE: NIE wracać do „panel PNG na każdy tick = osobne wejście+overlay" — przy 0.1 s to
+  setki wejść i przepełnienie linii poleceń Windows (~32 KB). Sekwencja 10 fps daje dziesiąte
+  s na KAŻDEJ binarce (image2 jest zawsze; imageio-ffmpeg NIE ma drawtext). Klatki przed
+  STARTEM przezroczyste; każdy panel wklejany na płótno o stałym rozmiarze (najszerszy panel
+  = max elapsed) wyrównane wg rogu kotwicy (`_clock_align`), by przy 9.9→10.0 krawędź nie
+  drgała → stałe `xy`. Limit `_CLOCK_SEQ_MAX_FRAMES=1800` (dłuższe okno → niższy fps). W GIF
+  paleta to kolejne wejście: `pal_idx = inputs.count("-i")` (NIE `used+1` — sekwencja zegara
+  też zajmuje wejście). Pozycja zegara `_clock_xy`/`_max_panel_h` wg rogu kotwicy. Podgląd
+  rysuje zegar przez `overlay.render_clock_panel`. WAŻNE (drawtext): dwukropki w `%{eif\:…\:d}`
+  MUSZĄ być eskejpowane `\:`, a wartości opcji (text/x/y/enable) w apostrofach; eif daje tylko
+  int, więc sekundy i dziesiąte liczone osobno przez `trunc`.
 - **Auto-detekcja T0 + przycięcie:** `gui.StartDetectWorker` (QThread) odpala
   `detect_dji_start` w tle. Po wczytaniu pliku (`_on_wave_done` → `_auto_detect_t0("import")`):
   T0 + przycięcie 5 s przed → max 75 s po T0. Przycisk „Pobierz i przytnij"

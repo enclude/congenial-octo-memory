@@ -11,20 +11,40 @@ def test_clock_text_format():
 
 def test_prepare_clock_disabled():
     style = OverlayStyle(show_running_clock=False)
-    use_dt, evs = render.prepare_clock(style, (640, 360), [], 0.5, 0.0, 8.0)
-    assert use_dt is False and evs == []
+    assert render.prepare_clock(style) is False
 
 
-def test_clock_png_fallback_events():
-    # Wymuś brak drawtext → fallback PNG co sekundę, panele nad nakładką.
+def test_clock_sequence_fallback(tmp_path):
+    # Fallback bez drawtext: sekwencja PNG 10 fps (dziesiąte sekundy) jako 1 wejście.
     sess = Session(shots=[Shot(1, 1.0), Shot(2, 2.5, 1.5)])
     style = OverlayStyle(show_running_clock=True, position="bottom-left")
     events = render.build_events(sess, 0.5, style, AnchorMode.START_SIGNAL, (640, 360), 8.0)
-    evs = render._clock_png_events(style, (640, 360), events, t0=0.5, src_start=0.0, src_end=8.0)
-    assert evs, "powinny powstać panele zegara"
-    assert all(e.xy is not None for e in evs)       # własna pozycja (nad panelem)
-    assert evs[0].start >= 0.5                       # zegar nie startuje przed T0
-    assert evs[-1].end <= 8.0                        # i nie wychodzi poza źródło
+    seq = render._write_clock_sequence(
+        tmp_path, style, (640, 360), events, t0=0.5, src_start=0.0, src_end=8.0)
+    assert seq is not None
+    assert seq.fps == render._CLOCK_SEQ_FPS          # 10 fps → krok 0.1 s
+    # Okno wyjścia 8 s × 10 fps (+1) = 81 klatek; wszystkie zapisane na dysk.
+    assert seq.nframes == 81
+    written = sorted(tmp_path.glob("clock/clk_*.png"))
+    assert len(written) == 81
+
+
+def test_clock_sequence_caps_frames(tmp_path):
+    # Bardzo długie okno → fps zredukowany tak, by nie przekroczyć limitu klatek.
+    style = OverlayStyle(show_running_clock=True)
+    seq = render._write_clock_sequence(
+        tmp_path, style, (640, 360), [], t0=0.0, src_start=0.0, src_end=100000.0)
+    assert seq is not None
+    assert seq.nframes == render._CLOCK_SEQ_MAX_FRAMES
+    assert seq.fps < render._CLOCK_SEQ_FPS
+
+
+def test_clock_sequence_none_when_outside_window(tmp_path):
+    # T0 po końcu okna → zegar się nie pojawia.
+    style = OverlayStyle(show_running_clock=True)
+    seq = render._write_clock_sequence(
+        tmp_path, style, (640, 360), [], t0=20.0, src_start=0.0, src_end=10.0)
+    assert seq is None
 
 
 def test_clock_position_explicit():

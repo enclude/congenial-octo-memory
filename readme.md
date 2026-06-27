@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.14.0
+> **Wersja:** 0.15.0
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
 **osi czasu strzałów** nakłada na film informacyjną grafikę (numer strzału, czas od startu,
@@ -168,9 +168,10 @@ czas trwania planszy „START" oraz język (PL/EN). Podgląd aktualizuje się na
 - **Płynący czas od T0:** opcjonalny zegar **„T+x.xs"** liczony od sygnału startu i widoczny
   już od STARTU (jeszcze przed pierwszym strzałem). Włącz checkboxem w sekcji wyglądu.
   **Pozycję** wybierasz w „Pozycja zegara": *Nad nakładką (auto)* albo dowolny z 6 rogów
-  (wtedy działa „Offset zegara X/Y"). Przy pełnym FFmpeg zegar tyka płynnie z dokładnością
-  do **dziesiątych sekundy**; na okrojonej binarce (bez filtra `drawtext`) działa fallback
-  co 1 s — funkcja jest dostępna zawsze.
+  (wtedy działa „Offset zegara X/Y"). Zegar tyka z dokładnością do **dziesiątych sekundy**
+  na **każdej** binarce FFmpeg: przy pełnym FFmpeg przez filtr `drawtext`, a na okrojonej
+  binarce (np. wbudowany `imageio-ffmpeg` bez `drawtext`) przez sekwencję klatek PNG 10 fps
+  nakładaną jednym przebiegiem — efekt ten sam (dziesiąte sekundy), bez różnicy dla użytkownika.
 - **Zapisz/wczytaj presety:** ustawienia wyglądu można eksportować i wczytywać z pliku
   **JSON** (przyciski w sekcji wyglądu).
 - **Auto-zapis:** ostatnio użyte ustawienia wyglądu oraz katalog zapisują się automatycznie

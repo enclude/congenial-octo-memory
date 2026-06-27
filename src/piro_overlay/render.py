@@ -166,7 +166,8 @@ def _clock_drawtext_seg(cur: str, style: OverlayStyle, video_size: tuple[int, in
     return seg, "vclock"
 
 
-_CLOCK_PNG_MAX = 300  # górny limit paneli PNG zegara (chroni filtergraph)
+_CLOCK_SEQ_FPS = 10.0          # klatek/s sekwencji PNG zegara → dziesiąte sekundy
+_CLOCK_SEQ_MAX_FRAMES = 1800   # górny limit klatek (bardzo długie okno → niższy fps)
 
 
 def _clock_xy(style: OverlayStyle, video_size: tuple[int, int],
@@ -185,34 +186,69 @@ def _clock_xy(style: OverlayStyle, video_size: tuple[int, int],
     return x, max(0, y)
 
 
-def _clock_png_events(style: OverlayStyle, video_size: tuple[int, int],
-                      events: list[_Event], t0: float, src_start: float,
-                      src_end: float) -> list[_Event]:
-    """Fallback zegara bez drawtext: panele PNG co sekundę (od STARTU do końca).
+@dataclass
+class _ClockSeq:
+    """Sekwencja PNG zegara do nałożenia JEDNYM wejściem image2 (fallback bez drawtext)."""
+    pattern: str                 # wzorzec image2, np. .../clk_%05d.png
+    fps: float                   # klatek/s sekwencji
+    xy: tuple[int, int]          # pozycja nałożenia (stała — patrz płótno)
+    nframes: int
 
-    Mniej gładki niż drawtext (krok 1 s), ale działa na każdej binarce FFmpeg.
+
+def _clock_align(style: OverlayStyle) -> str:
+    """Poziome wyrównanie zegara (left/center/right) wg rogu kotwicy."""
+    pos = style.position if style.clock_position == "auto" else style.clock_position
+    return pos.partition("-")[2]
+
+
+def _write_clock_sequence(tmp_dir: Path, style: OverlayStyle,
+                          video_size: tuple[int, int], events: list[_Event],
+                          t0: float, src_start: float,
+                          src_end: float) -> _ClockSeq | None:
+    """Zapisuje sekwencję PNG zegara (10 fps) na całe okno wyjścia.
+
+    Daje płynne DZIESIĄTE sekundy na KAŻDEJ binarce FFmpeg (image2 jest zawsze),
+    bez rozdmuchania linii poleceń: jedno wejście `-i clk_%05d.png` + jeden
+    `overlay`, zamiast setek wejść PNG. Klatki przed STARTEM (t < T0) są
+    przezroczyste; wszystkie panele wklejane na płótno o stałym rozmiarze
+    (najszerszy panel), wyrównane wg rogu kotwicy, aby przy zmianie liczby cyfr
+    (9.9 → 10.0) anchorowana krawędź nie drgała. None gdy zegar nie wejdzie w okno.
     """
-    clock_start = max(t0, src_start)
-    if src_end <= clock_start:
-        return []
+    out_duration = src_end - src_start
+    if src_end <= max(t0, src_start) or out_duration <= 0:
+        return None
+    fps = _CLOCK_SEQ_FPS
+    nframes = int(round(out_duration * fps)) + 1
+    if nframes > _CLOCK_SEQ_MAX_FRAMES:
+        fps = _CLOCK_SEQ_MAX_FRAMES / out_duration
+        nframes = _CLOCK_SEQ_MAX_FRAMES
+    # Płótno = najszerszy panel (maksymalny elapsed = koniec okna).
+    sample = overlay.render_clock_panel(style, video_size, max(0.0, src_end - t0))
+    canvas_w, canvas_h = sample.size
     gap = _clock_gap(video_size, style)
-    max_panel_h = _max_panel_h(events)
-    span = src_end - clock_start
-    step = 1.0
-    if span / step > _CLOCK_PNG_MAX:
-        step = span / _CLOCK_PNG_MAX  # rzadziej, gdy okno bardzo długie
-    out: list[_Event] = []
-    e = max(0.0, clock_start - t0)  # sekund od T0 na pierwszym panelu
-    real = clock_start
-    while real < src_end:
-        img = overlay.render_clock_panel(style, video_size, e)
-        out.append(_Event(
-            img, start=real, end=min(real + step, src_end),
-            xy=_clock_xy(style, video_size, img.size, max_panel_h, gap),
-        ))
-        real += step
-        e += step
-    return out
+    xy = _clock_xy(style, video_size, (canvas_w, canvas_h), _max_panel_h(events), gap)
+    align = _clock_align(style)
+
+    clk_dir = tmp_dir / "clock"
+    clk_dir.mkdir(exist_ok=True)
+    blank = overlay.Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+    for i in range(nframes):
+        path = clk_dir / f"clk_{i:05d}.png"
+        elapsed = (src_start + i / fps) - t0
+        if elapsed < 0:
+            blank.save(path)
+            continue
+        panel = overlay.render_clock_panel(style, video_size, elapsed)
+        canvas = blank.copy()
+        if align == "left":
+            px = 0
+        elif align == "right":
+            px = canvas_w - panel.size[0]
+        else:
+            px = (canvas_w - panel.size[0]) // 2
+        canvas.alpha_composite(panel, (max(0, px), 0))
+        canvas.save(path)
+    return _ClockSeq(str(clk_dir / "clk_%05d.png"), fps, xy, nframes)
 
 
 @functools.lru_cache(maxsize=1)
@@ -241,18 +277,36 @@ def _drawtext_usable() -> bool:
         return False
 
 
-def prepare_clock(style: OverlayStyle, video_size: tuple[int, int],
-                  events: list[_Event], t0: float, src_start: float,
-                  src_end: float) -> tuple[bool, list[_Event]]:
-    """Decyduje jak renderować zegar: (use_drawtext, dodatkowe_zdarzenia_PNG).
+def prepare_clock(style: OverlayStyle) -> bool:
+    """Czy zegar renderować przez `drawtext` (True) — gdy filtr realnie działa.
 
-    drawtext gdy filtr realnie działa (gładko); inaczej panele PNG co sekundę.
+    False → fallback sekwencji PNG (10 fps, `_write_clock_sequence`), też z
+    dziesiątymi sekundy. Zwraca False również gdy zegar wyłączony (brak nakładki).
     """
+    return bool(style.show_running_clock) and _drawtext_usable()
+
+
+def _append_clock(style: OverlayStyle, video_size: tuple[int, int],
+                  events: list[_Event], t0: float, src_start: float, src_end: float,
+                  tmp_dir: Path, inputs: list[str], filter_parts: list[str],
+                  cur: str, next_idx: int, use_drawtext: bool) -> str:
+    """Dopina zegar do filtergraphu (drawtext albo sekwencja PNG).
+
+    Mutuje `inputs`/`filter_parts`; zwraca nową etykietę strumienia wideo (`cur`).
+    `next_idx` to indeks kolejnego wejścia FFmpeg (0=wideo, 1..N=panele zdarzeń)."""
     if not style.show_running_clock:
-        return False, []
-    if _drawtext_usable():
-        return True, []
-    return False, _clock_png_events(style, video_size, events, t0, src_start, src_end)
+        return cur
+    if use_drawtext:
+        seg, cur = _clock_drawtext_seg(cur, style, video_size, events, t0, src_start)
+        filter_parts.append(seg)
+        return cur
+    seq = _write_clock_sequence(tmp_dir, style, video_size, events, t0, src_start, src_end)
+    if seq is None:
+        return cur
+    inputs += ["-framerate", f"{seq.fps:g}", "-f", "image2", "-i", seq.pattern]
+    filter_parts.append(
+        f"[{cur}][{next_idx}:v]overlay={seq.xy[0]}:{seq.xy[1]}:eof_action=pass[vclk]")
+    return "vclk"
 
 
 AUTO_TRIM_LEAD_IN = 5.0  # ile sekund przed T0 (beep) zostawić w wyniku
@@ -384,7 +438,7 @@ def render_video(video_path: str | Path, session: Session, t0: float,
     events = build_events(session, t0, style, mode, video_size, src_end)
     if not events:
         raise ValueError("Brak zdarzeń do nałożenia (pusta oś czasu?).")
-    use_drawtext, clock_events = prepare_clock(style, video_size, events, t0, src_start, src_end)
+    use_drawtext = prepare_clock(style)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
@@ -394,7 +448,7 @@ def render_video(video_path: str | Path, session: Session, t0: float,
         cur = "0:v"
 
         used = 0
-        for ev in (*events, *clock_events):
+        for ev in events:
             # Przytnij okno zdarzenia do fragmentu i przesuń na oś wyjścia (start 0).
             ev_start = max(ev.start, src_start)
             ev_end = min(ev.end, src_end)
@@ -419,9 +473,8 @@ def render_video(video_path: str | Path, session: Session, t0: float,
         if used == 0:
             raise ValueError("Wybrany fragment nie zawiera żadnego strzału.")
 
-        if use_drawtext:
-            seg, cur = _clock_drawtext_seg(cur, style, video_size, events, t0, src_start)
-            filter_parts.append(seg)
+        cur = _append_clock(style, video_size, events, t0, src_start, src_end,
+                             tmp_dir, inputs, filter_parts, cur, used + 1, use_drawtext)
         filtergraph = ";".join(filter_parts)
 
         def build_cmd(enc: str) -> list[str]:
@@ -479,7 +532,7 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
     events = build_events(session, t0, style, mode, video_size, src_end)
     if not events:
         raise ValueError("Brak zdarzeń do nałożenia (pusta oś czasu?).")
-    use_drawtext, clock_events = prepare_clock(style, video_size, events, t0, src_start, src_end)
+    use_drawtext = prepare_clock(style)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
@@ -489,7 +542,7 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
         cur = "0:v"
 
         used = 0
-        for ev in (*events, *clock_events):
+        for ev in events:
             ev_start = max(ev.start, src_start)
             ev_end = min(ev.end, src_end)
             if ev_end <= ev_start:
@@ -513,9 +566,8 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
         if used == 0:
             raise ValueError("Wybrany fragment nie zawiera żadnego strzału.")
 
-        if use_drawtext:
-            seg, cur = _clock_drawtext_seg(cur, style, video_size, events, t0, src_start)
-            filter_parts.append(seg)
+        cur = _append_clock(style, video_size, events, t0, src_start, src_end,
+                             tmp_dir, inputs, filter_parts, cur, used + 1, use_drawtext)
 
         cmd = [
             ffmpeg.ffmpeg_exe(), "-y", *inputs,
@@ -558,7 +610,7 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
     events = build_events(session, t0, style, mode, video_size, src_end)
     if not events:
         raise ValueError("Brak zdarzeń do nałożenia (pusta oś czasu?).")
-    use_drawtext, clock_events = prepare_clock(style, video_size, events, t0, src_start, src_end)
+    use_drawtext = prepare_clock(style)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
@@ -569,7 +621,7 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
         cur = "0:v"
 
         used = 0
-        for ev in (*events, *clock_events):
+        for ev in events:
             ev_start = max(ev.start, src_start)
             ev_end = min(ev.end, src_end)
             if ev_end <= ev_start:
@@ -593,9 +645,8 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
         if used == 0:
             raise ValueError("Wybrany fragment nie zawiera żadnego strzału.")
 
-        if use_drawtext:
-            seg, cur = _clock_drawtext_seg(cur, style, video_size, events, t0, src_start)
-            filter_parts.append(seg)
+        cur = _append_clock(style, video_size, events, t0, src_start, src_end,
+                             tmp_dir, inputs, filter_parts, cur, used + 1, use_drawtext)
 
         scale_flt = f"fps={fps},scale={max_width}:-1:flags=lanczos"
         base_fg = ";".join(filter_parts)
@@ -617,7 +668,9 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
             raise RuntimeError("Błąd generowania palety GIF:\n" + res.stderr[-2000:])
 
         # Pass 2: zakoduj GIF używając wygenerowanej palety.
-        pal_idx = used + 1
+        # Paleta jest kolejnym wejściem — indeks = liczba dotychczasowych wejść
+        # (wideo + panele + ew. sekwencja zegara), liczona po wystąpieniach „-i".
+        pal_idx = inputs.count("-i")
         inputs2 = inputs + ["-i", str(palette)]
         fg2 = base_fg + f";[{cur}]{scale_flt}[sc];[sc][{pal_idx}:v]paletteuse[out]"
         cmd2 = [
