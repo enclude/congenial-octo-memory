@@ -168,8 +168,7 @@ class WaveformWorker(QThread):
 
     def run(self):
         try:
-            env, dur = audio_sync.compute_waveform(self.video_path)
-            onsets = audio_sync.detect_onsets(self.video_path)
+            env, dur, onsets = audio_sync.analyze_audio(self.video_path)
             self.done.emit(env, dur, onsets)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))

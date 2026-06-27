@@ -6,6 +6,10 @@ Pierwszy silny onset to zwykle sygnał startu (buzzer); kolejne to strzały.
 
 Funkcja zwraca listę kandydatów (czasy w sekundach) posortowaną wg czasu, aby
 GUI mogło zaproponować domyślny T0 i pozwolić użytkownikowi wybrać/poprawić.
+
+Kluczowa zasada wydajności: audio jest ekstrahowane z pliku (FFmpeg) dokładnie
+RAZ przez _load_audio(). Wszystkie dalsze operacje (waveform, onset detection)
+pracują na załadowanych próbkach w pamięci — bez ponownego odczytu dysku.
 """
 
 from __future__ import annotations
@@ -22,69 +26,16 @@ from .models import AnchorMode
 _WINDOW_S = 0.02  # 20 ms okna analizy
 
 
-def detect_onsets(video_path: str | Path,
-                  min_gap_s: float = 0.15,
-                  start: float | None = None,
-                  end: float | None = None) -> list[float]:
-    """Zwraca czasy (s) wykrytych głośnych onsetów w audio wideo.
+# ---------------------------------------------------------------------------
+# Warstwa I/O — tylko tutaj trafia FFmpeg + dysk
+# ---------------------------------------------------------------------------
 
-    min_gap_s — minimalny odstęp między onsetami, by nie liczyć jednego
-    zdarzenia wielokrotnie.
-    start / end — opcjonalne okno (s) ograniczające zakres analizy; onsety poza
-    nim są pomijane. Próg energii liczony jest tylko z próbek w oknie, aby cichy
-    fragment poza strzelaniem nie zaniżał detekcji.
-    """
-    with tempfile.TemporaryDirectory() as tmp:
-        wav = ffmpeg.extract_audio(video_path, Path(tmp) / "audio.wav")
-        samples, sr = sf.read(str(wav))
+def _load_audio(video_path: str | Path) -> tuple[np.ndarray, int]:
+    """Ekstrahuje audio z pliku i zwraca (próbki mono float64, sample_rate).
 
-    if samples.ndim > 1:  # na wszelki wypadek miksuj do mono
-        samples = samples.mean(axis=1)
-    if samples.size == 0:
-        return []
-
-    # Ogranicz analizę do okna [start, end] (jeśli podane).
-    lo = int(max(start, 0.0) * sr) if start is not None else 0
-    hi = int(end * sr) if end is not None else samples.size
-    lo = max(0, min(lo, samples.size))
-    hi = max(lo, min(hi, samples.size))
-    offset_s = lo / sr
-    samples = samples[lo:hi]
-    if samples.size == 0:
-        return []
-
-    win = max(1, int(sr * _WINDOW_S))
-    n_windows = samples.size // win
-    if n_windows == 0:
-        return []
-
-    trimmed = samples[: n_windows * win].reshape(n_windows, win)
-    energy = np.sqrt((trimmed.astype(np.float64) ** 2).mean(axis=1))  # RMS na okno
-
-    # Próg adaptacyjny: mediana + k * odchylenie. Onset = przekroczenie progu
-    # przy jednoczesnym wzroście względem poprzedniego okna (zbocze narastające).
-    median = np.median(energy)
-    mad = np.median(np.abs(energy - median)) + 1e-9
-    threshold = median + 6.0 * mad
-
-    onsets: list[float] = []
-    last_t = -1e9
-    for i in range(1, n_windows):
-        if energy[i] >= threshold and energy[i] > energy[i - 1]:
-            t = offset_s + i * win / sr  # czas względem całego wideo
-            if t - last_t >= min_gap_s:
-                onsets.append(round(t, 3))
-                last_t = t
-    return onsets
-
-
-def compute_waveform(video_path: str | Path,
-                     n_buckets: int | None = None) -> tuple[list[float], float]:
-    """Zwraca (obwiednia, długość_s) audio do wizualizacji w GUI.
-
-    Obwiednia to lista wartości 0–1 (znormalizowana amplituda szczytowa w kolejnych
-    równych przedziałach czasu). Domyślnie rozdzielczość dobiera się do długości
-    (~200 pkt/s, do 20000), żeby zoom pokazywał szczegóły potrzebne do trafienia T0/T1.
+    Jedyne miejsce w module, które wywołuje FFmpeg i czyta z dysku.
+    Wynik przekazuj do funkcji _*_from_samples zamiast wielokrotnie wywoływać
+    tę funkcję dla tego samego pliku.
     """
     with tempfile.TemporaryDirectory() as tmp:
         wav = ffmpeg.extract_audio(video_path, Path(tmp) / "audio.wav")
@@ -92,9 +43,18 @@ def compute_waveform(video_path: str | Path,
 
     if samples.ndim > 1:
         samples = samples.mean(axis=1)
+    return samples, int(sr)
+
+
+# ---------------------------------------------------------------------------
+# Obliczenia na próbkach (bez I/O)
+# ---------------------------------------------------------------------------
+
+def _waveform_from_samples(samples: np.ndarray, sr: int,
+                            n_buckets: int | None = None) -> tuple[list[float], float]:
+    """Obwiednia + długość z już załadowanych próbek (bez FFmpeg)."""
     if samples.size == 0:
         return [], 0.0
-
     duration = samples.size / sr
     if n_buckets is None:
         n_buckets = min(20000, max(2000, int(duration * 200)))
@@ -106,15 +66,85 @@ def compute_waveform(video_path: str | Path,
     return (env / peak).tolist(), duration
 
 
+def _onsets_from_samples(samples: np.ndarray, sr: int,
+                          min_gap_s: float = 0.15,
+                          start: float | None = None,
+                          end: float | None = None) -> list[float]:
+    """Lista onsetów z już załadowanych próbek (bez FFmpeg)."""
+    if samples.size == 0:
+        return []
+
+    lo = int(max(start, 0.0) * sr) if start is not None else 0
+    hi = int(end * sr) if end is not None else samples.size
+    lo = max(0, min(lo, samples.size))
+    hi = max(lo, min(hi, samples.size))
+    offset_s = lo / sr
+    chunk = samples[lo:hi]
+    if chunk.size == 0:
+        return []
+
+    win = max(1, int(sr * _WINDOW_S))
+    n_windows = chunk.size // win
+    if n_windows == 0:
+        return []
+
+    trimmed = chunk[: n_windows * win].reshape(n_windows, win)
+    energy = np.sqrt((trimmed.astype(np.float64) ** 2).mean(axis=1))
+
+    median = np.median(energy)
+    mad = np.median(np.abs(energy - median)) + 1e-9
+    threshold = median + 6.0 * mad
+
+    onsets: list[float] = []
+    last_t = -1e9
+    for i in range(1, n_windows):
+        if energy[i] >= threshold and energy[i] > energy[i - 1]:
+            t = offset_s + i * win / sr
+            if t - last_t >= min_gap_s:
+                onsets.append(round(t, 3))
+                last_t = t
+    return onsets
+
+
+# ---------------------------------------------------------------------------
+# Publiczne API
+# ---------------------------------------------------------------------------
+
+def analyze_audio(video_path: str | Path) -> tuple[list[float], float, list[float]]:
+    """Ładuje audio RAZ i zwraca (obwiednia, długość_s, onsety).
+
+    Używaj tej funkcji w WaveformWorker zamiast oddzielnych compute_waveform
+    + detect_onsets — FFmpeg odpala się tylko raz, co dwukrotnie skraca czas
+    na Windows (brak ponownego odczytu dysku + brak skanowania AV pliku tmp).
+    """
+    samples, sr = _load_audio(video_path)
+    env, dur = _waveform_from_samples(samples, sr)
+    onsets = _onsets_from_samples(samples, sr)
+    return env, dur, onsets
+
+
+def compute_waveform(video_path: str | Path,
+                     n_buckets: int | None = None) -> tuple[list[float], float]:
+    """Zwraca (obwiednia, długość_s) audio do wizualizacji w GUI."""
+    samples, sr = _load_audio(video_path)
+    return _waveform_from_samples(samples, sr, n_buckets)
+
+
+def detect_onsets(video_path: str | Path,
+                  min_gap_s: float = 0.15,
+                  start: float | None = None,
+                  end: float | None = None) -> list[float]:
+    """Zwraca czasy (s) wykrytych głośnych onsetów w audio wideo."""
+    samples, sr = _load_audio(video_path)
+    return _onsets_from_samples(samples, sr, min_gap_s, start, end)
+
+
 def detect_start(video_path: str | Path,
                  start: float | None = None,
                  end: float | None = None) -> float | None:
-    """Zwraca czas pierwszego silnego onsetu (kandydat na sygnał startu).
-
-    Detekcja może być ograniczona do okna [start, end] — przydatne, gdy nagranie
-    zawiera dużo materiału poza samym strzelaniem.
-    """
-    onsets = detect_onsets(video_path, start=start, end=end)
+    """Zwraca czas pierwszego silnego onsetu (kandydat na sygnał startu)."""
+    samples, sr = _load_audio(video_path)
+    onsets = _onsets_from_samples(samples, sr, start=start, end=end)
     return onsets[0] if onsets else None
 
 
@@ -128,42 +158,34 @@ def _bandpass_fft(samples: np.ndarray, sr: int, f_low: float, f_high: float) -> 
     return np.fft.irfft(spec, n)
 
 
-def detect_dji_start(video_path: str | "Path",
+def detect_dji_start(video_path: str | Path,
                      start: float | None = None,
                      end: float | None = None) -> float | None:
     """Detekcja bzyczka startu zoptymalizowana pod nagrania DJI.
 
     Stosuje filtr pasmowy 2000–4500 Hz (pasmo typowego buzzera shot-timera),
-    co odrzuca strzały (szeroki spektrum, dużo basu) i szumy tła. Szuka
-    pierwszego onset'u w przefiltrowanym sygnale.
+    co odrzuca strzały (szeroki spektrum, dużo basu) i szumy tła.
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        wav = ffmpeg.extract_audio(video_path, Path(tmp) / "audio.wav")
-        samples, sr = sf.read(str(wav))
-
-    if samples.ndim > 1:
-        samples = samples.mean(axis=1)
-    if samples.size == 0:
-        return None
+    samples, sr = _load_audio(video_path)
 
     lo = int(max(start, 0.0) * sr) if start is not None else 0
     hi = int(end * sr) if end is not None else samples.size
     lo = max(0, min(lo, samples.size))
     hi = max(lo, min(hi, samples.size))
     offset_s = lo / sr
-    samples = samples[lo:hi]
-    if samples.size == 0:
+    chunk = samples[lo:hi]
+    if chunk.size == 0:
         return None
 
-    samples = _bandpass_fft(samples, sr, 2000, 4500)
+    chunk = _bandpass_fft(chunk, sr, 2000, 4500)
 
     # Dłuższe okno (50 ms) — bzyczek to sygnał ciągły, nie impuls.
     win = max(1, int(sr * 0.05))
-    n_windows = samples.size // win
+    n_windows = chunk.size // win
     if n_windows == 0:
         return None
 
-    trimmed = samples[:n_windows * win].reshape(n_windows, win)
+    trimmed = chunk[:n_windows * win].reshape(n_windows, win)
     energy = np.sqrt((trimmed.astype(np.float64) ** 2).mean(axis=1))
 
     median = np.median(energy)
