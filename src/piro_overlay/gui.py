@@ -27,10 +27,10 @@ import json
 from PySide6.QtCore import QObject, QRect, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QColorDialog, QComboBox, QCheckBox, QDoubleSpinBox,
-    QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
-    QSpinBox, QSplitter, QPlainTextEdit, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QColorDialog, QComboBox, QCheckBox, QDialog,
+    QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+    QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QRadioButton,
+    QScrollArea, QSizePolicy, QSpinBox, QSplitter, QPlainTextEdit, QVBoxLayout, QWidget,
 )
 
 from PIL import Image
@@ -1292,6 +1292,12 @@ class MainWindow(QMainWindow):
         diag = QPushButton("Diagnostyka NVENC")
         diag.clicked.connect(self._show_nvenc_diag)
         v.addWidget(diag)
+        cli_btn = QPushButton("Pokaż komendę CLI")
+        cli_btn.setToolTip(
+            "Buduje równoważne wywołanie bezgłowe (PiroOverlay.exe …) z bieżących\n"
+            "ustawień — do skryptów/automatyzacji. Można je skopiować do schowka.")
+        cli_btn.clicked.connect(self._show_cli_command)
+        v.addWidget(cli_btn)
         self.progress = QProgressBar(); v.addWidget(self.progress)
         brow = QHBoxLayout()
         self.render_btn = QPushButton("Renderuj"); self.render_btn.clicked.connect(self._start_render)
@@ -1875,6 +1881,96 @@ class MainWindow(QMainWindow):
             output_format=self.format_combo.currentData(),
         )
 
+    def _build_cli_command(self) -> str:
+        """Buduje równoważne wywołanie CLI (PiroOverlay.exe …) z bieżących ustawień.
+
+        Odwzorowuje to, co CLI obsługuje: wideo, źródło osi, T0, kotwicę, język,
+        przycięcie, enkoder, zegar oraz tryb „bez nakładki”. Szczegóły wyglądu
+        nakładki (kolory, skala, pozycja panelu, offsety, plansza START) nie mają
+        odpowiedników w CLI i są pomijane (patrz nota w oknie)."""
+        parts = ["PiroOverlay.exe"]
+        video = self.video_edit.text() or (self.video_path or "<wideo>")
+        parts += ["--video", _cli_quote(video)]
+
+        no_overlay = self.no_overlay_chk.isChecked()
+        if not no_overlay:
+            if self.rb_id.isChecked():
+                parts += ["--id", str(self.id_spin.value())]
+            else:
+                tl = self.timeline_edit.toPlainText().strip()
+                if tl:
+                    parts += ["--timeline", _cli_quote(tl)]
+
+        mode = self._anchor_mode()
+        if mode != AnchorMode.START_SIGNAL:
+            parts += ["--anchor", mode.value]
+        t0 = self.t0_spin.value()
+        if t0 > 0:
+            parts += ["--t0", _fmt_num(t0)]
+
+        lang = self.lang_combo.currentData()
+        if lang != Lang.PL:
+            parts += ["--lang", lang.value]
+
+        ts = self.trim_start_spin.value()
+        te = self.trim_end_spin.value()
+        if ts > 0:
+            parts += ["--trim-start", _fmt_num(ts)]
+        if te > 0:
+            parts += ["--trim-end", _fmt_num(te)]
+
+        if not self.gpu_chk.isChecked():
+            parts += ["--encoder", "cpu"]
+
+        if no_overlay:
+            parts += ["--no-overlay"]
+        else:
+            style = self.current_style()
+            if style.show_running_clock:
+                parts += ["--clock"]
+                if style.clock_position != "auto":
+                    parts += ["--clock-position", style.clock_position]
+                    if style.clock_offset_x != 32:
+                        parts += ["--clock-offset-x", str(style.clock_offset_x)]
+                    if style.clock_offset_y != 32:
+                        parts += ["--clock-offset-y", str(style.clock_offset_y)]
+
+        out = self.out_edit.text()
+        if out:
+            parts += ["-o", _cli_quote(out)]
+        return " ".join(parts)
+
+    def _show_cli_command(self):
+        cmd = self._build_cli_command()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Komenda CLI (bieżące ustawienia)")
+        dlg.setMinimumWidth(660)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("Równoważne wywołanie bezgłowe PiroOverlay.exe:"))
+        text = QPlainTextEdit(cmd)
+        text.setReadOnly(True)
+        text.setMaximumHeight(120)
+        text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        lay.addWidget(text)
+        note = QLabel(
+            "Uwaga: CLI odwzorowuje wideo, źródło osi (ID/tekst), T0, kotwicę, język,\n"
+            "przycięcie, enkoder, płynący zegar i tryb „bez nakładki”. Szczegóły wyglądu\n"
+            "nakładki (kolory, skala, pozycja panelu, offsety, plansza START) NIE są\n"
+            "obsługiwane w CLI i zostały pominięte.")
+        note.setStyleSheet("color:#aaaaaa;")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        btns = QHBoxLayout()
+        copy_btn = QPushButton("Kopiuj do schowka")
+        copy_btn.clicked.connect(
+            lambda: (QApplication.clipboard().setText(cmd),
+                     self.statusBar().showMessage("Skopiowano komendę CLI do schowka.", 4000)))
+        close_btn = QPushButton("Zamknij")
+        close_btn.clicked.connect(dlg.accept)
+        btns.addStretch(1); btns.addWidget(copy_btn); btns.addWidget(close_btn)
+        lay.addLayout(btns)
+        dlg.exec()
+
     def _start_render(self):
         if self._render_busy:
             QMessageBox.warning(self, "Zajęty",
@@ -2116,6 +2212,21 @@ def _dspin(lo, hi, step, suffix="", value=None):
 
 def _ispin(lo, hi, value):
     s = QSpinBox(); s.setRange(lo, hi); s.setValue(value); return s
+
+
+def _cli_quote(s: str) -> str:
+    """Otacza wartość cudzysłowem, gdy zawiera spację/cudzysłów (do wklejenia w shellu)."""
+    s = str(s)
+    if not s:
+        return '""'
+    if any(c in s for c in ' \t"'):
+        return '"' + s.replace('"', r'\"') + '"'
+    return s
+
+
+def _fmt_num(v: float) -> str:
+    """Liczba bez zbędnych zer końcowych (3.20 → 3.2, 5.00 → 5)."""
+    return f"{v:.3f}".rstrip("0").rstrip(".")
 
 
 def main():

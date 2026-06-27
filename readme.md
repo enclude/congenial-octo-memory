@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.12.0
+> **Wersja:** 0.13.0
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
 **osi czasu strzałów** nakłada na film informacyjną grafikę (numer strzału, czas od startu,
@@ -115,6 +115,12 @@ domyślnie 5), `--no-overlay` (tylko przycięcie), `--clock` + `--clock-position
 Bez `--t0` aplikacja sama wykrywa kotwicę w audio (jeśli podasz `--trim-start/--trim-end`,
 detekcja szuka tylko w tym oknie). Bez `-o` plik zapisuje się obok źródła z sufiksem
 `_PiRoOverlay`.
+
+**Generowanie komendy z GUI:** w sekcji „Wyjście” przycisk **„Pokaż komendę CLI”** buduje
+równoważne wywołanie bezgłowe na podstawie aktualnych ustawień (wideo, źródło osi, T0,
+kotwica, przycięcie, język, enkoder, zegar, tryb „bez nakładki”) i pozwala je skopiować do
+schowka. Uwaga: szczegóły wyglądu nakładki (kolory, skala, pozycja panelu, offsety, plansza
+START) nie mają odpowiedników w CLI i są pomijane.
 
 ## Przyśpieszanie
 

@@ -171,6 +171,15 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   `render_webm` (VP9) / `render_gif`. CLI renderuje tylko MP4.
 - **Presety wyglądu:** zapisz/wczytaj JSON z pliku; auto-zapis ostatnich ustawień i
   katalogu do `AppData` (przywracane przy starcie).
+- **Komenda CLI z GUI:** przycisk „Pokaż komendę CLI" (grupa „Wyjście") →
+  `gui._build_cli_command()` składa równoważne wywołanie `PiroOverlay.exe …` z bieżących
+  widgetów (wideo, `--id`/`--timeline`, `--anchor` gdy ≠START_SIGNAL, `--t0`, `--lang` gdy
+  ≠PL, `--trim-start/-end`, `--encoder cpu` gdy GPU off, `--no-overlay`, `--clock`
+  +`--clock-position/-offset-x/y`, `-o`). Pomija domyślne wartości (krótsza komenda).
+  `_show_cli_command` pokazuje ją w `QDialog` (read-only `QPlainTextEdit`) z „Kopiuj do
+  schowka". WAŻNE: CLI nie obsługuje szczegółów wyglądu (kolory/skala/pozycja panelu/offsety/
+  plansza START) — builder je pomija, a nota w oknie o tym informuje. Helpery
+  `_cli_quote` (cudzysłów przy spacji) i `_fmt_num` (bez zer końcowych).
 - **Ikona:** `assets/icon.png` (okno) + `assets/icon.ico` (.exe, w `build_exe.spec`),
   `resources.icon_path()`.
 - **Szybkie iterowanie:** do testów zmian NIE buduj .exe — uruchom ze źródła
