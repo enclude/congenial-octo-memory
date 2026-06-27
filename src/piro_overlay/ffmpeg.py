@@ -32,24 +32,6 @@ class VideoInfo:
     height: int
 
 
-def _imageio_to_appdata() -> str:
-    """Kopiuje binarki imageio-ffmpeg do AppData i zwraca tę ścieżkę.
-
-    PyInstaller wyciąga pliki do unikalnego %TEMP%\\_MEIxxxxxx przy każdym uruchomieniu
-    .exe — Defender skanuje plik za każdym razem. Kopia w AppData jest trwała:
-    Defender skanuje ją tylko raz (pierwsze uruchomienie), potem plik jest zaufany.
-    """
-    from . import config as _config
-    exe_name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
-    target = _config.config_dir() / exe_name
-    if not target.exists():
-        src = imageio_ffmpeg.get_ffmpeg_exe()
-        shutil.copy2(src, target)
-        if sys.platform != "win32":
-            target.chmod(0o755)
-    return str(target)
-
-
 def _has_nvenc_binary(path: str) -> bool:
     try:
         return "h264_nvenc" in _run([path, "-hide_banner", "-encoders"]).stdout
@@ -81,7 +63,8 @@ def _resolve_ffmpeg() -> str:
     if sys_ff:
         return sys_ff
 
-    return _imageio_to_appdata()
+    # Ostateczność gdy brak systemu i brak bundla (tryb dev bez imageio na PATH).
+    return imageio_ffmpeg.get_ffmpeg_exe()
 
 
 def ffmpeg_exe() -> str:

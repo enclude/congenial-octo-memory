@@ -46,7 +46,7 @@ a = Analysis(
     hiddenimports=["imageio_ffmpeg"],
     hookspath=[],
     runtime_hooks=[],
-    excludes=[],
+    excludes=["soundfile", "_soundfile"],
     cipher=block_cipher,
 )
 

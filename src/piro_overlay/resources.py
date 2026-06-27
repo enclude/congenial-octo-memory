@@ -32,11 +32,22 @@ def icon_path(ico: bool = False) -> str:
 
 
 def bundled_ffmpeg_path() -> str | None:
-    """Ścieżka do dołączonego pełnego FFmpeg (np. z NVENC), jeśli istnieje.
+    """Ścieżka do dołączonego FFmpeg, jeśli istnieje.
 
-    Build z flagą -WithFfmpeg umieszcza binarkę w assets/bin/. Dzięki temu .exe
-    może mieć akcelerację GPU bez instalowania FFmpeg w systemie.
+    Sprawdza w kolejności:
+    1. assets/bin/ — build z flagą -WithFfmpeg (wersja z NVENC).
+    2. imageio_ffmpeg/binaries/ — binarka bundlowana przez build_exe.spec
+       (zawsze obecna w .exe). Plik jest już wyekstrahowany przez PyInstaller
+       do sys._MEIPASS przy starcie, więc Defender skanuje go tylko raz
+       (przy pierwszym uruchomieniu nowej wersji .exe).
     """
     name = "ffmpeg.exe" if sys.platform == "win32" else "ffmpeg"
     path = _assets_root() / "bin" / name
-    return str(path) if path.exists() else None
+    if path.exists():
+        return str(path)
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        p = Path(base) / "imageio_ffmpeg" / "binaries" / name
+        if p.exists():
+            return str(p)
+    return None
