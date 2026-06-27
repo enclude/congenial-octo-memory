@@ -171,6 +171,16 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   `render_webm` (VP9) / `render_gif`. CLI renderuje tylko MP4.
 - **Presety wyglądu:** zapisz/wczytaj JSON z pliku; auto-zapis ostatnich ustawień i
   katalogu do `AppData` (przywracane przy starcie).
+- **Pamięć ustawień per-plik:** `config.save_file_settings(path, dict)` /
+  `load_file_settings(path)` trzymają komplet parametrów w `file_settings.json` (AppData),
+  keyed po `Path(path).resolve()`, LRU z limitem `_MAX_FILE_ENTRIES=100`. GUI zapisuje przy
+  `_start_render` i `_add_to_queue` (`_collect_file_settings`: styl + źródło/ID + timeline +
+  kotwica + T0 + przycięcie + margines + GPU + no_overlay + format + output). Przy
+  `_set_video` ładuje wpis do `self._pending_file_settings`; `_on_wave_done` (po analizie
+  audio, gdy spiny czasu mają już `setMaximum(dur)`) stosuje go przez `_apply_file_settings`
+  i POMIJA auto-detekcję T0 (zapisany T0/trim ma pierwszeństwo). WAŻNE: stosować PO
+  `_on_wave_done`, nie w `_set_video` — inaczej `setMaximum` przytnie wczytane wartości.
+  `self.session` (dane API) NIE jest zapisywana — przy źródle „ID" user klika „Pobierz".
 - **Komenda CLI z GUI:** przycisk „Pokaż komendę CLI" (grupa „Wyjście") →
   `gui._build_cli_command()` składa równoważne wywołanie `PiroOverlay.exe …` z bieżących
   widgetów (wideo, `--id`/`--timeline`, `--anchor` gdy ≠START_SIGNAL, `--t0`, `--lang` gdy

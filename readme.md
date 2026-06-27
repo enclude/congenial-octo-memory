@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.13.0
+> **Wersja:** 0.14.0
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
 **osi czasu strzałów** nakłada na film informacyjną grafikę (numer strzału, czas od startu,
@@ -175,6 +175,12 @@ czas trwania planszy „START" oraz język (PL/EN). Podgląd aktualizuje się na
   **JSON** (przyciski w sekcji wyglądu).
 - **Auto-zapis:** ostatnio użyte ustawienia wyglądu oraz katalog zapisują się automatycznie
   w `AppData`, więc przy kolejnym uruchomieniu są przywracane.
+- **Pamięć ustawień per-plik:** gdy dany plik zostanie **wyrenderowany** lub **dodany do
+  kolejki**, jego komplet parametrów (wygląd nakładki, źródło osi i ID, T0, kotwica,
+  przycięcie, margines, język, enkoder/GPU, format, tryb „bez nakładki”, ścieżka wyjścia)
+  zapisuje się w `AppData` pod kluczem ścieżki pliku. Po ponownym otwarciu **tego samego
+  pliku** ustawienia wczytują się automatycznie (zamiast auto-detekcji T0), a w pasku stanu
+  pojawia się „Wczytano zapisane ustawienia dla tego pliku”.
 
 ## Format wyjściowy
 

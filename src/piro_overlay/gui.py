@@ -860,6 +860,9 @@ class MainWindow(QMainWindow):
         self._detect_workers: list[StartDetectWorker] = []
         self._detect_gen: int = 0
         self._video_size: tuple[int, int] | None = None  # (w, h) — do skalowania podglądu
+        # Zapisane ustawienia tego pliku, czekające na zastosowanie po analizie audio
+        # (spiny czasu mają sensowny zakres dopiero po poznaniu długości nagrania).
+        self._pending_file_settings: dict | None = None
         # Edycja pozycji w podglądzie (przeciąganie nakładek).
         self._preview_rects: dict[str, tuple[int, int, int, int]] = {}
         self._grab: dict | None = None
@@ -1368,6 +1371,9 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             self._video_size = None
 
+        # Zapamiętane ustawienia dla tego pliku (zastosujemy po analizie audio).
+        self._pending_file_settings = config.load_file_settings(path)
+
         lrf = ffmpeg.find_lrf(path)
         self.lrf_path = str(lrf) if lrf else None
         audio_src = self.lrf_path or path
@@ -1388,7 +1394,16 @@ class MainWindow(QMainWindow):
         self.trim_start_spin.setValue(0.0); self.trim_end_spin.setValue(dur)
         self.trim_start_spin.blockSignals(False); self.trim_end_spin.blockSignals(False)
         self._update_preview()
-        # Po wczytaniu pliku od razu wykryj T0 (buzzer) i ustaw przycięcie.
+        # Jeśli ten plik był już renderowany/dodany do kolejki — przywróć jego ustawienia
+        # i NIE uruchamiaj auto-detekcji (zapisany T0/przycięcie ma pierwszeństwo).
+        pending = self._pending_file_settings
+        self._pending_file_settings = None
+        if pending:
+            self._apply_file_settings(pending)
+            self.statusBar().showMessage(
+                "Wczytano zapisane ustawienia dla tego pliku.", 6000)
+            return
+        # Pierwszy raz dla tego pliku → wykryj T0 (buzzer) i ustaw przycięcie.
         self._auto_detect_t0("import")
 
     def _auto_detect_t0(self, purpose: str) -> None:
@@ -1881,6 +1896,67 @@ class MainWindow(QMainWindow):
             output_format=self.format_combo.currentData(),
         )
 
+    # --- zapamiętywanie ustawień per-plik ---
+    def _collect_file_settings(self) -> dict:
+        """Komplet parametrów aktualnego pliku do zapisu w AppData."""
+        return {
+            "style": self.current_style().to_dict(),
+            "source": "id" if self.rb_id.isChecked() else "text",
+            "id": self.id_spin.value(),
+            "timeline": self.timeline_edit.toPlainText(),
+            "anchor": self._anchor_mode().value,
+            "t0": self.t0_spin.value(),
+            "trim_start": self.trim_start_spin.value(),
+            "trim_end": self.trim_end_spin.value(),
+            "tail": self.tail_spin.value(),
+            "gpu": self.gpu_chk.isChecked(),
+            "no_overlay": self.no_overlay_chk.isChecked(),
+            "format": self.format_combo.currentData(),
+            "output": self.out_edit.text(),
+        }
+
+    def _apply_file_settings(self, data: dict) -> None:
+        """Przywraca parametry pliku zapisane przy poprzednim renderze/kolejce.
+
+        Wywoływane po analizie audio (spiny czasu mają już poprawny zakres)."""
+        try:
+            style = OverlayStyle.from_dict(data["style"])
+            self._apply_style(style)  # ustawia też język, zegar, planszę START
+        except Exception:  # noqa: BLE001
+            pass
+        if data.get("source") == "text":
+            self.rb_text.setChecked(True)
+        else:
+            self.rb_id.setChecked(True)
+        if data.get("id"):
+            self.id_spin.setValue(int(data["id"]))
+        if data.get("timeline"):
+            self.timeline_edit.setPlainText(data["timeline"])
+        aidx = self.anchor_combo.findData(data.get("anchor", AnchorMode.START_SIGNAL.value))
+        if aidx >= 0:
+            self.anchor_combo.setCurrentIndex(aidx)
+        self.t0_spin.setValue(float(data.get("t0", 0.0)))
+        self.trim_start_spin.setValue(float(data.get("trim_start", 0.0)))
+        self.trim_end_spin.setValue(float(data.get("trim_end", 0.0)))
+        self.tail_spin.setValue(float(data.get("tail", 5.0)))
+        self.gpu_chk.setChecked(bool(data.get("gpu", True)))
+        self.no_overlay_chk.setChecked(bool(data.get("no_overlay", False)))
+        fidx = self.format_combo.findData(data.get("format", "mp4"))
+        if fidx >= 0:
+            self.format_combo.setCurrentIndex(fidx)
+        if data.get("output"):
+            self.out_edit.setText(data["output"])
+        self._update_preview()
+
+    def _save_file_settings(self) -> None:
+        """Zapisuje parametry bieżącego pliku do AppData (cicho — błąd nie blokuje renderu)."""
+        if not self.video_path:
+            return
+        try:
+            config.save_file_settings(self.video_path, self._collect_file_settings())
+        except Exception:  # noqa: BLE001
+            pass
+
     def _build_cli_command(self) -> str:
         """Buduje równoważne wywołanie CLI (PiroOverlay.exe …) z bieżących ustawień.
 
@@ -1978,6 +2054,7 @@ class MainWindow(QMainWindow):
         kwargs = self._collect_render_kwargs()
         if kwargs is None:
             return
+        self._save_file_settings()  # zapamiętaj parametry tego pliku
         self._render_busy = True
         self.render_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
@@ -2096,6 +2173,7 @@ class MainWindow(QMainWindow):
         kwargs = self._collect_render_kwargs()
         if kwargs is None:
             return
+        self._save_file_settings()  # zapamiętaj parametry tego pliku
         job = RenderJob(
             id=uuid.uuid4().hex,
             label=f"{Path(str(kwargs['video_path'])).name} → {Path(str(kwargs['out_path'])).name}",

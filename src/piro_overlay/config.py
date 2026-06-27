@@ -78,3 +78,59 @@ def load_last_dir(key: str) -> str | None:
         return None
     except Exception:  # noqa: BLE001
         return None
+
+
+# --- ustawienia per-plik (zapamiętane przy renderze / dodaniu do kolejki) ---
+_MAX_FILE_ENTRIES = 100  # limit wpisów — najstarsze usuwane przy przekroczeniu
+
+
+def _file_settings_path() -> Path:
+    return config_dir() / "file_settings.json"
+
+
+def _file_key(video_path: str | Path) -> str:
+    """Klucz wpisu = znormalizowana, bezwzględna ścieżka pliku."""
+    try:
+        return str(Path(video_path).resolve())
+    except Exception:  # noqa: BLE001
+        return str(video_path)
+
+
+def _load_file_store() -> dict:
+    p = _file_settings_path()
+    if not p.exists():
+        return {}
+    try:
+        import json
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def save_file_settings(video_path: str | Path, data: dict) -> None:
+    """Zapisuje komplet parametrów dla danego pliku wideo (klucz = ścieżka).
+
+    Wpis trafia na koniec (najświeższy); przy przekroczeniu limitu usuwane są
+    najstarsze wpisy. Całość trzymana w jednym pliku JSON w katalogu konfiguracji.
+    """
+    try:
+        import json
+        store = _load_file_store()
+        key = _file_key(video_path)
+        store.pop(key, None)  # ponowny zapis → przenieś na koniec (LRU)
+        store[key] = data
+        overflow = len(store) - _MAX_FILE_ENTRIES
+        if overflow > 0:
+            for old in list(store.keys())[:overflow]:
+                store.pop(old, None)
+        _file_settings_path().write_text(
+            json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def load_file_settings(video_path: str | Path) -> dict | None:
+    """Wczytuje zapisane parametry dla danego pliku wideo (None gdy brak)."""
+    data = _load_file_store().get(_file_key(video_path))
+    return data if isinstance(data, dict) else None
