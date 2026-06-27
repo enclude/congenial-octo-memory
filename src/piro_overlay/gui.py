@@ -863,6 +863,10 @@ class MainWindow(QMainWindow):
         # Zapisane ustawienia tego pliku, czekające na zastosowanie po analizie audio
         # (spiny czasu mają sensowny zakres dopiero po poznaniu długości nagrania).
         self._pending_file_settings: dict | None = None
+        # True gdy ustawienia bieżącego pliku są „ustabilizowane" (po analizie audio):
+        # dopiero wtedy wolno je zapisać (inaczej zapisalibyśmy domyślne wartości
+        # widgetów, zanim wczytany/wykryty T0/trim zostanie zastosowany).
+        self._file_settings_ready: bool = False
         # Edycja pozycji w podglądzie (przeciąganie nakładek).
         self._preview_rects: dict[str, tuple[int, int, int, int]] = {}
         self._grab: dict | None = None
@@ -1359,6 +1363,11 @@ class MainWindow(QMainWindow):
             self._set_video(path)
 
     def _set_video(self, path: str):
+        # Zanim podmienimy plik — zapisz ustawienia poprzedniego (jeśli były gotowe),
+        # by nie zgubić zmian zrobionych bez renderu/kolejki (np. wpisane ID z API).
+        if self.video_path and self._file_settings_ready:
+            self._save_file_settings()
+        self._file_settings_ready = False
         self.video_path = path
         self.video_edit.setText(path)
         p = Path(path)
@@ -1404,10 +1413,12 @@ class MainWindow(QMainWindow):
         self._pending_file_settings = None
         if pending:
             self._apply_file_settings(pending)
+            self._file_settings_ready = True  # wolno zapisywać (mamy komplet)
             self.statusBar().showMessage(
                 "Wczytano zapisane ustawienia dla tego pliku.", 6000)
             return
         # Pierwszy raz dla tego pliku → wykryj T0 (buzzer) i ustaw przycięcie.
+        self._file_settings_ready = True
         self._auto_detect_t0("import")
 
     def _auto_detect_t0(self, purpose: str) -> None:
@@ -1477,7 +1488,9 @@ class MainWindow(QMainWindow):
             return replace(self.session, shots=shots)
         return Session(shots=shots)
 
-    def _fetch_id(self) -> bool:
+    def _fetch_id(self, silent: bool = False) -> bool:
+        """Pobiera dane sesji z API po ID. `silent=True` — bez modala przy błędzie
+        (status bar zamiast okna), używane przy automatycznym wczytaniu ustawień pliku."""
         try:
             self.session = api.fetch_session(self.id_spin.value())
             self.timeline_edit.setPlainText(
@@ -1492,7 +1505,11 @@ class MainWindow(QMainWindow):
             self._update_preview()
             return True
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Błąd API", str(exc))
+            if silent:
+                self.statusBar().showMessage(
+                    f"Nie udało się pobrać danych z API (ID {self.id_spin.value()}): {exc}", 8000)
+            else:
+                QMessageBox.critical(self, "Błąd API", str(exc))
             return False
 
     def _fetch_id_and_trim(self):
@@ -1950,6 +1967,10 @@ class MainWindow(QMainWindow):
             self.format_combo.setCurrentIndex(fidx)
         if data.get("output"):
             self.out_edit.setText(data["output"])
+        # Źródło = ID → pobierz dane z API od razu (cicho), żeby metadane toru/
+        # zawodnika i oś czasu były gotowe bez ręcznego „Pobierz".
+        if data.get("source") == "id" and data.get("id"):
+            self._fetch_id(silent=True)
         self._update_preview()
 
     def _save_file_settings(self) -> None:
@@ -2207,6 +2228,10 @@ class MainWindow(QMainWindow):
         return self._queue_window
 
     def closeEvent(self, event):
+        # Zapisz ustawienia bieżącego pliku (np. wpisane ID z API), by były przy
+        # następnym otwarciu — nawet bez renderu/kolejki.
+        if self.video_path and self._file_settings_ready:
+            self._save_file_settings()
         # Przerwij bezpośredni render, by nie niszczyć działającego QThread.
         if self.worker is not None and self.worker.isRunning():
             self.worker.cancel()
