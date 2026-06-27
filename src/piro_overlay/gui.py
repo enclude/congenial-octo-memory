@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
 from PIL import Image
 from PIL.ImageQt import ImageQt
 
-from . import __version__, api, audio_sync, ffmpeg, overlay, render, resources
+from . import __version__, api, audio_sync, config, ffmpeg, overlay, render, resources
 from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session
 from .parser import parse_timeline
 
@@ -777,6 +777,10 @@ class MainWindow(QMainWindow):
         self._scrubber_timer = QTimer()
         self._scrubber_timer.setSingleShot(True)
         self._scrubber_timer.timeout.connect(self._do_scrubber_preview)
+        # Autosave stylu — debouncowany, aby nie pisać na dysk przy każdym spinboxie
+        self._autosave_timer = QTimer()
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.timeout.connect(lambda: config.save_last_style(self.current_style()))
         self.setWindowTitle(f"Piro Overlay v{__version__}")
         self.setWindowIcon(QIcon(resources.icon_path()))
         self.setAcceptDrops(True)  # drag&drop pliku
@@ -831,6 +835,11 @@ class MainWindow(QMainWindow):
         # Etykieta kotwicy (T0/T1) zależy od trybu — podłączamy po utworzeniu waveformu.
         self.anchor_combo.currentIndexChanged.connect(self._on_anchor_mode_changed)
         self._on_anchor_mode_changed()
+
+        # Wczytaj ostatni styl z dysku (jeśli istnieje) — bez triggerowania autosave.
+        last_style = config.load_last_style()
+        if last_style is not None:
+            self._apply_style(last_style)
 
         self.setCentralWidget(central)
 
@@ -1381,6 +1390,7 @@ class MainWindow(QMainWindow):
             self._show_image(frame)
         except Exception:  # noqa: BLE001
             pass
+        self._autosave_timer.start(1000)
 
     def _safe_session(self):
         try:
