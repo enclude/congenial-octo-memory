@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QColorDialog, QComboBox, QCheckBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QProgressBar, QPushButton, QRadioButton, QScrollArea, QSizePolicy,
-    QSpinBox, QPlainTextEdit, QVBoxLayout, QWidget,
+    QSpinBox, QSplitter, QPlainTextEdit, QVBoxLayout, QWidget,
 )
 
 from PIL import Image
@@ -816,10 +816,10 @@ class MainWindow(QMainWindow):
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
         left_scroll.setWidget(left_container)
-        left_scroll.setMinimumWidth(420)
-        root.addWidget(left_scroll, 2)
+        left_scroll.setMinimumWidth(360)
 
         right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
         self.preview_label = QLabel("Przeciągnij tu plik wideo lub użyj „…”")
         self.preview_label.setMinimumSize(480, 270)
         self.preview_label.setAlignment(Qt.AlignCenter)
@@ -831,7 +831,18 @@ class MainWindow(QMainWindow):
         self.waveform.trimChanged.connect(self._on_wave_trim)
         self.waveform.previewAt.connect(self._on_preview_at)
         right.addWidget(self.waveform, 1)
-        root.addLayout(right, 3)
+        right_container = QWidget()
+        right_container.setLayout(right)
+
+        # QSplitter — użytkownik może przeciągnąć granicę i zwęzić lewą kolumnę.
+        # Lewy panel dostaje mniejszy udział startowy, by nie był zbyt szeroki.
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(left_scroll)
+        splitter.addWidget(right_container)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([380, 800])
+        root.addWidget(splitter)
 
         # Etykieta kotwicy (T0/T1) zależy od trybu — podłączamy po utworzeniu waveformu.
         self.anchor_combo.currentIndexChanged.connect(self._on_anchor_mode_changed)
@@ -935,7 +946,8 @@ class MainWindow(QMainWindow):
         form.addRow("Przytnij od / do", _wrap(trow))
 
         self.tail_spin = _dspin(0.0, 60.0, 0.5, " s", 5.0)
-        form.addRow("Margines po ostatnim strzale", self.tail_spin)
+        self.tail_spin.setToolTip("Margines (s) doliczany po ostatnim strzale przy auto-przycięciu.")
+        form.addRow("Margines końcowy", self.tail_spin)
         autotrim_btn = QPushButton("Auto-przycięcie")
         autotrim_btn.setToolTip(
             "Ustaw zakres przycięcia: 5 s przed startem → ostatni strzał + margines.")
