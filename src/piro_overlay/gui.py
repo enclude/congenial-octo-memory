@@ -138,6 +138,7 @@ class RenderWorker(QThread):
 class FrameExtractWorker(QThread):
     """Wyciąga jedną klatkę z wideo w tle — FFmpeg nie blokuje UI."""
     done = Signal(object, float)   # (PIL.Image, anchor_t)
+    failed = Signal(str)
 
     def __init__(self, video_path: str, anchor_t: float):
         super().__init__()
@@ -153,8 +154,8 @@ class FrameExtractWorker(QThread):
                 frame = Image.open(frame_png).convert("RGBA")
                 frame.load()  # wczytaj do pamięci zanim katalog tymczasowy zniknie
             self.done.emit(frame, self.anchor_t)
-        except Exception:  # noqa: BLE001 — podgląd nie krytyczny
-            pass
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
 
 
 class WaveformWorker(QThread):
@@ -1314,8 +1315,10 @@ class MainWindow(QMainWindow):
         if self._frame_worker and self._frame_worker.isRunning():
             self._scrubber_timer.start(150)
             return
-        self._frame_worker = FrameExtractWorker(self.video_path, t)
+        self._frame_worker = FrameExtractWorker(self.lrf_path or self.video_path, t)
         self._frame_worker.done.connect(self._on_scrubber_frame_ready)
+        self._frame_worker.failed.connect(
+            lambda m: self.preview_label.setText("Błąd podglądu klatki:\n" + m))
         self._frame_worker.start()
 
     def _on_scrubber_frame_ready(self, frame: Image.Image, t: float) -> None:
@@ -1359,8 +1362,10 @@ class MainWindow(QMainWindow):
                 return  # ten sam timestamp, poczekaj na wynik
             self._preview_timer.start(150)  # inny czas — retry gdy worker skończy
             return
-        self._frame_worker = FrameExtractWorker(self.video_path, anchor_t)
+        self._frame_worker = FrameExtractWorker(self.lrf_path or self.video_path, anchor_t)
         self._frame_worker.done.connect(self._on_frame_ready)
+        self._frame_worker.failed.connect(
+            lambda m: self.preview_label.setText("Błąd podglądu klatki:\n" + m))
         self._frame_worker.start()
 
     def _on_frame_ready(self, frame: Image.Image, anchor_t: float):
@@ -1388,6 +1393,9 @@ class MainWindow(QMainWindow):
         try:
             session = self.session or self._safe_session()
             if session is None or not session.shots:
+                # Brak strzałów (np. zaraz po wczytaniu, pusty timeline) — pokaż
+                # samą klatkę, żeby podgląd nie wisiał na komunikacie ładowania.
+                self._show_image(self._cached_frame.copy())
                 return
             style = self.current_style()
             mode = self._anchor_mode()
