@@ -179,23 +179,29 @@ def detect_start(video_path: str | Path,
     return onsets[0] if onsets else None
 
 
-def _bandpass_fft(samples: np.ndarray, sr: int, f_low: float, f_high: float) -> np.ndarray:
-    """Zero-phase filtr pasmowy przez FFT. Nie wymaga scipy."""
-    n = samples.size
-    spec = np.fft.rfft(samples.astype(np.float64))
-    freqs = np.fft.rfftfreq(n, 1.0 / sr)
-    mask = (freqs >= f_low) & (freqs <= f_high)
-    spec[~mask] = 0.0
-    return np.fft.irfft(spec, n)
+_BUZZER_BAND = (2000.0, 4500.0)   # pasmo typowego buzzera shot-timera
+_BUZZER_CONC_MIN = 0.7            # min. udział energii w paśmie (tonalność)
+_BUZZER_MIN_RUN = 3              # min. liczba okien 50 ms (≥150 ms ciągłego tonu)
+_BUZZER_FLOOR_FRAC = 0.02        # próg głośności względem najgłośniejszego okna
 
 
 def detect_dji_start(video_path: str | Path,
                      start: float | None = None,
                      end: float | None = None) -> float | None:
-    """Detekcja bzyczka startu zoptymalizowana pod nagrania DJI.
+    """Detekcja bzyczka sygnału startu (shot-timer) — odporna na strzały.
 
-    Stosuje filtr pasmowy 2000–4500 Hz (pasmo typowego buzzera shot-timera),
-    co odrzuca strzały (szeroki spektrum, dużo basu) i szumy tła.
+    Bzyczek to **czysty, ciągły ton** w paśmie 2000–4500 Hz: niemal cała jego
+    energia leży w tym paśmie (wysoka „koncentracja") i utrzymuje się przez
+    setki ms. Strzał to przeciwnie — szerokopasmowy impuls (energia rozłożona
+    od basu po wysokie, trwa <100 ms). Dlatego NIE wystarczy szukać
+    najgłośniejszego okna w paśmie — donośny strzał potrafi mieć w paśmie
+    więcej energii niż buzzer. Rozróżniamy je po:
+
+    1. koncentracji = energia_w_paśmie / energia_całkowita okna (≥ 0.7),
+    2. ciągłości — kandydat musi trwać ≥150 ms (3 okna po 50 ms).
+
+    Spośród kwalifikujących się przebiegów wybieramy NAJWCZEŚNIEJSZY — sygnał
+    startu poprzedza strzelanie. Zwraca czas narastającego zbocza (T0) lub None.
     """
     samples, sr = _load_audio(video_path)
 
@@ -205,40 +211,37 @@ def detect_dji_start(video_path: str | Path,
     hi = max(lo, min(hi, samples.size))
     offset_s = lo / sr
     chunk = samples[lo:hi]
-    if chunk.size == 0:
-        return None
 
-    chunk = _bandpass_fft(chunk, sr, 2000, 4500)
-
-    # Dłuższe okno (50 ms) — bzyczek to sygnał ciągły, nie impuls.
-    win = max(1, int(sr * 0.05))
+    win = max(1, int(sr * 0.05))  # okno 50 ms
     n_windows = chunk.size // win
     if n_windows == 0:
         return None
 
-    trimmed = chunk[:n_windows * win].reshape(n_windows, win)
-    energy = np.sqrt((trimmed.astype(np.float64) ** 2).mean(axis=1))
+    seg = chunk[:n_windows * win].reshape(n_windows, win)
+    spec = np.abs(np.fft.rfft(seg * np.hanning(win), axis=1)) ** 2
+    freqs = np.fft.rfftfreq(win, 1.0 / sr)
+    band = (freqs >= _BUZZER_BAND[0]) & (freqs <= _BUZZER_BAND[1])
 
-    median = np.median(energy)
-    mad = np.median(np.abs(energy - median)) + 1e-9
-    threshold = median + 5.0 * mad
+    inband = spec[:, band].sum(axis=1)
+    total = spec.sum(axis=1) + 1e-12
+    conc = inband / total
 
-    # Bzyczek to czysty, donośny ton w paśmie 2–4.5 kHz — w tym paśmie jest
-    # zwykle NAJGŁOŚNIEJSZYM zdarzeniem (głośniejszym niż strzały, które mają
-    # energię rozłożoną szeroko). Wybieramy więc najsilniejszy impuls, a NIE
-    # pierwszy przekraczający próg — dzięki temu przypadkowy szum w pierwszych
-    # sekundach nagrania nie „kradnie" detekcji przed właściwym sygnałem.
-    peak = int(np.argmax(energy))
-    if energy[peak] < threshold:
-        return None  # brak wyraźnego bzyczka w paśmie
+    floor = inband.max() * _BUZZER_FLOOR_FRAC
+    cand = (conc >= _BUZZER_CONC_MIN) & (inband >= floor)
 
-    # Cofnij się do początku impulsu (narastającego zbocza) — T0 to moment
-    # ROZPOCZĘCIA bzyczka, nie jego najgłośniejsza chwila.
-    edge_thr = max(threshold, energy[peak] * 0.25)
-    onset = peak
-    while onset > 0 and energy[onset - 1] >= edge_thr:
-        onset -= 1
-    return round(offset_s + onset * win / sr, 3)
+    # Najwcześniejszy ciągły przebieg kandydatów o długości ≥ _BUZZER_MIN_RUN.
+    i = 0
+    while i < n_windows:
+        if cand[i]:
+            j = i
+            while j + 1 < n_windows and cand[j + 1]:
+                j += 1
+            if (j - i + 1) >= _BUZZER_MIN_RUN:
+                return round(offset_s + i * win / sr, 3)
+            i = j + 1
+        else:
+            i += 1
+    return None
 
 
 def resolve_t0(anchor_time: float, mode: AnchorMode, first_shot_time: float) -> float:
