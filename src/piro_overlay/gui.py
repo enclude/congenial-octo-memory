@@ -204,17 +204,19 @@ class StartDetectWorker(QThread):
     done = Signal(int, str, object)   # (gen, purpose, detected_t0 lub None)
 
     def __init__(self, video_path: str, purpose: str, gen: int,
-                 start: float | None = None, end: float | None = None):
+                 win_start: float | None = None, win_end: float | None = None):
         super().__init__()
         self.video_path = video_path
         self.purpose = purpose
         self.gen = gen
-        self.start = start
-        self.end = end
+        # UWAGA: NIE nazywać tych pól `start`/`end` — przesłaniają QThread.start()
+        # (worker.start() leciało wtedy jako None() → TypeError, detekcja T0 cicho padała).
+        self.win_start = win_start
+        self.win_end = win_end
 
     def run(self):
         try:
-            t0 = audio_sync.detect_dji_start(self.video_path, start=self.start, end=self.end)
+            t0 = audio_sync.detect_dji_start(self.video_path, start=self.win_start, end=self.win_end)
         except Exception:  # noqa: BLE001
             t0 = None
         self.done.emit(self.gen, self.purpose, t0)

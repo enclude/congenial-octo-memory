@@ -130,6 +130,12 @@ class OverlayStyle:
     start_banner_border_width: int = 3
 
     def __post_init__(self) -> None:
+        # Normalizuj język do Lang. GUI podaje go przez QComboBox.currentData(),
+        # a że Lang to (str, Enum), Qt gubi typ w round-tripie QVariant i zwraca
+        # czysty str "pl"/"en". Bez tego `to_dict()` (self.lang.value) wybuchał i
+        # CICHO blokował zapis stylu/ustawień pliku (last_style.json = 0 B!).
+        if not isinstance(self.lang, Lang):
+            self.lang = Lang(self.lang)
         if self.position not in ANCHOR_POSITIONS:
             raise ValueError(
                 f"position musi być jednym z {ANCHOR_POSITIONS}, otrzymano {self.position!r}"

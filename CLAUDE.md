@@ -229,6 +229,16 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
 
 ## Uwagi / pułapki
 
+- **`Lang` to `(str, Enum)` → QComboBox gubi typ:** `lang_combo.addItem("Polski", Lang.PL)`
+  + `currentData()` zwraca CZYSTY str `"pl"` (Qt spłaszcza str-enum w QVariant), nie `Lang.PL`.
+  Dlatego `OverlayStyle.__post_init__` NORMALIZUJE `lang` do `Lang` (`Lang(self.lang)`).
+  Bez tego `to_dict()` (`self.lang.value`) wybuchał i — bo `save_*` łapią wyjątki CICHO —
+  blokował zapis stylu i ustawień pliku; objaw: `last_style.json` = 0 B i brak
+  `file_settings.json`. Lekcja: nie polegać na typie `currentData()` dla str-enumów.
+- **QThread: nie nazywaj pól `start`/`end`** — przesłaniają `QThread.start()`. `StartDetectWorker`
+  miał `self.start = start` → `worker.start()` leciało jako `None()` → `TypeError`, a że to
+  było w handlerze sygnału, detekcja T0 po imporcie CICHO padała. Pola nazwane `win_start`/
+  `win_end`.
 - **`ffmpeg.available_filters()` — szerokość kolumny flag:** wiersz `-filters` ma flagi
   2–3 znaki (` T. drawtext   V->V   …`). Regex NIE może zakładać 3 znaków (`[A-Z.]{3}`),
   bo wtedy `drawtext` nie pasuje → `has_filter("drawtext")` zwraca False → płynący zegar
