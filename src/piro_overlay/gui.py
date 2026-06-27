@@ -1063,6 +1063,24 @@ class MainWindow(QMainWindow):
         self.clock_chk.stateChanged.connect(self._update_preview)
         form.addRow(self.clock_chk)
 
+        self.clock_pos_combo = QComboBox()
+        self.clock_pos_combo.addItem("Nad nakładką (auto)", "auto")
+        for p in ANCHOR_POSITIONS:
+            self.clock_pos_combo.addItem(p, p)
+        self.clock_pos_combo.setToolTip(
+            "Gdzie umieścić zegar. „Nad nakładką (auto)” trzyma go tuż nad panelem\n"
+            "strzału; pozostałe opcje pozycjonują go niezależnie (róg + offset poniżej).")
+        self.clock_pos_combo.currentIndexChanged.connect(self._update_preview)
+        form.addRow("Pozycja zegara", self.clock_pos_combo)
+
+        self.clock_off_x = _ispin(0, 2000, 32); self.clock_off_y = _ispin(0, 2000, 32)
+        self.clock_off_x.setToolTip("Offset zegara X (używany, gdy pozycja ≠ „auto”).")
+        self.clock_off_y.setToolTip("Offset zegara Y (używany, gdy pozycja ≠ „auto”).")
+        self.clock_off_x.valueChanged.connect(self._update_preview)
+        self.clock_off_y.valueChanged.connect(self._update_preview)
+        crow = QHBoxLayout(); crow.addWidget(self.clock_off_x); crow.addWidget(self.clock_off_y)
+        form.addRow("Offset zegara X / Y", _wrap(crow))
+
         self.banner_spin = _dspin(0.0, 10.0, 0.5, " s", 1.0)
         form.addRow("Czas planszy START", self.banner_spin)
 
@@ -1109,7 +1127,7 @@ class MainWindow(QMainWindow):
             self.lang_combo, self.scale_spin, self.pos_combo,
             self.off_x, self.off_y, self.bg_btn, self.text_btn,
             self.accent_btn, self.border_btn, self.border_chk, self.border_w,
-            self.clock_chk,
+            self.clock_chk, self.clock_pos_combo, self.clock_off_x, self.clock_off_y,
             self.banner_spin, self.banner_scale_spin, self.banner_bg_btn,
             self.banner_text_btn, self.banner_border_btn, self.banner_border_chk,
             self.banner_border_w,
@@ -1131,6 +1149,11 @@ class MainWindow(QMainWindow):
         self.border_chk.setChecked(style.border_enabled)
         self.border_w.setValue(style.border_width)
         self.clock_chk.setChecked(style.show_running_clock)
+        cidx = self.clock_pos_combo.findData(style.clock_position)
+        if cidx >= 0:
+            self.clock_pos_combo.setCurrentIndex(cidx)
+        self.clock_off_x.setValue(style.clock_offset_x)
+        self.clock_off_y.setValue(style.clock_offset_y)
         self.banner_spin.setValue(style.start_banner_duration)
         self.banner_scale_spin.setValue(style.start_banner_scale)
         self.banner_bg_btn._rgba = style.start_banner_bg_color; self.banner_bg_btn._refresh()
@@ -1234,6 +1257,9 @@ class MainWindow(QMainWindow):
             accent_color=self.accent_btn.rgba(), border_color=self.border_btn.rgba(),
             border_enabled=self.border_chk.isChecked(), border_width=self.border_w.value(),
             show_running_clock=self.clock_chk.isChecked(),
+            clock_position=self.clock_pos_combo.currentData(),
+            clock_offset_x=self.clock_off_x.value(),
+            clock_offset_y=self.clock_off_y.value(),
             start_banner_duration=self.banner_spin.value(),
             start_banner_scale=self.banner_scale_spin.value(),
             start_banner_bg_color=self.banner_bg_btn.rgba(),
@@ -1551,10 +1577,7 @@ class MainWindow(QMainWindow):
                     composite.alpha_composite(panel, (x, y))
                     break
             if style.show_running_clock and t >= t0 - 1e-6:
-                clock = overlay.render_clock_panel(style, frame.size, t - t0)
-                cx, py = panel_xy or overlay.panel_origin(clock.size, frame.size, style)
-                cy = max(0, py - clock.size[1] - max(2, clock.size[1] // 6))
-                composite.alpha_composite(clock, (cx, cy))
+                self._composite_clock(composite, style, session, t - t0)
             self._show_image(composite)
         except Exception:  # noqa: BLE001
             self._show_image(frame)
@@ -1621,13 +1644,23 @@ class MainWindow(QMainWindow):
             frame.alpha_composite(panel, (x, y))
             if style.show_running_clock:
                 elapsed = 0.0 if mode == AnchorMode.START_SIGNAL else session.shots[0].czas
-                clock = overlay.render_clock_panel(style, frame.size, elapsed)
-                cy = max(0, y - clock.size[1] - max(2, clock.size[1] // 6))
-                frame.alpha_composite(clock, (x, cy))
+                self._composite_clock(frame, style, session, elapsed)
             self._show_image(frame)
         except Exception:  # noqa: BLE001
             pass
         self._autosave_timer.start(1000)
+
+    def _composite_clock(self, frame, style, session, elapsed: float) -> None:
+        """Nakłada panel płynącego zegara na klatkę podglądu — pozycja jak w renderze
+        (auto = nad panelem strzału, albo niezależny róg + offset zegara)."""
+        clock = overlay.render_clock_panel(style, frame.size, elapsed)
+        if style.clock_position == "auto":
+            ref_h = overlay.render_shot_panel(session, 0, style, frame.size).size[1]
+            gap = render._clock_gap(frame.size, style)
+            xy = render._clock_xy(style, frame.size, clock.size, ref_h, gap)
+        else:
+            xy = render._clock_xy(style, frame.size, clock.size, 0, 0)
+        frame.alpha_composite(clock, xy)
 
     def _safe_session(self):
         try:

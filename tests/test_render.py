@@ -27,6 +27,21 @@ def test_clock_png_fallback_events():
     assert evs[-1].end <= 8.0                        # i nie wychodzi poza źródło
 
 
+def test_clock_position_explicit():
+    # Pozycja niezależna (top-right) — zegar w rogu wg własnego offsetu, nie nad panelem.
+    style = OverlayStyle(show_running_clock=True, clock_position="top-right",
+                         clock_offset_x=10, clock_offset_y=20)
+    x, y = render._clock_xy(style, (640, 360), (100, 30), max_panel_h=200, gap=5)
+    assert (x, y) == (640 - 100 - 10, 20)
+
+
+def test_clock_position_auto_above_panel():
+    style = OverlayStyle(show_running_clock=True, clock_position="auto", position="bottom-left")
+    # auto + bottom → tuż nad najwyższym panelem strzału
+    _, y = render._clock_xy(style, (640, 360), (100, 30), max_panel_h=120, gap=6)
+    assert y == 360 - 30 - 32 - 120 - 6   # h - clock_h - offset_y - panel_h - gap
+
+
 def test_auto_trim_basic():
     # T0=10.0, ostatni strzał 55.68s, margines 5s, lead-in domyślny 5s
     start, end = auto_trim_window(10.0, 55.68, tail=5.0)

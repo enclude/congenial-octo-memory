@@ -114,6 +114,11 @@ class OverlayStyle:
 
     # Płynący zegar od T0 (nad nakładką ze strzałami, widoczny od STARTU)
     show_running_clock: bool = False
+    # Pozycja zegara: "auto" = nad nakładką ze strzałami; albo jeden z ANCHOR_POSITIONS
+    # (wtedy zegar pozycjonowany niezależnie wg własnego offsetu).
+    clock_position: str = "auto"
+    clock_offset_x: int = 32
+    clock_offset_y: int = 32
 
     # Plansza START
     start_banner_duration: float = 1.0
@@ -128,6 +133,11 @@ class OverlayStyle:
         if self.position not in ANCHOR_POSITIONS:
             raise ValueError(
                 f"position musi być jednym z {ANCHOR_POSITIONS}, otrzymano {self.position!r}"
+            )
+        if self.clock_position not in ("auto", *ANCHOR_POSITIONS):
+            raise ValueError(
+                f"clock_position musi być 'auto' lub jednym z {ANCHOR_POSITIONS}, "
+                f"otrzymano {self.clock_position!r}"
             )
 
     def to_dict(self) -> dict:
@@ -148,6 +158,9 @@ class OverlayStyle:
             "text_color": c(self.text_color),
             "accent_color": c(self.accent_color),
             "show_running_clock": self.show_running_clock,
+            "clock_position": self.clock_position,
+            "clock_offset_x": self.clock_offset_x,
+            "clock_offset_y": self.clock_offset_y,
             "start_banner_duration": self.start_banner_duration,
             "start_banner_scale": self.start_banner_scale,
             "start_banner_bg_color": c(self.start_banner_bg_color),
@@ -183,6 +196,9 @@ class OverlayStyle:
             text_color=color("text_color", (255, 255, 255, 255)),
             accent_color=color("accent_color", (255, 196, 0, 255)),
             show_running_clock=bool(d.get("show_running_clock", False)),
+            clock_position=d.get("clock_position", "auto"),
+            clock_offset_x=int(d.get("clock_offset_x", 32)),
+            clock_offset_y=int(d.get("clock_offset_y", 32)),
             start_banner_duration=float(d.get("start_banner_duration", 1.0)),
             start_banner_scale=float(d.get("start_banner_scale", 1.0)),
             start_banner_bg_color=color("start_banner_bg_color", (0, 0, 0, 200)),

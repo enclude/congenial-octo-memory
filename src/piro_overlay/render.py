@@ -11,7 +11,7 @@ import functools
 import re
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -124,17 +124,30 @@ def _clock_drawtext_seg(cur: str, style: OverlayStyle, video_size: tuple[int, in
     max_panel_h = _max_panel_h(events)
     clock_out = t0 - src_start  # moment STARTU na osi wyjścia (po przycięciu)
 
-    vert, _, horiz = style.position.partition("-")
-    if horiz == "left":
-        x_expr = f"{style.offset_x}"
-    elif horiz == "right":
-        x_expr = f"w-text_w-{style.offset_x}"
+    if style.clock_position != "auto":
+        # Pozycja niezależna: róg + własny offset (jak panel, ale dla zegara).
+        vert, _, horiz = style.clock_position.partition("-")
+        ox, oy = style.clock_offset_x, style.clock_offset_y
+        if horiz == "left":
+            x_expr = f"{ox}"
+        elif horiz == "right":
+            x_expr = f"w-text_w-{ox}"
+        else:
+            x_expr = "(w-text_w)/2"
+        y_expr = f"{oy}" if vert == "top" else f"max(0,h-text_h-{oy})"
     else:
-        x_expr = "(w-text_w)/2"
-    if vert == "top":
-        y_expr = f"max(0,{style.offset_y}-text_h-{gap})"
-    else:  # bottom — zegar nad najwyższym panelem strzału
-        y_expr = f"max(0,h-{style.offset_y}-{max_panel_h}-text_h-{gap})"
+        # "auto" — nad nakładką ze strzałami, zgodnie z rogiem kotwicy panelu.
+        vert, _, horiz = style.position.partition("-")
+        if horiz == "left":
+            x_expr = f"{style.offset_x}"
+        elif horiz == "right":
+            x_expr = f"w-text_w-{style.offset_x}"
+        else:
+            x_expr = "(w-text_w)/2"
+        if vert == "top":
+            y_expr = f"max(0,{style.offset_y}-text_h-{gap})"
+        else:  # bottom — zegar nad najwyższym panelem strzału
+            y_expr = f"max(0,h-{style.offset_y}-{max_panel_h}-text_h-{gap})"
 
     font = str(overlay.font_path(bold=True)).replace("\\", "/")
     c = f"{clock_out:.3f}"
@@ -158,7 +171,12 @@ _CLOCK_PNG_MAX = 300  # górny limit paneli PNG zegara (chroni filtergraph)
 
 def _clock_xy(style: OverlayStyle, video_size: tuple[int, int],
               clock_size: tuple[int, int], max_panel_h: int, gap: int) -> tuple[int, int]:
-    """Pozycja panelu zegara — nad panelem strzału, zgodnie z rogiem kotwicy."""
+    """Pozycja panelu zegara (px). „auto" = nad panelem strzału wg rogu kotwicy;
+    inaczej niezależny róg + własny offset zegara."""
+    if style.clock_position != "auto":
+        cs = replace(style, position=style.clock_position,
+                     offset_x=style.clock_offset_x, offset_y=style.clock_offset_y)
+        return overlay.panel_origin(clock_size, video_size, cs)
     x, y = overlay.panel_origin(clock_size, video_size, style)
     if style.position.partition("-")[0] == "top":
         y = y - clock_size[1] - gap
