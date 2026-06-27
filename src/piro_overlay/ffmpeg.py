@@ -97,9 +97,14 @@ def has_nvenc() -> bool:
 
 @functools.lru_cache(maxsize=1)
 def available_filters() -> frozenset[str]:
-    """Zbiór nazw filtrów dostępnych w binarce ffmpeg (cache)."""
+    """Zbiór nazw filtrów dostępnych w binarce ffmpeg (cache).
+
+    Format wiersza `-filters`: ` T. drawtext   V->V   opis`. Kolumna flag bywa
+    2–3 znaki (T/S/C/.), więc nie zakładamy stałej szerokości — kotwiczymy na
+    sygnaturze `wej->wyj`, a nazwę bierzemy tuż przed nią.
+    """
     res = _run([ffmpeg_exe(), "-hide_banner", "-filters"])
-    names = re.findall(r"^\s*[A-Z.]{3}\s+(\S+)", res.stdout, re.MULTILINE)
+    names = re.findall(r"^\s*[A-Z.]{1,3}\s+(\w+)\s+\S*->\S*", res.stdout, re.MULTILINE)
     return frozenset(names)
 
 

@@ -1305,6 +1305,8 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _on_autodetect_t0(self, gen: int, purpose: str, detected) -> None:
+        # Automatyczna detekcja po imporcie pliku: T0 + okno 5 s przed → max 75 s po T0.
+        # (Przycięcie po API obsługuje synchronicznie „Pobierz i przytnij".)
         if gen != self._detect_gen:
             return  # przestarzały wynik (nowsza detekcja już w toku) — ignoruj
         if detected is None:
@@ -1315,17 +1317,10 @@ class MainWindow(QMainWindow):
             self.anchor_combo.setCurrentIndex(idx)
         self.t0_spin.setValue(detected)
         dur = self.waveform.duration or None
-        if purpose == "import":
-            start = max(0.0, detected - 5.0)
-            end = detected + 75.0
-            if dur:
-                end = min(end, dur)
-        else:  # "api" — domknij na ostatnim strzale + 5 s
-            session = self.session
-            if not (session and session.shots):
-                return
-            start, end = render.auto_trim_window(
-                detected, session.shots[-1].czas, tail=5.0, lead_in=5.0, duration=dur)
+        start = max(0.0, detected - 5.0)
+        end = detected + 75.0
+        if dur:
+            end = min(end, dur)
         self.trim_start_spin.setValue(start)
         self.trim_end_spin.setValue(end)
 
@@ -1376,14 +1371,53 @@ class MainWindow(QMainWindow):
             return False
 
     def _fetch_id_and_trim(self):
-        """Pobiera dane z API, po czym wykrywa T0 i przycina film:
-        5 s przed T0 → ostatni strzał + 5 s."""
+        """Pobiera dane z API, ustala T0 (wykrywa bzyczek jeśli trzeba) i przycina
+        film: 5 s przed T0 → ostatni strzał + 5 s.
+
+        Działa synchronicznie (deterministycznie) — w przeciwieństwie do detekcji
+        w tle daje natychmiastowy, widoczny wynik i jasny komunikat przy problemie.
+        """
         if not self.video_path:
             QMessageBox.warning(self, "Brak wideo",
                                 "Najpierw wybierz plik wideo — przycięcie wymaga audio.")
             return
-        if self._fetch_id():
-            self._auto_detect_t0("api")
+        if not self._fetch_id():
+            return
+        session = self.session
+        if not (session and session.shots):
+            QMessageBox.warning(self, "Brak osi czasu",
+                                "API nie zwróciło strzałów — nie mam czego przyciąć.")
+            return
+
+        # T0 = już wykryty przy imporcie (t0_spin) albo wykryj teraz (na LRF — szybko).
+        t0 = self.t0_spin.value()
+        if t0 <= 0:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                src = self.lrf_path or self.video_path
+                detected = audio_sync.detect_dji_start(src)
+            finally:
+                QApplication.restoreOverrideCursor()
+            if detected is None:
+                QMessageBox.warning(
+                    self, "Nie wykryto sygnału startu",
+                    "Nie udało się wykryć bzyczka. Ustaw T0 ręcznie (klik na waveformie "
+                    "lub „Wykryj sygnał startu”) i kliknij „Pobierz i przytnij” ponownie.")
+                return
+            t0 = detected
+            idx = self.anchor_combo.findData(AnchorMode.START_SIGNAL.value)
+            if idx >= 0:
+                self.anchor_combo.setCurrentIndex(idx)
+            self.t0_spin.setValue(t0)
+
+        dur = self.waveform.duration or None
+        start, end = render.auto_trim_window(
+            t0, session.shots[-1].czas, tail=5.0, lead_in=5.0, duration=dur)
+        self.trim_start_spin.setValue(start)
+        self.trim_end_spin.setValue(end)
+        self.statusBar().showMessage(
+            f"Przycięto: {start:.2f}s – {end:.2f}s (T0={t0:.2f}s, "
+            f"ostatni strzał {session.shots[-1].czas:.2f}s)", 8000)
 
     @staticmethod
     def _shot_to_text(shot):

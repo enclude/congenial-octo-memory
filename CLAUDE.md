@@ -139,10 +139,12 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   T0 + przycięcie 5 s przed → max 75 s po T0. Przycisk „Pobierz i przytnij"
   (`_fetch_id_and_trim`): pobranie z API + T0 + przycięcie 5 s przed → ostatni strzał + 5 s.
   Zwykły „Pobierz" (`_fetch_id`) tylko pobiera dane (bez detekcji i przycięcia).
-  WAŻNE: detekcje mają token pokolenia (`_detect_gen`) — `_on_autodetect_t0` odrzuca
-  wyniki starsze niż ostatnie żądanie, więc wolniejszy „import" NIE nadpisze świeższego
-  „api". Workery trzymane w `_detect_workers` aż do `finished` (inaczej QThread może
-  zostać zniszczony w trakcie działania = crash).
+  WAŻNE: „Pobierz i przytnij" (`_fetch_id_and_trim`) działa SYNCHRONICZNIE — używa
+  T0 już wykrytego przy imporcie (`t0_spin`), a gdy go brak, wykrywa raz na LRF; zawsze
+  daje widoczny wynik/komunikat (asynchroniczna detekcja w tle bywała „cicho pusta" =
+  wyglądała jak brak działania). Detekcja po imporcie nadal w tle: token pokolenia
+  (`_detect_gen`) w `_on_autodetect_t0` odrzuca przestarzałe wyniki; workery trzymane
+  w `_detect_workers` do `finished` (inaczej QThread niszczony w trakcie = crash).
 - **Zatrzymanie renderu:** przycisk „Zatrzymaj" → `RenderWorker.cancel()` ustawia flagę;
   `render._run_with_progress(..., cancel_check)` sprawdza ją przy każdej linii postępu,
   ubija proces FFmpeg (`proc.kill()`) i podnosi `render.RenderCancelled`. `RenderWorker`
@@ -165,6 +167,11 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
 
 ## Uwagi / pułapki
 
+- **`ffmpeg.available_filters()` — szerokość kolumny flag:** wiersz `-filters` ma flagi
+  2–3 znaki (` T. drawtext   V->V   …`). Regex NIE może zakładać 3 znaków (`[A-Z.]{3}`),
+  bo wtedy `drawtext` nie pasuje → `has_filter("drawtext")` zwraca False → płynący zegar
+  leci awaryjnym fallbackiem PNG (całe sekundy) zamiast `drawtext` (dziesiąte). Kotwiczymy
+  na sygnaturze `wej->wyj`. (Enkodery to inny format — 6 znaków, `available_encoders`.)
 - `ffmpeg.probe` parsuje stderr `ffmpeg -i` tylko z linii zawierającej `Video:` (wcześniejsza
   wersja łapała przypadkowe liczby — patrz `_RES_RE`/`_FPS_RE`).
 - Snapshoty (`tests/snapshots/*.png`) zależą od bundlowanego fontu DejaVu i wersji Pillow;
