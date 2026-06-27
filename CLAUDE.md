@@ -117,7 +117,11 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   WAŻNE — czego NIE robić: samo „najgłośniejsze okno w paśmie" zawodzi, bo donośny strzał
   (szerokopasmowy) potrafi mieć w paśmie więcej energii niż buzzer; rozróżnia je dopiero
   koncentracja (strzał: energia od basu po wysokie → niska koncentracja) + ciągłość (strzał
-  <100 ms). GUI: przycisk „Wykryj sygnał startu" (obok „Wykryj kotwicę") wymusza
+  <100 ms). FALLBACK gdy główny test nic nie znajdzie (bzyczek krótki/zagłuszony — tylko 1
+  okno przebija próg koncentracji): bierze najwcześniejsze okno o conc≥0.7, którego
+  **dominująca częstotliwość jest stabilna ±150 Hz przez ≥150 ms** (ton ma stałą częstotl.,
+  strzał błądzi). Fallback odpala się tylko gdy główny zwróciłby None — zero regresji.
+  GUI: przycisk „Wykryj sygnał startu" (obok „Wykryj kotwicę") wymusza
   `AnchorMode.START_SIGNAL` i ustawia wynik jako T0; zwykłe „Wykryj kotwicę" używa
   `detect_start` (bez filtra, pierwszy onset).
 - **Format wyjściowy:** `format_combo` w GUI → `render.render_video` (MP4/H.264) /

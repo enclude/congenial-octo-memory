@@ -183,6 +183,7 @@ _BUZZER_BAND = (2000.0, 4500.0)   # pasmo typowego buzzera shot-timera
 _BUZZER_CONC_MIN = 0.7            # min. udział energii w paśmie (tonalność)
 _BUZZER_MIN_RUN = 3              # min. liczba okien 50 ms (≥150 ms ciągłego tonu)
 _BUZZER_FLOOR_FRAC = 0.02        # próg głośności względem najgłośniejszego okna
+_BUZZER_FREQ_TOL = 150.0         # tolerancja stałości częstotliwości tonu (Hz)
 
 
 def detect_dji_start(video_path: str | Path,
@@ -201,7 +202,16 @@ def detect_dji_start(video_path: str | Path,
     2. ciągłości — kandydat musi trwać ≥150 ms (3 okna po 50 ms).
 
     Spośród kwalifikujących się przebiegów wybieramy NAJWCZEŚNIEJSZY — sygnał
-    startu poprzedza strzelanie. Zwraca czas narastającego zbocza (T0) lub None.
+    startu poprzedza strzelanie.
+
+    Gdy główny test nic nie znajdzie (bzyczek krótki/zagłuszony tłem — tylko
+    pojedyncze okno przebija próg koncentracji), uruchamiamy łagodniejszy
+    FALLBACK: szukamy okna o wysokiej koncentracji, którego **dominująca
+    częstotliwość** jest stabilna (±150 Hz) przez ≥150 ms. Stabilność tonu
+    odróżnia bzyczek (jedna częstotliwość) od strzału (częstotliwość błądzi),
+    nawet gdy hałas tła obniża koncentrację w sąsiednich oknach.
+
+    Zwraca czas narastającego zbocza (T0) lub None.
     """
     samples, sr = _load_audio(video_path)
 
@@ -221,15 +231,17 @@ def detect_dji_start(video_path: str | Path,
     spec = np.abs(np.fft.rfft(seg * np.hanning(win), axis=1)) ** 2
     freqs = np.fft.rfftfreq(win, 1.0 / sr)
     band = (freqs >= _BUZZER_BAND[0]) & (freqs <= _BUZZER_BAND[1])
+    band_freqs = freqs[band]
 
     inband = spec[:, band].sum(axis=1)
     total = spec.sum(axis=1) + 1e-12
     conc = inband / total
+    dom_hz = band_freqs[np.argmax(spec[:, band], axis=1)]
 
     floor = inband.max() * _BUZZER_FLOOR_FRAC
-    cand = (conc >= _BUZZER_CONC_MIN) & (inband >= floor)
 
-    # Najwcześniejszy ciągły przebieg kandydatów o długości ≥ _BUZZER_MIN_RUN.
+    # --- Główny test: najwcześniejszy ciągły przebieg okien o conc ≥ próg. ---
+    cand = (conc >= _BUZZER_CONC_MIN) & (inband >= floor)
     i = 0
     while i < n_windows:
         if cand[i]:
@@ -241,6 +253,21 @@ def detect_dji_start(video_path: str | Path,
             i = j + 1
         else:
             i += 1
+
+    # --- Fallback: najwcześniejszy ton o stabilnej częstotliwości ≥150 ms. ---
+    for c in np.flatnonzero(conc >= _BUZZER_CONC_MIN):
+        f0 = dom_hz[c]
+        edge_floor = inband[c] * _BUZZER_FLOOR_FRAC
+        left = c
+        while (left > 0 and abs(dom_hz[left - 1] - f0) <= _BUZZER_FREQ_TOL
+               and inband[left - 1] >= edge_floor):
+            left -= 1
+        right = c
+        while (right + 1 < n_windows and abs(dom_hz[right + 1] - f0) <= _BUZZER_FREQ_TOL
+               and inband[right + 1] >= edge_floor):
+            right += 1
+        if (right - left + 1) >= _BUZZER_MIN_RUN:
+            return round(offset_s + left * win / sr, 3)
     return None
 
 
