@@ -946,8 +946,78 @@ class MainWindow(QMainWindow):
         self.banner_border_w.valueChanged.connect(self._update_preview)
         form.addRow("Grubość obramowania START", self.banner_border_w)
 
+        preset_row = QHBoxLayout()
+        load_preset_btn = QPushButton("Wczytaj preset…")
+        save_preset_btn = QPushButton("Zapisz preset…")
+        load_preset_btn.clicked.connect(self._load_preset)
+        save_preset_btn.clicked.connect(self._save_preset)
+        preset_row.addWidget(load_preset_btn)
+        preset_row.addWidget(save_preset_btn)
+        form.addRow(_wrap(preset_row))
+
         self.appearance_box = box
         return box
+
+    def _apply_style(self, style: OverlayStyle) -> None:
+        """Ustawia wszystkie widgety wyglądu z podanego OverlayStyle (bez pośrednich preview)."""
+        widgets = [
+            self.lang_combo, self.scale_spin, self.pos_combo,
+            self.off_x, self.off_y, self.bg_btn, self.text_btn,
+            self.accent_btn, self.border_btn, self.border_chk, self.border_w,
+            self.banner_spin, self.banner_scale_spin, self.banner_bg_btn,
+            self.banner_text_btn, self.banner_border_btn, self.banner_border_chk,
+            self.banner_border_w,
+        ]
+        for w in widgets:
+            w.blockSignals(True)
+
+        idx = self.lang_combo.findData(style.lang)
+        if idx >= 0:
+            self.lang_combo.setCurrentIndex(idx)
+        self.scale_spin.setValue(style.scale)
+        self.pos_combo.setCurrentText(style.position)
+        self.off_x.setValue(style.offset_x)
+        self.off_y.setValue(style.offset_y)
+        self.bg_btn._rgba = style.bg_color;     self.bg_btn._refresh()
+        self.text_btn._rgba = style.text_color; self.text_btn._refresh()
+        self.accent_btn._rgba = style.accent_color; self.accent_btn._refresh()
+        self.border_btn._rgba = style.border_color; self.border_btn._refresh()
+        self.border_chk.setChecked(style.border_enabled)
+        self.border_w.setValue(style.border_width)
+        self.banner_spin.setValue(style.start_banner_duration)
+        self.banner_scale_spin.setValue(style.start_banner_scale)
+        self.banner_bg_btn._rgba = style.start_banner_bg_color; self.banner_bg_btn._refresh()
+        self.banner_text_btn._rgba = style.start_banner_text_color; self.banner_text_btn._refresh()
+        self.banner_border_btn._rgba = style.start_banner_border_color; self.banner_border_btn._refresh()
+        self.banner_border_chk.setChecked(style.start_banner_border_enabled)
+        self.banner_border_w.setValue(style.start_banner_border_width)
+
+        for w in widgets:
+            w.blockSignals(False)
+        self._update_preview()
+
+    def _save_preset(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Zapisz preset wyglądu", "preset_nakładki.json",
+            "Preset JSON (*.json)")
+        if not path:
+            return
+        try:
+            self.current_style().to_json(path)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Błąd zapisu", str(exc))
+
+    def _load_preset(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Wczytaj preset wyglądu", "",
+            "Preset JSON (*.json)")
+        if not path:
+            return
+        try:
+            style = OverlayStyle.from_json(path)
+            self._apply_style(style)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Błąd wczytywania presetu", str(exc))
 
     def _output_group(self):
         box = QGroupBox("Wyjście")

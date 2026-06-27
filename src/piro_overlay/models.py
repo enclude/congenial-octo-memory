@@ -6,6 +6,7 @@ być reużyte zarówno przez warstwę desktop (PySide6), CLI, jak i przyszły ba
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -125,3 +126,69 @@ class OverlayStyle:
             raise ValueError(
                 f"position musi być jednym z {ANCHOR_POSITIONS}, otrzymano {self.position!r}"
             )
+
+    def to_dict(self) -> dict:
+        """Serializuje styl do słownika gotowego do zapisu JSON."""
+        def c(t):
+            return list(t)
+        return {
+            "lang": self.lang.value,
+            "scale": self.scale,
+            "position": self.position,
+            "offset_x": self.offset_x,
+            "offset_y": self.offset_y,
+            "bg_color": c(self.bg_color),
+            "corner_radius": self.corner_radius,
+            "border_enabled": self.border_enabled,
+            "border_color": c(self.border_color),
+            "border_width": self.border_width,
+            "text_color": c(self.text_color),
+            "accent_color": c(self.accent_color),
+            "start_banner_duration": self.start_banner_duration,
+            "start_banner_scale": self.start_banner_scale,
+            "start_banner_bg_color": c(self.start_banner_bg_color),
+            "start_banner_text_color": c(self.start_banner_text_color),
+            "start_banner_border_enabled": self.start_banner_border_enabled,
+            "start_banner_border_color": c(self.start_banner_border_color),
+            "start_banner_border_width": self.start_banner_border_width,
+        }
+
+    def to_json(self, path) -> None:
+        """Zapisuje styl do pliku JSON."""
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+
+    @staticmethod
+    def from_dict(d: dict) -> "OverlayStyle":
+        """Wczytuje styl ze słownika (np. załadowanego z JSON)."""
+        def color(key, default):
+            v = d.get(key, default)
+            return tuple(int(x) for x in v) if isinstance(v, (list, tuple)) else tuple(default)
+
+        return OverlayStyle(
+            lang=Lang(d.get("lang", Lang.PL.value)),
+            scale=float(d.get("scale", 1.0)),
+            position=d.get("position", "bottom-left"),
+            offset_x=int(d.get("offset_x", 32)),
+            offset_y=int(d.get("offset_y", 32)),
+            bg_color=color("bg_color", (0, 0, 0, 170)),
+            corner_radius=int(d.get("corner_radius", 18)),
+            border_enabled=bool(d.get("border_enabled", True)),
+            border_color=color("border_color", (255, 255, 255, 220)),
+            border_width=int(d.get("border_width", 3)),
+            text_color=color("text_color", (255, 255, 255, 255)),
+            accent_color=color("accent_color", (255, 196, 0, 255)),
+            start_banner_duration=float(d.get("start_banner_duration", 1.0)),
+            start_banner_scale=float(d.get("start_banner_scale", 1.0)),
+            start_banner_bg_color=color("start_banner_bg_color", (0, 0, 0, 200)),
+            start_banner_text_color=color("start_banner_text_color", (255, 196, 0, 255)),
+            start_banner_border_enabled=bool(d.get("start_banner_border_enabled", True)),
+            start_banner_border_color=color("start_banner_border_color", (255, 196, 0, 220)),
+            start_banner_border_width=int(d.get("start_banner_border_width", 3)),
+        )
+
+    @staticmethod
+    def from_json(path) -> "OverlayStyle":
+        """Wczytuje styl z pliku JSON."""
+        with open(path, encoding="utf-8") as f:
+            return OverlayStyle.from_dict(json.load(f))
