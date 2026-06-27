@@ -139,6 +139,16 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   T0 + przycięcie 5 s przed → max 75 s po T0. Przycisk „Pobierz i przytnij"
   (`_fetch_id_and_trim`): pobranie z API + T0 + przycięcie 5 s przed → ostatni strzał + 5 s.
   Zwykły „Pobierz" (`_fetch_id`) tylko pobiera dane (bez detekcji i przycięcia).
+  WAŻNE: detekcje mają token pokolenia (`_detect_gen`) — `_on_autodetect_t0` odrzuca
+  wyniki starsze niż ostatnie żądanie, więc wolniejszy „import" NIE nadpisze świeższego
+  „api". Workery trzymane w `_detect_workers` aż do `finished` (inaczej QThread może
+  zostać zniszczony w trakcie działania = crash).
+- **Zatrzymanie renderu:** przycisk „Zatrzymaj" → `RenderWorker.cancel()` ustawia flagę;
+  `render._run_with_progress(..., cancel_check)` sprawdza ją przy każdej linii postępu,
+  ubija proces FFmpeg (`proc.kill()`) i podnosi `render.RenderCancelled`. `RenderWorker`
+  łapie ten wyjątek, usuwa niedokończony plik i emituje `cancelled` (nie `failed`).
+  `cancel_check` przewleczony przez `render_video`/`render_webm`/`render_gif`/`trim_video`.
+  `closeEvent` też woła `cancel()` + `wait()`, by nie zniszczyć żywego QThread.
 - **Format wyjściowy:** `format_combo` w GUI → `render.render_video` (MP4/H.264) /
   `render_webm` (VP9) / `render_gif`. CLI renderuje tylko MP4.
 - **Presety wyglądu:** zapisz/wczytaj JSON z pliku; auto-zapis ostatnich ustawień i

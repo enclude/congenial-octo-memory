@@ -94,12 +94,22 @@ class RenderWorker(QThread):
     progress = Signal(float)
     finished_ok = Signal(str)
     failed = Signal(str)
+    cancelled = Signal()
     encoder_used = Signal(str)
     warn = Signal(str)
 
     def __init__(self, kwargs: dict):
         super().__init__()
         self._kwargs = kwargs
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """Zaznacza żądanie przerwania — render ubije proces FFmpeg przy najbliższej
+        linii postępu i zgłosi `cancelled` (nie `failed`)."""
+        self._cancelled = True
+
+    def _is_cancelled(self) -> bool:
+        return self._cancelled
 
     def run(self):
         try:
@@ -108,7 +118,8 @@ class RenderWorker(QThread):
             fmt = kw.pop("output_format", "mp4")
             callbacks = dict(progress_cb=self.progress.emit,
                              on_encoder=self.encoder_used.emit,
-                             on_warn=self.warn.emit)
+                             on_warn=self.warn.emit,
+                             cancel_check=self._is_cancelled)
             if no_overlay:
                 render.trim_video(
                     video_path=kw["video_path"], out_path=kw["out_path"],
@@ -120,17 +131,24 @@ class RenderWorker(QThread):
                     t0=kw["t0"], style=kw["style"], mode=kw["mode"],
                     out_path=kw["out_path"],
                     trim_start=kw.get("trim_start"), trim_end=kw.get("trim_end"),
-                    progress_cb=self.progress.emit)
+                    progress_cb=self.progress.emit, cancel_check=self._is_cancelled)
             elif fmt == "webm":
                 render.render_webm(
                     video_path=kw["video_path"], session=kw["session"],
                     t0=kw["t0"], style=kw["style"], mode=kw["mode"],
                     out_path=kw["out_path"],
                     trim_start=kw.get("trim_start"), trim_end=kw.get("trim_end"),
-                    progress_cb=self.progress.emit)
+                    progress_cb=self.progress.emit, cancel_check=self._is_cancelled)
             else:
                 render.render_video(**callbacks, **kw)
             self.finished_ok.emit(str(self._kwargs["out_path"]))
+        except render.RenderCancelled:
+            # Usuń niedokończony plik wyjściowy (jest uszkodzony).
+            try:
+                Path(str(self._kwargs.get("out_path", ""))).unlink(missing_ok=True)
+            except OSError:
+                pass
+            self.cancelled.emit()
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
 
@@ -180,14 +198,17 @@ class StartDetectWorker(QThread):
 
     `purpose` ("import"/"api") wraca w sygnale, by handler wiedział jak ustawić
     przycięcie po wykryciu (różne reguły dla importu pliku i pobrania z API).
+    `gen` to token pokolenia — handler odrzuca wyniki starszych detekcji, żeby
+    np. wolniejsza detekcja „import" nie nadpisała świeższej „api".
     """
-    done = Signal(str, object)   # (purpose, detected_t0 lub None)
+    done = Signal(int, str, object)   # (gen, purpose, detected_t0 lub None)
 
-    def __init__(self, video_path: str, purpose: str,
+    def __init__(self, video_path: str, purpose: str, gen: int,
                  start: float | None = None, end: float | None = None):
         super().__init__()
         self.video_path = video_path
         self.purpose = purpose
+        self.gen = gen
         self.start = start
         self.end = end
 
@@ -196,7 +217,7 @@ class StartDetectWorker(QThread):
             t0 = audio_sync.detect_dji_start(self.video_path, start=self.start, end=self.end)
         except Exception:  # noqa: BLE001
             t0 = None
-        self.done.emit(self.purpose, t0)
+        self.done.emit(self.gen, self.purpose, t0)
 
 
 # ----------------------------- kolejka renderów -----------------------------
@@ -785,7 +806,8 @@ class MainWindow(QMainWindow):
         self.lrf_path: str | None = None
         self.worker: RenderWorker | None = None
         self.wave_worker: WaveformWorker | None = None
-        self.detect_worker: StartDetectWorker | None = None
+        self._detect_workers: list[StartDetectWorker] = []
+        self._detect_gen: int = 0
         self.last_output: str | None = None
         self._used_encoder: str | None = None
         self._render_busy: bool = False
@@ -1182,6 +1204,10 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar(); v.addWidget(self.progress)
         brow = QHBoxLayout()
         self.render_btn = QPushButton("Renderuj"); self.render_btn.clicked.connect(self._start_render)
+        self.cancel_btn = QPushButton("Zatrzymaj")
+        self.cancel_btn.setToolTip("Przerywa trwające renderowanie i usuwa niedokończony plik.")
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.clicked.connect(self._cancel_render)
         self.queue_add_btn = QPushButton("Dodaj do kolejki")
         self.queue_add_btn.clicked.connect(self._add_to_queue)
         self.queue_show_btn = QPushButton("Kolejka")
@@ -1190,6 +1216,7 @@ class MainWindow(QMainWindow):
         self.open_btn.setEnabled(False)
         self.open_btn.clicked.connect(self._open_output_folder)
         brow.addWidget(self.render_btn)
+        brow.addWidget(self.cancel_btn)
         brow.addWidget(self.queue_add_btn)
         brow.addWidget(self.queue_show_btn)
         brow.addWidget(self.open_btn)
@@ -1267,11 +1294,19 @@ class MainWindow(QMainWindow):
         if not self.video_path:
             return
         src = self.lrf_path or self.video_path
-        self.detect_worker = StartDetectWorker(src, purpose)
-        self.detect_worker.done.connect(self._on_autodetect_t0)
-        self.detect_worker.start()
+        self._detect_gen += 1
+        worker = StartDetectWorker(src, purpose, self._detect_gen)
+        worker.done.connect(self._on_autodetect_t0)
+        # Trzymaj referencję dopóki wątek żyje — inaczej QThread może zostać
+        # zniszczony w trakcie działania (crash). Sprzątamy po zakończeniu.
+        self._detect_workers.append(worker)
+        worker.finished.connect(lambda w=worker: self._detect_workers.remove(w)
+                                if w in self._detect_workers else None)
+        worker.start()
 
-    def _on_autodetect_t0(self, purpose: str, detected) -> None:
+    def _on_autodetect_t0(self, gen: int, purpose: str, detected) -> None:
+        if gen != self._detect_gen:
+            return  # przestarzały wynik (nowsza detekcja już w toku) — ignoruj
         if detected is None:
             return  # nie wykryto — użytkownik ustawi ręcznie, bez komunikatu
         # Wykryty bzyczek JEST sygnałem startu → wymuś tryb START_SIGNAL.
@@ -1604,6 +1639,7 @@ class MainWindow(QMainWindow):
             return
         self._render_busy = True
         self.render_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
         self.worker = RenderWorker(kwargs)
         self._used_encoder = None
         self._render_warn = None
@@ -1612,7 +1648,22 @@ class MainWindow(QMainWindow):
         self.worker.warn.connect(self._on_warn)
         self.worker.finished_ok.connect(self._on_done)
         self.worker.failed.connect(self._on_fail)
+        self.worker.cancelled.connect(self._on_cancelled)
         self.worker.start()
+
+    def _cancel_render(self):
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.cancel()
+            self.cancel_btn.setEnabled(False)
+            self.cancel_btn.setText("Zatrzymywanie…")
+
+    def _on_cancelled(self):
+        self._render_busy = False
+        self.render_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setText("Zatrzymaj")
+        self.progress.setValue(0)
+        QMessageBox.information(self, "Zatrzymano", "Renderowanie zostało przerwane.")
 
     def _on_encoder_used(self, enc: str):
         self._used_encoder = enc
@@ -1681,6 +1732,8 @@ class MainWindow(QMainWindow):
     def _on_done(self, path: str):
         self._render_busy = False
         self.render_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setText("Zatrzymaj")
         self.last_output = path
         self.open_btn.setEnabled(True)
         enc = {"h264_nvenc": "GPU (NVENC)", "libx264": "CPU (x264)"}.get(self._used_encoder, "")
@@ -1694,6 +1747,8 @@ class MainWindow(QMainWindow):
     def _on_fail(self, msg: str):
         self._render_busy = False
         self.render_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.setText("Zatrzymaj")
         QMessageBox.critical(self, "Błąd renderowania", msg)
 
     def _add_to_queue(self):
@@ -1729,11 +1784,15 @@ class MainWindow(QMainWindow):
         return self._queue_window
 
     def closeEvent(self, event):
+        # Przerwij bezpośredni render, by nie niszczyć działającego QThread.
+        if self.worker is not None and self.worker.isRunning():
+            self.worker.cancel()
+            self.worker.wait(3000)
         if self._queue_runner is not None and self._queue_runner._running:
             w = self._queue_runner._active_worker
             if w is not None:
-                w.quit()
-                w.wait()
+                w.cancel()
+                w.wait(3000)
         event.accept()
 
     def _open_output_folder(self):
