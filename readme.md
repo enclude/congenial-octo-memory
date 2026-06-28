@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.21.2
+> **Wersja:** 0.22.0
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
 **osi czasu strzałów** nakłada na film informacyjną grafikę (numer strzału, czas od startu,
@@ -264,6 +264,12 @@ Okno **„Wsadowo…"** pozwala przerobić **wiele plików naraz** w trybie **au
 Ustawienia **wspólne dla całej partii**: katalog docelowy, **sufiks nazwy** pliku
 wyjściowego, format (MP4/WebM/GIF), GPU, nakładka wł./wył. oraz płynący zegar. Wygląd
 nakładki jest kopiowany z głównego okna (ustaw go tam przed otwarciem).
+
+- **Dodaj informacje o uczestniku** — gdy zaznaczone, do nazwy pliku **po sufiksie**
+  dopisywane jest **ID sesji** oraz **nazwa uczestnika** (np.
+  `klip_PiRoOverlay_163_Jaroslaw_Zjawinski.mp4`). Znaki diakrytyczne są sanityzowane do
+  ASCII (np. `Jarosław → Jaroslaw`), a spacje zamieniane na `_`, by uniknąć problemów z
+  nazwami plików w różnych systemach.
 
 Dodatkowe przyciski:
 

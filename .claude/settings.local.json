@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(PYTHONPATH=src python *)"
+      "Bash(PYTHONPATH=src python *)",
+      "Bash(git add *)"
     ]
   }
 }

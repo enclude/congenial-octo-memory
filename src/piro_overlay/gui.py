@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import faulthandler
 import math
+import re
 import subprocess
 import sys
 import tempfile
 import traceback
+import unicodedata
 import uuid
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
@@ -847,6 +849,32 @@ class BatchRowWidget(QWidget):
             self._info.setStyleSheet("color:#aaaaaa;")
 
 
+_POLISH_MAP = str.maketrans({
+    "ł": "l", "Ł": "L", "đ": "d", "Đ": "D", "ø": "o", "Ø": "O",
+})
+
+
+def _sanitize_filename_part(text: str) -> str:
+    """Zamienia tekst (np. nazwę uczestnika) na bezpieczny fragment nazwy pliku.
+
+    Polskie/diakrytyczne znaki → ASCII (Jarosław → Jaroslaw), spacje → „_",
+    odrzuca znaki niedozwolone w nazwach plików Windows/Unix. Zwraca "" gdy po
+    sanityzacji nic nie zostaje.
+    """
+    if not text:
+        return ""
+    text = text.translate(_POLISH_MAP)
+    # NFKD rozkłada litery z diakrytykami na bazę + znak łączący; usuwamy te drugie.
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = text.encode("ascii", "ignore").decode("ascii")
+    # spacje/białe znaki → podkreślenie; usuń znaki niedozwolone i kropki brzegowe.
+    text = re.sub(r"\s+", "_", text.strip())
+    text = re.sub(r'[<>:"/\\|?*]+', "", text)
+    text = re.sub(r"[^A-Za-z0-9._-]+", "", text)
+    return text.strip("._-")
+
+
 class BatchDialog(QWidget):
     """Okno przetwarzania wsadowego (tryb auto + ID).
 
@@ -911,6 +939,12 @@ class BatchDialog(QWidget):
 
         self._suffix_edit = QLineEdit("_PiRoOverlay")
         form.addRow("Sufiks nazwy:", self._suffix_edit)
+
+        self._participant_chk = QCheckBox("Dodaj informacje o uczestniku")
+        self._participant_chk.setToolTip(
+            "Po sufiksie doda do nazwy pliku ID sesji oraz nazwę uczestnika "
+            "(znaki diakrytyczne sanityzowane, np. Jarosław → Jaroslaw).")
+        form.addRow("", self._participant_chk)
 
         self._format_combo = QComboBox()
         for label, val in (("MP4 (H.264)", "mp4"), ("WebM (VP9)", "webm"), ("GIF", "gif")):
@@ -1161,6 +1195,7 @@ class BatchDialog(QWidget):
         fmt = self._format_combo.currentData()
         ext = {"mp4": ".mp4", "webm": ".webm", "gif": ".gif"}.get(fmt, ".mp4")
         suffix = self._suffix_edit.text()
+        add_participant = self._participant_chk.isChecked()
         no_overlay = not self._overlay_chk.isChecked()
         style = replace(self._base_style,
                         show_running_clock=self._clock_chk.isChecked())
@@ -1170,7 +1205,13 @@ class BatchDialog(QWidget):
         for row in ready:
             p = row.prep
             session = p["session"]
-            out_path = out_dir / (Path(row.video_path).stem + suffix + ext)
+            extra = ""
+            if add_participant:
+                extra = f"_{row.session_id}"
+                part = _sanitize_filename_part(session.uczestnik or "")
+                if part:
+                    extra += f"_{part}"
+            out_path = out_dir / (Path(row.video_path).stem + suffix + extra + ext)
             t0 = audio_sync.resolve_t0(p["t0"], AnchorMode.START_SIGNAL,
                                        session.shots[0].czas)
             kwargs = dict(
