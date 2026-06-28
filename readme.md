@@ -13,6 +13,30 @@ Oś czasu można wkleić ręcznie **albo** pobrać po **ID** z API kalkulatora P
 (`piro-kalkulator.pifpaf.fun`) — oś czasu znajduje się tam w polu `opis`, a pozostałe pola
 wzbogacają nagłówek i podsumowanie.
 
+## Zrzuty ekranu
+
+### Główne okno (po wczytaniu wideo)
+
+Lewy panel — wejście (wideo, oś czasu/ID), synchronizacja i przycięcie oraz pełna
+konfiguracja wyglądu nakładki. Po prawej podgląd na żywo (z planszą START) i waveforma
+z zaznaczonymi T0 oraz oknem przycięcia.
+
+![Główne okno aplikacji po załadowaniu wideo](pictures/02%20widok%20aplikacji%20po%20załadowaniu%20wideo.png)
+
+### Nakładka z płynącym czasem
+
+Panel strzału (numer, czas od startu, split, „x z yy") oraz opcjonalny zegar „T+x.xs"
+liczony od sygnału startu.
+
+![Widok nakładki z płynącym czasem](pictures/01%20widok%20nakładki%20z%20czasem.png)
+
+### Przetwarzanie wsadowe
+
+Okno „Wsadowo…" — wiele plików naraz w trybie auto + ID, ze wspólnymi ustawieniami
+(katalog, sufiks, format, GPU, nakładka, zegar) i eksportem/importem listy przez schowek.
+
+![Widok wsadowego przetwarzania danych](pictures/03%20widok%20wsadowego%20przetwarzania%20danych.png)
+
 ## Jak to działa
 
 1. Wybierasz plik wideo i podajesz oś czasu (tekst lub ID).
