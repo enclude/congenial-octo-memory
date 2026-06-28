@@ -134,3 +134,32 @@ def load_file_settings(video_path: str | Path) -> dict | None:
     """Wczytuje zapisane parametry dla danego pliku wideo (None gdy brak)."""
     data = _load_file_store().get(_file_key(video_path))
     return data if isinstance(data, dict) else None
+
+
+# --- kolejka renderów (zapis w AppData, odzysk po awarii) ---
+def queue_path() -> Path:
+    return config_dir() / "render_queue.json"
+
+
+def save_queue(data: dict) -> None:
+    """Zapisuje stan kolejki renderów do AppData. Gotowe (DONE) zadania pomijaj
+    przed wywołaniem — w pliku mają zostać tylko zadania do (po)wykonania."""
+    try:
+        import json
+        queue_path().write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def load_queue() -> dict | None:
+    """Wczytuje zapisaną kolejkę renderów (None gdy brak/uszkodzona)."""
+    try:
+        import json
+        p = queue_path()
+        if not p.exists():
+            return None
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001
+        return None

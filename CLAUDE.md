@@ -194,6 +194,65 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   łapie ten wyjątek, usuwa niedokończony plik i emituje `cancelled` (nie `failed`).
   `cancel_check` przewleczony przez `render_video`/`render_webm`/`render_gif`/`trim_video`.
   `closeEvent` też woła `cancel()` + `wait()`, by nie zniszczyć żywego QThread.
+- **Przetwarzanie wsadowe (auto + ID):** przycisk „Wsadowo…" (obok „Kolejka") → `BatchDialog`.
+  Dodajesz wiele plików, podajesz ID per plik, „Przygotuj wszystkie" odpala `BatchPrepWorker`
+  (QThread/plik): `api.fetch_session(id)` → `detect_dji_start` (na LRF jeśli jest) →
+  `auto_trim_window(t0, ostatni_strzał, tail=5, lead_in=5, dur)`. Dwufazowy cykl: faza
+  PRZYGOTOWANIA (fetch+T0, statusy `BatchRowStatus`) jest ODDZIELNA od renderu — gotowe wiersze
+  „Wyślij gotowe do kolejki" buduje z nich `RenderJob` (kwargs jak `_collect_render_kwargs`,
+  `mode=START_SIGNAL`) i dokłada do WSPÓLNEGO `RenderQueueRunner`/`RenderQueueWindow` (render
+  bez zmian). Tryb wymuszony: źródło=ID, kotwica=START_SIGNAL. Wspólne dla partii: styl
+  (kopia `current_style()`, tylko toggle zegara), katalog docelowy, sufiks nazwy
+  (`stem+suffix+ext`), format, GPU, nakładka on/off. Per-wiersz przycisk „▶" =
+  `QDesktopServices.openUrl` na pliku ŹRÓDŁOWYM. PUŁAPKI QThread (jak reszta): pola NIE
+  `start`/`end`; workery trzymane w `_workers` do `finished`; `closeEvent` (główne+dialog)
+  czeka na żywe workery. Zmiana ID unieważnia przygotowanie wiersza.
+  **Eksport/import schowka:** „Eksport → schowek" zrzuca listę jako wiersze
+  `<ścieżka>;<ID>` (`QApplication.clipboard().setText`); „Import ze schowka" parsuje to samo
+  (`rpartition(';')` — ID zawsze po OSTATNIM średniku, ścieżka Windows bezpieczna). Istniejąca
+  ścieżka → aktualizacja ID (`BatchRowWidget.set_session_id` przez spinbox), nowa → `_add_row`.
+- **Kolejka renderów — zapis/odczyt + % postępu:** `RenderQueueWindow` ma „Zapisz/Wczytaj
+  kolejkę" (plik `render_queue.json` w AppData; `config.save_queue`/`load_queue`). Zapis (też
+  AUTO przy każdej zmianie statusu i `add_job` — odzysk po awarii) pomija zadania `DONE`
+  (`_queue_payload`) → w pliku zostają tylko niewykonane/`FAILED` (do ponowienia). Wczytanie
+  zeruje status do `PENDING`. Serializacja: `_job_to_dict`/`_job_from_dict` (Session/OverlayStyle
+  przez `to_dict`/`from_dict`, `AnchorMode` przez `.value`). Pasek postępu wiersza jest teraz
+  ZAWSZE wyznaczony (0–100, `setTextVisible`+`%p%`) — koniec „barber pole" bez liczb; postęp
+  realny z `render._run_with_progress`. Pasek stanu pokazuje łączny %: `_update_overall`
+  (`(done+bieżący)/total`). Przycisk „Zatrzymaj" (`RenderQueueRunner.stop`): `_stopping=True`
+  + `cancel()` bieżącego workera → przerwane zadanie wraca do `PENDING`, kolejka pauzuje
+  (sygnał `queue_stopped`), „Start kolejki" wznawia. `RenderWorker.cancelled` jest TERAZ
+  podłączony w runnerze (`_on_job_cancelled`) — bez tego cancel zawieszał kolejkę.
+  **KRYTYCZNY FIX CRASHU (v0.21.0):** `_on_job_done/_failed/_cancelled` wołają `_finish_active`,
+  które robi `worker.wait()` PRZED zwolnieniem referencji. Sygnały kończące lecą z OSTATNIEJ
+  linii `run()` (wątek jeszcze żyje); wcześniejsze `self._active_worker = None` niszczyło
+  QThread „w trakcie" → twardy crash (po renderze GPU pierwszego pliku, gdy startował kolejny).
+  To ten sam pułap co przy detekcji T0 — workery muszą dożyć realnego końca wątku.
+- **Postęp przez `-progress`, „Zatrzymaj" ubija proces, dzienniki w AppData (v0.21.1):**
+  `render._run_with_progress` dokłada `-progress pipe:2 -nostats` → FFmpeg wypisuje postęp
+  REGULARNIE (parsowane `out_time_ms/us=`, `_OUT_TIME_MS_RE`), nawet przy ciężkim filtergrafie,
+  który wcześniej nie wypisywał NIC przez dziesiątki sekund (→ brak %, a pętla czytająca stderr
+  blokowała się, więc `cancel_check` nie miał kiedy zadziałać — „Zatrzymaj" wisiało na „kończę
+  klatkę"). `RenderWorker.cancel()` TERAZ od razu `proc.kill()` (uchwyt dostarcza `on_process`
+  przewleczony przez render_video/webm/gif/trim_video → `_run_with_progress`); zabicie procesu
+  odblokowuje czytanie stderr (EOF). DIAGNOSTYKA: `_log_render` pisze komendę FFmpeg + wynik do
+  `render_log.txt`; `gui._install_crash_logging` włącza `faulthandler` (zrzut stosów wszystkich
+  wątków przy NATYWNYM crashu — segfault/`abort()`) + `sys/threading.excepthook` → `crash_log.txt`
+  (oba w AppData). To jedyny ślad, gdy aplikacja pada twardo. UWAGA: `render.py` importuje teraz
+  `config` (do ścieżki AppData) — bez cyklu (`config`→`models`).
+- **DJI = drugi strumień wideo (miniatura MJPEG) → `0:v:0`, nie `0:v` (v0.21.2):** pliki DJI
+  (np. Osmo Nano) mają OPRÓCZ głównego HEVC jeszcze `Video: mjpeg ... (attached pic)` 640x480.
+  `-map 0:v` (trim) i `[0:v]` (filtergraph) łapały OBA → FFmpeg próbował wepchnąć miniaturę jako
+  drugi strumień H.264 do mp4 → „Could not write header / Nothing was written / Conversion
+  failed!" → **plik 0 B za każdym razem** (objaw zgłaszany jako „crash kolejki"). Fix: WSZĘDZIE
+  bierzemy tylko pierwszy strumień: `cur = "0:v:0"` (render_video/webm/gif) i `-map 0:v:0`
+  (trim_video). Diagnoza wyszła z `render_log.txt` (patrz wpis o `-progress`/dziennikach).
+- **Kolejka: „Start" ponawia FAILED, stop bez deadlocku (v0.21.2):** `RenderQueueWindow._on_start`
+  woła `runner.retry_failed()` (FAILED→PENDING) przed startem — inaczej po serii błędów kolejka
+  miała same FAILED i „Start" nie miał czego uruchomić (objaw: „po wznowieniu nie działa").
+  `_refresh_start_btn` aktywuje Start także przy FAILED. `RenderQueueRunner.stop()` gdy NIE ma
+  aktywnego workera (między zadaniami) kończy od razu (`_running=False`+`queue_stopped`), inaczej
+  `_running` zostawało True i wznowienie było zablokowane.
 - **Format wyjściowy:** `format_combo` w GUI → `render.render_video` (MP4/H.264) /
   `render_webm` (VP9) / `render_gif`. CLI renderuje tylko MP4.
 - **Presety wyglądu:** zapisz/wczytaj JSON z pliku; auto-zapis ostatnich ustawień i

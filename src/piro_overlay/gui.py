@@ -11,10 +11,12 @@ konfiguracja wyglądu nakładki, domyślny plik wyjściowy z sufiksem _PiRoOverl
 
 from __future__ import annotations
 
+import faulthandler
 import math
 import subprocess
 import sys
 import tempfile
+import traceback
 import uuid
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
@@ -24,11 +26,11 @@ import urllib.request
 import urllib.error
 import json
 
-from PySide6.QtCore import QObject, QRect, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QEvent, QObject, QRect, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QColorDialog, QComboBox, QCheckBox, QDialog,
-    QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+    QAbstractSpinBox, QApplication, QButtonGroup, QColorDialog, QComboBox, QCheckBox,
+    QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QRadioButton,
     QScrollArea, QSizePolicy, QSpinBox, QSplitter, QPlainTextEdit, QVBoxLayout, QWidget,
 )
@@ -102,14 +104,33 @@ class RenderWorker(QThread):
         super().__init__()
         self._kwargs = kwargs
         self._cancelled = False
+        self._proc = None   # uchwyt aktywnego procesu FFmpeg (do natychmiastowego ubicia)
 
     def cancel(self) -> None:
-        """Zaznacza żądanie przerwania — render ubije proces FFmpeg przy najbliższej
-        linii postępu i zgłosi `cancelled` (nie `failed`)."""
+        """Żądanie przerwania: ustawia flagę ORAZ od razu UBIJA proces FFmpeg.
+
+        Samo czekanie na „najbliższą linię postępu" zawodziło, gdy FFmpeg długo nic
+        nie wypisywał (ciężki filtergraph) — „Zatrzymaj" wisiało. Zabicie procesu
+        odblokowuje pętlę czytającą stderr (EOF) → render kończy się jako anulowany."""
         self._cancelled = True
+        p = self._proc
+        if p is not None:
+            try:
+                p.kill()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _is_cancelled(self) -> bool:
         return self._cancelled
+
+    def _on_process(self, proc) -> None:
+        self._proc = proc
+        # Gdy „Zatrzymaj" kliknięto ZANIM proces wystartował — ubij go natychmiast.
+        if self._cancelled and proc is not None:
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
 
     def run(self):
         try:
@@ -119,7 +140,8 @@ class RenderWorker(QThread):
             callbacks = dict(progress_cb=self.progress.emit,
                              on_encoder=self.encoder_used.emit,
                              on_warn=self.warn.emit,
-                             cancel_check=self._is_cancelled)
+                             cancel_check=self._is_cancelled,
+                             on_process=self._on_process)
             if no_overlay:
                 render.trim_video(
                     video_path=kw["video_path"], out_path=kw["out_path"],
@@ -131,14 +153,16 @@ class RenderWorker(QThread):
                     t0=kw["t0"], style=kw["style"], mode=kw["mode"],
                     out_path=kw["out_path"],
                     trim_start=kw.get("trim_start"), trim_end=kw.get("trim_end"),
-                    progress_cb=self.progress.emit, cancel_check=self._is_cancelled)
+                    progress_cb=self.progress.emit, cancel_check=self._is_cancelled,
+                    on_process=self._on_process)
             elif fmt == "webm":
                 render.render_webm(
                     video_path=kw["video_path"], session=kw["session"],
                     t0=kw["t0"], style=kw["style"], mode=kw["mode"],
                     out_path=kw["out_path"],
                     trim_start=kw.get("trim_start"), trim_end=kw.get("trim_end"),
-                    progress_cb=self.progress.emit, cancel_check=self._is_cancelled)
+                    progress_cb=self.progress.emit, cancel_check=self._is_cancelled,
+                    on_process=self._on_process)
             else:
                 render.render_video(**callbacks, **kw)
             self.finished_ok.emit(str(self._kwargs["out_path"]))
@@ -238,10 +262,59 @@ class RenderJob:
     status: JobStatus = field(default=JobStatus.PENDING, compare=False)
 
 
+def _job_to_dict(job: "RenderJob") -> dict:
+    """Serializuje zadanie renderu do JSON-owalnego słownika (zapis kolejki)."""
+    kw = job.kwargs
+    sess = kw.get("session")
+    style = kw.get("style")
+    mode = kw.get("mode")
+    return {
+        "id": job.id,
+        "label": job.label,
+        "status": job.status.name,
+        "kwargs": {
+            "video_path": str(kw.get("video_path", "")),
+            "session": sess.to_dict() if sess is not None else None,
+            "t0": kw.get("t0"),
+            "style": style.to_dict() if style is not None else None,
+            "mode": mode.value if isinstance(mode, AnchorMode) else mode,
+            "out_path": str(kw.get("out_path", "")),
+            "trim_start": kw.get("trim_start"),
+            "trim_end": kw.get("trim_end"),
+            "encoder": kw.get("encoder", "auto"),
+            "no_overlay": kw.get("no_overlay", False),
+            "output_format": kw.get("output_format", "mp4"),
+        },
+    }
+
+
+def _job_from_dict(d: dict) -> "RenderJob":
+    """Odtwarza zadanie renderu ze słownika; status zerowany do PENDING (do ponowienia)."""
+    k = d.get("kwargs", {})
+    sess = k.get("session")
+    style = k.get("style")
+    kwargs = dict(
+        video_path=k.get("video_path", ""),
+        session=Session.from_dict(sess) if sess else None,
+        t0=k.get("t0", 0.0) or 0.0,
+        style=OverlayStyle.from_dict(style) if style else None,
+        mode=AnchorMode(k.get("mode", AnchorMode.START_SIGNAL.value)),
+        out_path=k.get("out_path", ""),
+        trim_start=k.get("trim_start"),
+        trim_end=k.get("trim_end"),
+        encoder=k.get("encoder", "auto"),
+        no_overlay=k.get("no_overlay", False),
+        output_format=k.get("output_format", "mp4"),
+    )
+    return RenderJob(id=d.get("id") or uuid.uuid4().hex,
+                     label=d.get("label", ""), kwargs=kwargs)
+
+
 class RenderQueueRunner(QObject):
     job_progress        = Signal(str, float)      # (job_id, 0.0–1.0)
     job_status_changed  = Signal(str, object)     # (job_id, JobStatus)
     queue_finished      = Signal()
+    queue_stopped       = Signal()                # zatrzymano (pauza, nie koniec)
 
     def __init__(self, get_busy, set_busy, parent=None):
         super().__init__(parent)
@@ -250,6 +323,7 @@ class RenderQueueRunner(QObject):
         self._get_busy = get_busy
         self._set_busy = set_busy
         self._running = False
+        self._stopping = False   # żądanie zatrzymania kolejki (po bieżącym)
 
     def add_job(self, job: RenderJob) -> None:
         self._jobs.append(job)
@@ -268,14 +342,47 @@ class RenderQueueRunner(QObject):
         self._jobs = [j for j in self._jobs
                       if j.status not in (JobStatus.DONE, JobStatus.FAILED)]
 
+    def retry_failed(self) -> list[str]:
+        """Przywraca nieudane zadania do PENDING (do ponowienia). Zwraca ich id."""
+        ids = []
+        for j in self._jobs:
+            if j.status == JobStatus.FAILED:
+                j.status = JobStatus.PENDING
+                ids.append(j.id)
+        return ids
+
     def start_queue(self) -> bool:
         if self._running or self._get_busy():
             return False
         self._running = True
+        self._stopping = False
         self._run_next()
         return True
 
+    def stop(self) -> None:
+        """Zatrzymuje kolejkę: przerywa BIEŻĄCE zadanie (wróci do PENDING) i NIE
+        uruchamia kolejnych. Pozostałe zostają jako PENDING — `start_queue` wznawia."""
+        if not self._running:
+            return
+        self._stopping = True
+        if self._active_worker is not None:
+            self._active_worker.cancel()
+            # dalej obsłuży _on_job_cancelled → _run_next (zobaczy _stopping)
+        else:
+            # Brak aktywnego workera (np. między zadaniami) — zatrzymaj OD RAZU,
+            # inaczej `_running` zostałby True i „Start kolejki" by nie wznowił.
+            self._stopping = False
+            self._running = False
+            self._set_busy(False)
+            self.queue_stopped.emit()
+
     def _run_next(self) -> None:
+        if self._stopping:
+            self._stopping = False
+            self._running = False
+            self._set_busy(False)
+            self.queue_stopped.emit()
+            return
         pending = [j for j in self._jobs if j.status == JobStatus.PENDING]
         if not pending:
             self._running = False
@@ -291,19 +398,41 @@ class RenderQueueRunner(QObject):
         w.progress.connect(lambda p, jid=job.id: self.job_progress.emit(jid, p))
         w.finished_ok.connect(lambda _, jid=job.id: self._on_job_done(jid))
         w.failed.connect(lambda msg, jid=job.id: self._on_job_failed(jid, msg))
+        w.cancelled.connect(lambda jid=job.id: self._on_job_cancelled(jid))
         w.start()
+
+    def _finish_active(self) -> None:
+        """Zamyka bieżący worker BEZPIECZNIE: czeka aż wątek REALNIE się zakończy,
+        dopiero potem zwalnia referencję.
+
+        KRYTYCZNE (patrz CLAUDE.md): `finished_ok`/`failed`/`cancelled` lecą z
+        OSTATNIEJ linii `run()` — wątek QThread jeszcze się NIE zakończył. Gdyby
+        tu od razu zrobić `self._active_worker = None`, GC zniszczyłby QThread „w
+        trakcie pracy" → twardy crash (QThread: Destroyed while thread is still
+        running). `wait()` wraca natychmiast (run() już oddaje sterowanie)."""
+        w = self._active_worker
+        if w is not None:
+            w.wait()
+            self._active_worker = None
 
     def _on_job_done(self, job_id: str) -> None:
         self._mark(job_id, JobStatus.DONE)
-        self._active_worker = None
+        self._finish_active()
         self._set_busy(False)
         self._run_next()
 
     def _on_job_failed(self, job_id: str, _msg: str) -> None:
         self._mark(job_id, JobStatus.FAILED)
-        self._active_worker = None
+        self._finish_active()
         self._set_busy(False)
         self._run_next()
+
+    def _on_job_cancelled(self, job_id: str) -> None:
+        # Przerwane zadanie wraca do PENDING (do ponowienia); kolejka pauzuje.
+        self._mark(job_id, JobStatus.PENDING)
+        self._finish_active()
+        self._set_busy(False)
+        self._run_next()   # zobaczy _stopping → emituje queue_stopped
 
     def _mark(self, job_id: str, status: JobStatus) -> None:
         for j in self._jobs:
@@ -340,6 +469,8 @@ class JobRowWidget(QWidget):
         self._progress = QProgressBar()
         self._progress.setRange(0, 100)
         self._progress.setValue(0)
+        self._progress.setTextVisible(True)   # pokazuj liczbowy % postępu
+        self._progress.setFormat("%p%")
         self._progress.setFixedWidth(120)
         lay.addWidget(self._progress)
 
@@ -351,6 +482,9 @@ class JobRowWidget(QWidget):
         self._apply_status(job.status)
 
     def update_progress(self, p: float) -> None:
+        # Pasek zawsze wyznaczony (0–100) → widać liczbowy % zamiast „barber pole".
+        if self._progress.maximum() == 0:
+            self._progress.setRange(0, 100)
         self._progress.setValue(int(p * 100))
 
     def update_status(self, status: JobStatus) -> None:
@@ -363,12 +497,15 @@ class JobRowWidget(QWidget):
         )
         self._del_btn.setVisible(status == JobStatus.PENDING)
         if status == JobStatus.RUNNING:
-            self._progress.setRange(0, 0)
+            # Wyznaczony pasek z liczbowym % (postęp dochodzi z render._run_with_progress).
+            self._progress.setRange(0, 100)
+            self._progress.setFormat("%p%")
         elif status == JobStatus.DONE:
             self._progress.setRange(0, 100)
             self._progress.setValue(100)
         elif status == JobStatus.FAILED:
             self._progress.setRange(0, 100)
+            self._progress.setFormat("błąd")
             self._progress.setStyleSheet("QProgressBar::chunk { background: #e05555; }")
 
 
@@ -399,16 +536,31 @@ class RenderQueueWindow(QWidget):
         btn_row = QHBoxLayout()
         self._start_btn = QPushButton("Start kolejki")
         self._start_btn.clicked.connect(self._on_start)
+        self._stop_btn = QPushButton("Zatrzymaj")
+        self._stop_btn.setToolTip("Przerywa bieżący render i pauzuje kolejkę "
+                                  "(zadania zostają jako oczekujące — „Start kolejki” wznawia)")
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.clicked.connect(self._on_stop)
         self._clear_btn = QPushButton("Wyczyść zakończone")
         self._clear_btn.clicked.connect(self._on_clear_finished)
+        self._save_btn = QPushButton("Zapisz kolejkę")
+        self._save_btn.setToolTip("Zapisz niewykonane zadania w AppData (odzysk po awarii)")
+        self._save_btn.clicked.connect(self._on_save_queue)
+        self._load_btn = QPushButton("Wczytaj kolejkę")
+        self._load_btn.setToolTip("Wczytaj zapisaną kolejkę z AppData")
+        self._load_btn.clicked.connect(self._on_load_queue)
         btn_row.addWidget(self._start_btn)
+        btn_row.addWidget(self._stop_btn)
         btn_row.addWidget(self._clear_btn)
+        btn_row.addWidget(self._save_btn)
+        btn_row.addWidget(self._load_btn)
         btn_row.addStretch(1)
         root.addLayout(btn_row)
 
         runner.job_progress.connect(self._on_job_progress)
         runner.job_status_changed.connect(self._on_job_status_changed)
         runner.queue_finished.connect(self._on_queue_finished)
+        runner.queue_stopped.connect(self._on_queue_stopped)
 
     def add_job(self, job: RenderJob) -> None:
         row = JobRowWidget(job)
@@ -417,6 +569,7 @@ class RenderQueueWindow(QWidget):
         self._list_layout.insertWidget(self._list_layout.count() - 1, row)
         self._runner.add_job(job)
         self._refresh_start_btn()
+        self._autosave_queue()
 
     def closeEvent(self, event):
         if self._runner._running:
@@ -426,12 +579,23 @@ class RenderQueueWindow(QWidget):
             event.accept()
 
     def _on_start(self) -> None:
+        # „Start" PONAWIA też zadania nieudane (FAILED → PENDING) — inaczej po awarii
+        # /błędzie kolejka miałaby same FAILED i Start nie miałby co uruchomić.
+        retried = self._runner.retry_failed()
+        for jid in retried:
+            if row := self._rows.get(jid):
+                row.update_status(JobStatus.PENDING)
         started = self._runner.start_queue()
         if not started:
             self._status_label.setText("Renderowanie już trwa — poczekaj na koniec.")
         else:
             self._status_label.setText("Renderowanie kolejki…")
         self._refresh_start_btn()
+
+    def _on_stop(self) -> None:
+        self._runner.stop()
+        self._stop_btn.setEnabled(False)
+        self._status_label.setText("Zatrzymywanie kolejki (kończę bieżącą klatkę)…")
 
     def _on_clear_finished(self) -> None:
         for job_id, row in list(self._rows.items()):
@@ -452,17 +616,27 @@ class RenderQueueWindow(QWidget):
     def _on_job_progress(self, job_id: str, p: float) -> None:
         if row := self._rows.get(job_id):
             row.update_progress(p)
-            if self._progress_bar_indeterminate(job_id):
-                row._progress.setRange(0, 100)
+        self._update_overall(p)
 
-    def _progress_bar_indeterminate(self, job_id: str) -> bool:
-        row = self._rows.get(job_id)
-        return row is not None and row._progress.maximum() == 0
+    def _update_overall(self, current_p: float) -> None:
+        """Pokazuje łączny postęp kolejki + % bieżącego pliku w pasku stanu."""
+        jobs = self._runner.jobs()
+        total = len(jobs)
+        if not total:
+            return
+        done = sum(1 for j in jobs if j.status == JobStatus.DONE)
+        overall = (done + current_p) / total
+        running = next((j for j in jobs if j.status == JobStatus.RUNNING), None)
+        name = Path(str(running.kwargs.get("video_path", ""))).name if running else ""
+        self._status_label.setText(
+            f"Render {min(done + 1, total)}/{total} · {name} · "
+            f"bieżący {current_p * 100:.0f}% · łącznie {overall * 100:.0f}%")
 
     def _on_job_status_changed(self, job_id: str, status) -> None:
         if row := self._rows.get(job_id):
             row.update_status(status)
         self._refresh_start_btn()
+        self._autosave_queue()   # DONE wypada z zapisu, FAILED zostaje (do ponowienia)
 
     def _on_queue_finished(self) -> None:
         self._status_label.setText("Kolejka zakończona.")
@@ -470,10 +644,583 @@ class RenderQueueWindow(QWidget):
         QMessageBox.information(self, "Kolejka renderów",
                                 "Wszystkie zadania zostały ukończone.")
 
+    def _on_queue_stopped(self) -> None:
+        self._status_label.setText(
+            "Kolejka zatrzymana. „Start kolejki” wznawia od przerwanego pliku.")
+        self._refresh_start_btn()
+
     def _refresh_start_btn(self) -> None:
-        has_pending = any(j.status == JobStatus.PENDING
-                         for j in self._runner.jobs())
-        self._start_btn.setEnabled(has_pending and not self._runner._running)
+        running = self._runner._running
+        # Start aktywny, gdy jest cokolwiek do zrobienia: oczekujące LUB nieudane
+        # (te drugie „Start" ponawia — patrz `_on_start`/`retry_failed`).
+        has_todo = any(j.status in (JobStatus.PENDING, JobStatus.FAILED)
+                       for j in self._runner.jobs())
+        self._start_btn.setEnabled(has_todo and not running)
+        self._stop_btn.setEnabled(running)
+
+    # --- zapis/odczyt kolejki (AppData) ---
+    def _queue_payload(self) -> dict:
+        """Stan kolejki bez zadań zakończonych sukcesem (DONE) — tylko do (po)wykonania."""
+        jobs = [_job_to_dict(j) for j in self._runner.jobs()
+                if j.status != JobStatus.DONE]
+        return {"version": 1, "jobs": jobs}
+
+    def _autosave_queue(self) -> None:
+        """Cichy zapis bieżącego stanu — plik w AppData jest zawsze aktualny
+        (po awarii „Wczytaj kolejkę" odtworzy niewykonane zadania)."""
+        config.save_queue(self._queue_payload())
+
+    def _on_save_queue(self) -> None:
+        payload = self._queue_payload()
+        config.save_queue(payload)
+        n = len(payload["jobs"])
+        self._status_label.setText(
+            f"Zapisano kolejkę ({n} zadań) → {config.queue_path()}")
+
+    def _on_load_queue(self) -> None:
+        data = config.load_queue()
+        if not data or not data.get("jobs"):
+            QMessageBox.information(self, "Wczytaj kolejkę",
+                                    "Brak zapisanej kolejki w AppData.")
+            return
+        existing = {j.id for j in self._runner.jobs()}
+        added = 0
+        for jd in data["jobs"]:
+            try:
+                job = _job_from_dict(jd)
+            except Exception:  # noqa: BLE001
+                continue
+            if job.id in existing:
+                continue
+            job.status = JobStatus.PENDING   # wczytane = do ponowienia
+            self.add_job(job)
+            added += 1
+        self._status_label.setText(f"Wczytano {added} zadań z zapisanej kolejki.")
+
+
+# ----------------------------- przetwarzanie wsadowe -----------------------------
+class BatchPrepWorker(QThread):
+    """Przygotowuje JEDEN plik wsadowy w tle (sieć + FFT nie blokują UI):
+    pobiera sesję z API po ID, wykrywa bzyczek (T0) i liczy okno auto-przycięcia.
+
+    Wynik (`done`) zawiera komplet danych potrzebnych do zbudowania RenderJob.
+    Błąd (`failed`) — czytelny komunikat dla wiersza. (Patrz pułapki QThread w
+    CLAUDE.md: pola NIE nazwane `start`/`end`; worker trzymany do `finished`.)
+    """
+    done   = Signal(str, object)   # (row_id, dict: session/t0/trim_start/trim_end)
+    failed = Signal(str, str)      # (row_id, komunikat)
+
+    def __init__(self, row_id: str, video_path: str, lrf_path: str | None,
+                 session_id: int):
+        super().__init__()
+        self.row_id = row_id
+        self.video_path = video_path
+        self.lrf_path = lrf_path
+        self.session_id = session_id
+
+    def run(self):
+        try:
+            session = api.fetch_session(self.session_id)
+            if not session.shots:
+                raise ValueError("API nie zwróciło strzałów dla tego ID.")
+            src = self.lrf_path or self.video_path
+            t0 = audio_sync.detect_dji_start(src)
+            if t0 is None:
+                raise ValueError("Nie wykryto sygnału startu (bzyczka).")
+            try:
+                dur = ffmpeg.probe(self.video_path).duration
+            except Exception:  # noqa: BLE001
+                dur = None
+            start, end = render.auto_trim_window(
+                t0, session.shots[-1].czas, tail=5.0, lead_in=5.0, duration=dur)
+            self.done.emit(self.row_id, {
+                "session": session, "t0": t0,
+                "trim_start": start, "trim_end": end,
+            })
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(self.row_id, str(exc))
+
+
+class BatchRowStatus(Enum):
+    NEEDS_ID  = auto()   # brak/zerowe ID
+    PENDING   = auto()   # gotowe do przygotowania
+    PREPARING = auto()   # trwa fetch+detekcja
+    READY     = auto()   # przygotowane (T0+przycięcie znane)
+    FAILED    = auto()   # błąd przygotowania
+
+
+@dataclass
+class BatchRow:
+    id:         str
+    video_path: str
+    lrf_path:   str | None
+    status:     BatchRowStatus = BatchRowStatus.NEEDS_ID
+    session_id: int = 0
+    prep:       dict | None = None     # wynik BatchPrepWorker
+    error:      str = ""
+
+
+class BatchRowWidget(QWidget):
+    """Wiersz jednego pliku w oknie wsadowym: status, nazwa, ID, info, play, usuń."""
+    remove_requested = Signal(str)
+    play_requested   = Signal(str)
+    id_changed       = Signal(str, int)
+
+    _STATUS_COLORS = {
+        BatchRowStatus.NEEDS_ID:  "#aa7733",
+        BatchRowStatus.PENDING:   "#6688aa",
+        BatchRowStatus.PREPARING: "#f0c040",
+        BatchRowStatus.READY:     "#44cc88",
+        BatchRowStatus.FAILED:    "#e05555",
+    }
+
+    def __init__(self, row: BatchRow, parent=None):
+        super().__init__(parent)
+        self._row_id = row.id
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(4, 2, 4, 2)
+
+        self._status_icon = QLabel()
+        self._status_icon.setFixedSize(14, 14)
+        lay.addWidget(self._status_icon)
+
+        self._name = QLabel(Path(row.video_path).name)
+        self._name.setMinimumWidth(180)
+        self._name.setToolTip(row.video_path)
+        lay.addWidget(self._name, 2)
+
+        lay.addWidget(QLabel("ID:"))
+        self._id_spin = QSpinBox()
+        self._id_spin.setRange(0, 9_999_999)
+        self._id_spin.setValue(row.session_id)
+        self._id_spin.setFixedWidth(100)
+        self._id_spin.valueChanged.connect(
+            lambda v: self.id_changed.emit(self._row_id, v))
+        lay.addWidget(self._id_spin)
+
+        self._info = QLabel("")
+        self._info.setMinimumWidth(190)
+        self._info.setStyleSheet("color:#aaaaaa;")
+        lay.addWidget(self._info, 2)
+
+        self._play_btn = QPushButton("▶")
+        self._play_btn.setFixedWidth(34)
+        self._play_btn.setToolTip("Otwórz plik źródłowy w odtwarzaczu")
+        self._play_btn.clicked.connect(lambda: self.play_requested.emit(self._row_id))
+        lay.addWidget(self._play_btn)
+
+        self._del_btn = QPushButton("Usuń")
+        self._del_btn.setFixedWidth(50)
+        self._del_btn.clicked.connect(lambda: self.remove_requested.emit(self._row_id))
+        lay.addWidget(self._del_btn)
+
+        self.update_row(row)
+
+    def set_session_id(self, value: int) -> None:
+        """Ustawia ID w spinboxie (wyemituje `id_changed` → aktualizacja wiersza)."""
+        self._id_spin.setValue(value)
+
+    def update_row(self, row: BatchRow) -> None:
+        color = self._STATUS_COLORS.get(row.status, "#888888")
+        self._status_icon.setStyleSheet(f"background:{color}; border-radius:7px;")
+        busy = row.status == BatchRowStatus.PREPARING
+        self._id_spin.setEnabled(not busy)
+        self._del_btn.setEnabled(not busy)
+        if row.status == BatchRowStatus.READY and row.prep:
+            p = row.prep
+            self._info.setText(
+                f"T0={p['t0']:.2f}s · przyc. {p['trim_start']:.1f}–{p['trim_end']:.1f}s")
+            self._info.setStyleSheet("color:#44cc88;")
+            self._info.setToolTip("")
+        elif row.status == BatchRowStatus.FAILED:
+            self._info.setText(f"błąd: {row.error}")
+            self._info.setStyleSheet("color:#e05555;")
+            self._info.setToolTip(row.error)
+        elif row.status == BatchRowStatus.PREPARING:
+            self._info.setText("przygotowuję…")
+            self._info.setStyleSheet("color:#f0c040;")
+        elif row.status == BatchRowStatus.NEEDS_ID:
+            self._info.setText("podaj ID")
+            self._info.setStyleSheet("color:#aa7733;")
+        else:
+            self._info.setText("gotowe do przygotowania")
+            self._info.setStyleSheet("color:#aaaaaa;")
+
+
+class BatchDialog(QWidget):
+    """Okno przetwarzania wsadowego (tryb auto + ID).
+
+    Dodajesz wiele plików, podajesz ID dla każdego, klikasz „Przygotuj" — aplikacja
+    pobiera sesje z API, wykrywa T0 (bzyczek) i liczy auto-przycięcie. Wspólny styl
+    nakładki, jeden katalog docelowy i sufiks nazwy. Gotowe pliki trafiają do
+    istniejącej kolejki renderów (`RenderQueueRunner`), która renderuje je po kolei.
+    """
+
+    def __init__(self, runner: "RenderQueueRunner", queue_window: "RenderQueueWindow",
+                 base_style: OverlayStyle, parent=None):
+        super().__init__(parent, Qt.Window)
+        self.setWindowTitle("Przetwarzanie wsadowe (auto + ID)")
+        self.setMinimumSize(720, 460)
+        self._runner = runner
+        self._queue_window = queue_window
+        self._base_style = base_style
+        self._rows: dict[str, BatchRow] = {}
+        self._row_widgets: dict[str, BatchRowWidget] = {}
+        self._workers: dict[str, BatchPrepWorker] = {}   # trzymane do finished
+
+        root = QVBoxLayout(self)
+
+        top = QHBoxLayout()
+        add_btn = QPushButton("Dodaj pliki…")
+        add_btn.clicked.connect(self._add_files)
+        export_btn = QPushButton("Eksport → schowek")
+        export_btn.setToolTip("Kopiuje listę jako wiersze „<ścieżka>;<ID>”")
+        export_btn.clicked.connect(self._export_clipboard)
+        import_btn = QPushButton("Import ze schowka")
+        import_btn.setToolTip("Wkleja listę „<ścieżka>;<ID>” ze schowka")
+        import_btn.clicked.connect(self._import_clipboard)
+        top.addWidget(add_btn)
+        top.addWidget(export_btn)
+        top.addWidget(import_btn)
+        top.addStretch(1)
+        self._count_label = QLabel("Brak plików.")
+        top.addWidget(self._count_label)
+        root.addLayout(top)
+
+        self._list_widget = QWidget()
+        self._list_layout = QVBoxLayout(self._list_widget)
+        self._list_layout.setSpacing(2)
+        self._list_layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self._list_widget)
+        scroll.setMinimumHeight(180)
+        root.addWidget(scroll, 1)
+
+        # --- ustawienia wspólne dla całej partii ---
+        opts = QGroupBox("Ustawienia wspólne")
+        form = QFormLayout(opts)
+
+        out_row = QHBoxLayout()
+        self._out_dir_edit = QLineEdit()
+        out_browse = QPushButton("Wybierz…")
+        out_browse.clicked.connect(self._pick_out_dir)
+        out_row.addWidget(self._out_dir_edit, 1)
+        out_row.addWidget(out_browse)
+        form.addRow("Katalog docelowy:", out_row)
+
+        self._suffix_edit = QLineEdit("_PiRoOverlay")
+        form.addRow("Sufiks nazwy:", self._suffix_edit)
+
+        self._format_combo = QComboBox()
+        for label, val in (("MP4 (H.264)", "mp4"), ("WebM (VP9)", "webm"), ("GIF", "gif")):
+            self._format_combo.addItem(label, val)
+        self._format_combo.currentIndexChanged.connect(lambda *_: self._refresh())
+        form.addRow("Format:", self._format_combo)
+
+        toggles = QHBoxLayout()
+        self._gpu_chk = QCheckBox("GPU (NVENC, jeśli dostępne)")
+        self._gpu_chk.setChecked(True)
+        self._overlay_chk = QCheckBox("Nakładka ze strzałami")
+        self._overlay_chk.setChecked(True)
+        self._overlay_chk.toggled.connect(self._on_overlay_toggled)
+        self._clock_chk = QCheckBox("Płynący zegar od T0")
+        self._clock_chk.setChecked(base_style.show_running_clock)
+        toggles.addWidget(self._gpu_chk)
+        toggles.addWidget(self._overlay_chk)
+        toggles.addWidget(self._clock_chk)
+        toggles.addStretch(1)
+        form.addRow("Nakładki:", toggles)
+        root.addWidget(opts)
+
+        note = QLabel(
+            "Tryb auto + ID: oś czasu z API (po ID), T0 = wykryty bzyczek, przycięcie "
+            "5 s przed T0 → ostatni strzał + 5 s. Wygląd nakładki wspólny — kopiowany "
+            "z głównego okna (zmień go tam przed otwarciem). Plansza START zawsze (auto).")
+        note.setStyleSheet("color:#aaaaaa;")
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        btns = QHBoxLayout()
+        self._prep_btn = QPushButton("Przygotuj wszystkie")
+        self._prep_btn.clicked.connect(self._prepare_all)
+        self._enqueue_btn = QPushButton("Wyślij gotowe do kolejki")
+        self._enqueue_btn.clicked.connect(self._enqueue_ready)
+        self._clear_btn = QPushButton("Wyczyść wszystko")
+        self._clear_btn.setToolTip("Usuwa wszystkie pliki z listy wsadowej")
+        self._clear_btn.clicked.connect(self._clear_all)
+        close_btn = QPushButton("Zamknij")
+        close_btn.clicked.connect(self.close)
+        btns.addWidget(self._prep_btn)
+        btns.addWidget(self._enqueue_btn)
+        btns.addWidget(self._clear_btn)
+        btns.addStretch(1)
+        btns.addWidget(close_btn)
+        root.addLayout(btns)
+
+        self._refresh()
+
+    # --- dodawanie / usuwanie plików ---
+    def _add_files(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "Wybierz pliki wideo", "",
+            "Wideo (*.mp4 *.mov *.mkv *.avi);;Wszystkie pliki (*)")
+        if not paths:
+            return
+        if not self._out_dir_edit.text() and paths:
+            self._out_dir_edit.setText(str(Path(paths[0]).parent))
+        for path in paths:
+            self._add_row(path)
+        self._refresh()
+
+    def _add_row(self, path: str, session_id: int = 0) -> BatchRow | None:
+        """Tworzy wiersz dla pliku (pomija duplikat ścieżki). Wspólne dla „Dodaj
+        pliki…" i importu ze schowka."""
+        if any(r.video_path == path for r in self._rows.values()):
+            return None
+        lrf = ffmpeg.find_lrf(path)
+        status = (BatchRowStatus.PENDING if session_id > 0
+                  else BatchRowStatus.NEEDS_ID)
+        row = BatchRow(id=uuid.uuid4().hex, video_path=path,
+                       lrf_path=str(lrf) if lrf else None,
+                       session_id=session_id, status=status)
+        self._rows[row.id] = row
+        w = BatchRowWidget(row)
+        w.remove_requested.connect(self._remove_row)
+        w.play_requested.connect(self._play_row)
+        w.id_changed.connect(self._on_id_changed)
+        self._row_widgets[row.id] = w
+        self._list_layout.insertWidget(self._list_layout.count() - 1, w)
+        return row
+
+    def _export_clipboard(self) -> None:
+        """Kopiuje całą listę do schowka — po jednym pliku w wierszu „<ścieżka>;<ID>”."""
+        if not self._rows:
+            QMessageBox.information(self, "Eksport", "Brak plików do wyeksportowania.")
+            return
+        lines = [f"{r.video_path};{r.session_id}" for r in self._rows.values()]
+        QApplication.clipboard().setText("\n".join(lines))
+        self._count_label.setText(f"Skopiowano {len(lines)} pozycji do schowka.")
+
+    def _import_clipboard(self) -> None:
+        """Wkleja listę ze schowka w formacie „<ścieżka>;<ID>” (jeden plik na wiersz).
+        Dla istniejącej ścieżki aktualizuje ID; nowa ścieżka → nowy wiersz."""
+        text = QApplication.clipboard().text()
+        if not text.strip():
+            QMessageBox.information(self, "Import", "Schowek jest pusty.")
+            return
+        by_path = {r.video_path: r for r in self._rows.values()}
+        added = updated = skipped = 0
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            # rozdziel po OSTATNIM ';' — ścieżka Windows może zawierać inne znaki,
+            # ale ID jest zawsze na końcu po średniku.
+            path, sep, id_str = line.rpartition(";")
+            if not sep:
+                path, id_str = line, ""
+            path = path.strip()
+            if not path:
+                skipped += 1
+                continue
+            try:
+                sid = int(id_str.strip()) if id_str.strip() else 0
+            except ValueError:
+                sid = 0
+            if path in by_path:
+                # aktualizacja ID istniejącego wiersza (przez spinbox → _on_id_changed)
+                w = self._row_widgets.get(by_path[path].id)
+                if w:
+                    w.set_session_id(sid)
+                updated += 1
+            else:
+                row = self._add_row(path, session_id=sid)
+                if row:
+                    by_path[path] = row
+                    added += 1
+        self._refresh()
+        self._count_label.setText(
+            f"Import: dodano {added}, zaktualizowano {updated}"
+            + (f", pominięto {skipped}" if skipped else ""))
+
+    def _remove_row(self, row_id: str) -> None:
+        row = self._rows.get(row_id)
+        if row is None or row.status == BatchRowStatus.PREPARING:
+            return
+        self._rows.pop(row_id, None)
+        w = self._row_widgets.pop(row_id, None)
+        if w:
+            self._list_layout.removeWidget(w)
+            w.deleteLater()
+        self._refresh()
+
+    def _clear_all(self) -> None:
+        """Usuwa wszystkie pliki z listy wsadowej (pomija wiersze w trakcie
+        przygotowania — nie wolno wyrwać żywego QThread)."""
+        if not self._rows:
+            return
+        busy = any(r.status == BatchRowStatus.PREPARING for r in self._rows.values())
+        if busy:
+            QMessageBox.information(
+                self, "Wyczyść wszystko",
+                "Trwa przygotowanie — poczekaj na jego zakończenie.")
+            return
+        if QMessageBox.question(
+                self, "Wyczyść wszystko",
+                f"Usunąć wszystkie pliki z listy ({len(self._rows)})?"
+                ) != QMessageBox.Yes:
+            return
+        for w in self._row_widgets.values():
+            self._list_layout.removeWidget(w)
+            w.deleteLater()
+        self._rows.clear()
+        self._row_widgets.clear()
+        self._refresh()
+
+    def _play_row(self, row_id: str) -> None:
+        row = self._rows.get(row_id)
+        if row:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(row.video_path))
+
+    def _on_id_changed(self, row_id: str, value: int) -> None:
+        row = self._rows.get(row_id)
+        if row is None or row.status == BatchRowStatus.PREPARING:
+            return
+        row.session_id = value
+        # zmiana ID unieważnia poprzednie przygotowanie
+        if row.status in (BatchRowStatus.READY, BatchRowStatus.FAILED):
+            row.prep = None
+            row.error = ""
+        row.status = BatchRowStatus.PENDING if value > 0 else BatchRowStatus.NEEDS_ID
+        self._sync_row(row)
+        self._refresh()
+
+    def _pick_out_dir(self) -> None:
+        d = QFileDialog.getExistingDirectory(self, "Katalog docelowy",
+                                             self._out_dir_edit.text() or "")
+        if d:
+            self._out_dir_edit.setText(d)
+
+    def _on_overlay_toggled(self, on: bool) -> None:
+        self._clock_chk.setEnabled(on)
+
+    # --- przygotowanie (fetch + detekcja T0) ---
+    def _prepare_all(self) -> None:
+        todo = [r for r in self._rows.values()
+                if r.status == BatchRowStatus.PENDING and r.session_id > 0]
+        if not todo:
+            QMessageBox.information(
+                self, "Przetwarzanie wsadowe",
+                "Brak plików do przygotowania (podaj ID dla plików).")
+            return
+        for row in todo:
+            row.status = BatchRowStatus.PREPARING
+            self._sync_row(row)
+            worker = BatchPrepWorker(row.id, row.video_path, row.lrf_path,
+                                     row.session_id)
+            worker.done.connect(self._on_prep_done)
+            worker.failed.connect(self._on_prep_failed)
+            worker.finished.connect(lambda rid=row.id: self._workers.pop(rid, None))
+            self._workers[row.id] = worker
+            worker.start()
+        self._refresh()
+
+    def _on_prep_done(self, row_id: str, result: dict) -> None:
+        row = self._rows.get(row_id)
+        if row is None:
+            return
+        row.prep = result
+        row.status = BatchRowStatus.READY
+        row.error = ""
+        self._sync_row(row)
+        self._refresh()
+
+    def _on_prep_failed(self, row_id: str, msg: str) -> None:
+        row = self._rows.get(row_id)
+        if row is None:
+            return
+        row.error = msg
+        row.status = BatchRowStatus.FAILED
+        self._sync_row(row)
+        self._refresh()
+
+    # --- wysyłka do kolejki renderów ---
+    def _enqueue_ready(self) -> None:
+        ready = [r for r in self._rows.values() if r.status == BatchRowStatus.READY]
+        if not ready:
+            QMessageBox.information(
+                self, "Przetwarzanie wsadowe",
+                "Brak przygotowanych plików. Kliknij „Przygotuj wszystkie”.")
+            return
+        out_dir = Path(self._out_dir_edit.text()) if self._out_dir_edit.text() else None
+        if out_dir is None or not out_dir.is_dir():
+            QMessageBox.warning(self, "Brak katalogu",
+                                "Wskaż istniejący katalog docelowy.")
+            return
+        fmt = self._format_combo.currentData()
+        ext = {"mp4": ".mp4", "webm": ".webm", "gif": ".gif"}.get(fmt, ".mp4")
+        suffix = self._suffix_edit.text()
+        no_overlay = not self._overlay_chk.isChecked()
+        style = replace(self._base_style,
+                        show_running_clock=self._clock_chk.isChecked())
+        encoder = "auto" if self._gpu_chk.isChecked() else "cpu"
+
+        added = 0
+        for row in ready:
+            p = row.prep
+            session = p["session"]
+            out_path = out_dir / (Path(row.video_path).stem + suffix + ext)
+            t0 = audio_sync.resolve_t0(p["t0"], AnchorMode.START_SIGNAL,
+                                       session.shots[0].czas)
+            kwargs = dict(
+                video_path=row.video_path, session=session, t0=t0,
+                style=style, mode=AnchorMode.START_SIGNAL, out_path=str(out_path),
+                trim_start=p["trim_start"] if p["trim_start"] > 0 else None,
+                trim_end=p["trim_end"] if p["trim_end"] > 0 else None,
+                encoder=encoder, no_overlay=no_overlay, output_format=fmt,
+            )
+            job = RenderJob(
+                id=uuid.uuid4().hex,
+                label=f"{Path(row.video_path).name} → {out_path.name}",
+                kwargs=kwargs)
+            self._queue_window.add_job(job)
+            added += 1
+            # zostaw wiersz, ale oznacz jako wysłany (PENDING bez ID-edycji)
+            row.status = BatchRowStatus.PENDING
+            row.prep = None
+            self._sync_row(row)
+
+        self._queue_window.show()
+        self._queue_window.raise_()
+        self._refresh()
+        QMessageBox.information(
+            self, "Przetwarzanie wsadowe",
+            f"Dodano {added} zadań do kolejki. Kliknij „Start kolejki” w oknie kolejki.")
+
+    # --- pomocnicze ---
+    def _sync_row(self, row: BatchRow) -> None:
+        if w := self._row_widgets.get(row.id):
+            w.update_row(row)
+
+    def _refresh(self) -> None:
+        n = len(self._rows)
+        ready = sum(1 for r in self._rows.values() if r.status == BatchRowStatus.READY)
+        pending = sum(1 for r in self._rows.values()
+                      if r.status == BatchRowStatus.PENDING and r.session_id > 0)
+        busy = any(r.status == BatchRowStatus.PREPARING for r in self._rows.values())
+        self._count_label.setText(
+            f"Plików: {n} · gotowych: {ready}" if n else "Brak plików.")
+        self._prep_btn.setEnabled(pending > 0 and not busy)
+        self._enqueue_btn.setEnabled(ready > 0 and not busy)
+        self._clear_btn.setEnabled(n > 0 and not busy)
+
+    def closeEvent(self, event):
+        if any(r.status == BatchRowStatus.PREPARING for r in self._rows.values()):
+            self.hide()
+            event.ignore()
+        else:
+            event.accept()
 
 
 # ----------------------------- waveform -----------------------------
@@ -877,6 +1624,7 @@ class MainWindow(QMainWindow):
         self._render_busy: bool = False
         self._queue_runner: RenderQueueRunner | None = None
         self._queue_window: RenderQueueWindow | None = None
+        self._batch_window: BatchDialog | None = None
         # Podgląd — cache klatki + timer debouncujący ekstrakcję FFmpeg
         self._cached_frame: Image.Image | None = None
         self._cached_frame_t: float = -1.0
@@ -1312,25 +2060,48 @@ class MainWindow(QMainWindow):
         cli_btn.clicked.connect(self._show_cli_command)
         v.addWidget(cli_btn)
         self.progress = QProgressBar(); v.addWidget(self.progress)
+        # Wiersz 1: Renderuj / Zatrzymaj — w jednej linii, mniejsze (nie rozciągają się).
         brow = QHBoxLayout()
         self.render_btn = QPushButton("Renderuj"); self.render_btn.clicked.connect(self._start_render)
         self.cancel_btn = QPushButton("Zatrzymaj")
         self.cancel_btn.setToolTip("Przerywa trwające renderowanie i usuwa niedokończony plik.")
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self._cancel_render)
+        self.render_btn.setMaximumWidth(120)
+        self.cancel_btn.setMaximumWidth(120)
+        brow.addWidget(self.render_btn)
+        brow.addWidget(self.cancel_btn)
+        brow.addStretch(1)
+        v.addLayout(brow)
+
+        # Wiersz 2: kolejka renderów.
+        qrow = QHBoxLayout()
         self.queue_add_btn = QPushButton("Dodaj do kolejki")
         self.queue_add_btn.clicked.connect(self._add_to_queue)
         self.queue_show_btn = QPushButton("Kolejka")
         self.queue_show_btn.clicked.connect(self._show_queue_window)
+        qrow.addWidget(self.queue_add_btn)
+        qrow.addWidget(self.queue_show_btn)
+        qrow.addStretch(1)
+        v.addLayout(qrow)
+
+        # Wiersz 3: przetwarzanie wsadowe.
+        bbrow = QHBoxLayout()
+        self.batch_btn = QPushButton("Wsadowo…")
+        self.batch_btn.setToolTip("Przetwarzanie wielu plików (tryb auto + ID)")
+        self.batch_btn.clicked.connect(self._show_batch_window)
+        bbrow.addWidget(self.batch_btn)
+        bbrow.addStretch(1)
+        v.addLayout(bbrow)
+
+        # Wiersz 4: otwarcie wyniku — widoczne dopiero PO zakończeniu renderu.
+        orow2 = QHBoxLayout()
         self.open_btn = QPushButton("Otwórz folder z wynikiem")
-        self.open_btn.setEnabled(False)
+        self.open_btn.setVisible(False)
         self.open_btn.clicked.connect(self._open_output_folder)
-        brow.addWidget(self.render_btn)
-        brow.addWidget(self.cancel_btn)
-        brow.addWidget(self.queue_add_btn)
-        brow.addWidget(self.queue_show_btn)
-        brow.addWidget(self.open_btn)
-        v.addLayout(brow)
+        orow2.addWidget(self.open_btn)
+        orow2.addStretch(1)
+        v.addLayout(orow2)
         return box
 
     # ---------- logika ----------
@@ -2091,6 +2862,7 @@ class MainWindow(QMainWindow):
         self._render_busy = True
         self.render_btn.setEnabled(False)
         self.cancel_btn.setEnabled(True)
+        self.open_btn.setVisible(False)  # pokaż dopiero po udanym renderze
         self.worker = RenderWorker(kwargs)
         self._used_encoder = None
         self._render_warn = None
@@ -2186,6 +2958,7 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.setText("Zatrzymaj")
         self.last_output = path
+        self.open_btn.setVisible(True)
         self.open_btn.setEnabled(True)
         enc = {"h264_nvenc": "GPU (NVENC)", "libx264": "CPU (x264)"}.get(self._used_encoder, "")
         msg = f"Zapisano:\n{path}"
@@ -2222,6 +2995,20 @@ class MainWindow(QMainWindow):
         win.show()
         win.raise_()
 
+    def _show_batch_window(self):
+        # Współdziel runner/okno kolejki — wsad tylko dokłada do nich zadania.
+        queue_win = self._get_queue_window()
+        if self._batch_window is None:
+            self._batch_window = BatchDialog(
+                self._queue_runner, queue_win, self.current_style(), parent=None)
+        else:
+            # odśwież wspólny styl (mógł się zmienić w głównym oknie)
+            self._batch_window._base_style = self.current_style()
+            self._batch_window._clock_chk.setChecked(
+                self.current_style().show_running_clock)
+        self._batch_window.show()
+        self._batch_window.raise_()
+
     def _get_queue_window(self) -> RenderQueueWindow:
         if self._queue_window is None:
             runner = RenderQueueRunner(
@@ -2245,10 +3032,14 @@ class MainWindow(QMainWindow):
             self.worker.cancel()
             self.worker.wait(3000)
         if self._queue_runner is not None and self._queue_runner._running:
+            self._queue_runner.stop()  # pauzuje kolejkę + ubija bieżący render
             w = self._queue_runner._active_worker
             if w is not None:
-                w.cancel()
                 w.wait(3000)
+        # Poczekaj na workery przygotowania wsadu (QThread niszczony w trakcie = crash).
+        if self._batch_window is not None:
+            for worker in list(self._batch_window._workers.values()):
+                worker.wait(3000)
         event.accept()
 
     def _open_output_folder(self):
@@ -2344,11 +3135,71 @@ def _fmt_num(v: float) -> str:
     return f"{v:.3f}".rstrip("0").rstrip(".")
 
 
+class WheelGuard(QObject):
+    """Globalny filtr zdarzeń: kółko myszy NIE zmienia wartości ŻADNEGO pola
+    (spinbox/combo). Zamiast zmieniać wartość, przewijanie jest przekazywane do
+    najbliższego `QScrollArea` (gdy pole leży w obszarze przewijanym), więc strona
+    nadal przewija się pod kursorem — tylko wartość pola pozostaje nietknięta.
+
+    Instalowany na `QApplication`, więc obejmuje pola we wszystkich oknach (główne,
+    kolejka, wsad, dialogi) — także te tworzone później.
+    """
+    _GUARDED = (QAbstractSpinBox, QComboBox)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Wheel and isinstance(obj, self._GUARDED):
+            area = obj.parentWidget()
+            while area is not None and not isinstance(area, QScrollArea):
+                area = area.parentWidget()
+            if area is not None:
+                # przekaż przewijanie do obszaru (viewport nie jest polem → przewinie)
+                QApplication.sendEvent(area.viewport(), event)
+            return True   # zablokuj zmianę wartości pola
+        return False
+
+
+_crash_log_file = None  # utrzymuje otwarty uchwyt dla faulthandler (GC by go zamknął)
+
+
+def _install_crash_logging() -> None:
+    """Zapisuje twarde crashe i nieobsłużone wyjątki do AppData.
+
+    `faulthandler` zrzuca stos WSZYSTKICH wątków przy natywnym crashu (segfault,
+    `abort()` z „QThread: Destroyed while thread is still running") — inaczej
+    aplikacja po prostu znika bez śladu. `sys.excepthook`/`threading.excepthook`
+    łapią wyjątki Pythona. Wszystko ląduje w `crash_log.txt` obok `render_log.txt`."""
+    global _crash_log_file
+    try:
+        import threading
+        path = config.config_dir() / "crash_log.txt"
+        _crash_log_file = open(path, "a", encoding="utf-8", buffering=1)
+        faulthandler.enable(file=_crash_log_file, all_threads=True)
+
+        def _log_exc(kind, exc, tb):
+            try:
+                _crash_log_file.write("\n=== Nieobsłużony wyjątek ===\n")
+                traceback.print_exception(kind, exc, tb, file=_crash_log_file)
+                _crash_log_file.flush()
+            except Exception:  # noqa: BLE001
+                pass
+
+        sys.excepthook = lambda k, e, t: (_log_exc(k, e, t),
+                                          sys.__excepthook__(k, e, t))
+        if hasattr(threading, "excepthook"):
+            threading.excepthook = lambda a: _log_exc(a.exc_type, a.exc_value,
+                                                      a.exc_traceback)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main():
+    _install_crash_logging()
     app = QApplication(sys.argv)
     app.setApplicationName("PiroOverlay")
     app.setApplicationVersion(__version__)
     app.setWindowIcon(QIcon(resources.icon_path()))
+    app._wheel_guard = WheelGuard(app)   # referencja, by filtr nie zniknął (GC)
+    app.installEventFilter(app._wheel_guard)
     win = MainWindow()
     win.resize(1180, 760)
     win.show()

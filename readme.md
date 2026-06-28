@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.18.1
+> **Wersja:** 0.21.2
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
 **osi czasu strzałów** nakłada na film informacyjną grafikę (numer strzału, czas od startu,
@@ -194,8 +194,80 @@ W sekcji „Wyjście" wybierasz format renderu:
 - **WebM** (VP9) — lekki format webowy.
 - **GIF** — zapętlona animacja bez dźwięku (np. do social media).
 
-Render można **przerwać** przyciskiem „Zatrzymaj" (np. po pomyłce) — ubija proces FFmpeg
-i usuwa niedokończony plik. Można też kolejkować wiele zadań („Dodaj do kolejki" → „Kolejka").
+## Przyciski renderowania
+
+Pod paskiem postępu znajdują się przyciski (w kilku wierszach):
+
+- **Renderuj** — uruchamia render bieżącego pliku.
+- **Zatrzymaj** — przerywa trwający render: natychmiast ubija proces FFmpeg i usuwa
+  niedokończony (uszkodzony) plik wyjściowy.
+- **Dodaj do kolejki** — dodaje bieżące ustawienia jako zadanie do kolejki renderów
+  (otwiera okno kolejki).
+- **Kolejka** — otwiera okno kolejki renderów (patrz niżej).
+- **Wsadowo…** — otwiera okno przetwarzania wsadowego wielu plików (patrz niżej).
+- **Otwórz folder z wynikiem** — pojawia się **dopiero po udanym renderze**; otwiera
+  folder z plikiem (na Windows zaznacza plik w eksploratorze).
+
+## Kolejka renderów
+
+Okno **„Kolejka"** renderuje wiele zadań po kolei (jeden render naraz), pokazując dla
+każdego liczbowy **% postępu**, a w pasku stanu — postęp łączny („Render 3/20 · plik ·
+bieżący 47% · łącznie 31%"). Przyciski:
+
+- **Start kolejki** — uruchamia kolejkę; **ponawia też zadania nieudane** (FAILED → ponów),
+  więc po błędzie/awarii wystarczy kliknąć Start, by spróbować ponownie.
+- **Zatrzymaj** — przerywa bieżący render i **pauzuje** kolejkę; przerwane zadanie wraca do
+  stanu „oczekuje", a „Start kolejki" wznawia od niego.
+- **Wyczyść zakończone** — usuwa z listy zadania ukończone i nieudane.
+- **Zapisz kolejkę / Wczytaj kolejkę** — zapisuje/odczytuje listę zadań w `AppData`
+  (`render_queue.json`). Służy do **odzysku po awarii**: stan zapisuje się też automatycznie
+  przy każdej zmianie, a **zadania ukończone pomyślnie nie są zapisywane** (w pliku zostają
+  tylko te do wykonania). Po ponownym otwarciu kliknij „Wczytaj kolejkę", by wznowić.
+
+## Przetwarzanie wsadowe (Wsadowo…)
+
+Okno **„Wsadowo…"** pozwala przerobić **wiele plików naraz** w trybie **auto + ID**
+(oś czasu z API po ID, T0 = wykryty bzyczek, automatyczne przycięcie). Krok po kroku:
+
+1. **Dodaj pliki…** — wybierasz wiele plików wideo; każdy trafia do listy.
+2. Dla każdego wiersza podajesz **ID** z API (pole obok nazwy pliku).
+3. **Przygotuj wszystkie** — w tle dla każdego pliku: pobiera sesję z API, wykrywa T0
+   (bzyczek) i liczy przycięcie (5 s przed T0 → ostatni strzał + 5 s). Status wiersza
+   pokazuje wynik (T0, okno przycięcia) lub błąd.
+4. **Wyślij gotowe do kolejki** — gotowe wiersze stają się zadaniami w zwykłej kolejce
+   renderów i renderują się po kolei.
+
+Ustawienia **wspólne dla całej partii**: katalog docelowy, **sufiks nazwy** pliku
+wyjściowego, format (MP4/WebM/GIF), GPU, nakładka wł./wył. oraz płynący zegar. Wygląd
+nakładki jest kopiowany z głównego okna (ustaw go tam przed otwarciem).
+
+Dodatkowe przyciski:
+
+- **▶** (przy wierszu) — otwiera **plik źródłowy** w domyślnym odtwarzaczu (podgląd).
+- **Usuń** (przy wierszu) / **Wyczyść wszystko** — usuwa pojedynczy plik / całą listę.
+- **Eksport → schowek** — kopiuje listę do schowka, po jednym pliku w wierszu w formacie
+  `<ścieżka>;<ID>`.
+- **Import ze schowka** — wkleja listę w tym samym formacie (`<ścieżka>;<ID>` w wierszach);
+  dla istniejącej ścieżki aktualizuje ID, nową dodaje jako nowy wiersz.
+
+## Drobiazgi GUI
+
+- **Kółko myszy nie zmienia wartości pól** — przewijanie nad polami liczbowymi i listami
+  rozwijanymi nie zmienia ich wartości (częsty przypadkowy błąd); przewija się tylko strona.
+- **Diagnostyka NVENC** — przycisk w sekcji „Wyjście" pokazuje status NVENC, używaną binarkę
+  FFmpeg i — gdy GPU nie działa — powód oraz wskazówki (np. wymuszenie karty NVIDIA dla aplikacji).
+- **Pokaż komendę CLI** — buduje równoważne wywołanie bezgłowe z aktualnych ustawień (patrz
+  wyżej, „Generowanie komendy z GUI").
+
+## Diagnostyka (logi w AppData)
+
+Gdyby render się nie udał albo aplikacja zachowała się niestabilnie, w katalogu
+`AppData\PiroOverlay` (Windows) / `~/.config/PiroOverlay` (Linux) powstają pliki pomocne
+przy zgłaszaniu problemu:
+
+- **`render_log.txt`** — dokładna komenda FFmpeg każdego renderu oraz wynik (`OK` / `FAIL`
+  z ogonem błędu / `CANCELLED`). Najszybszy sposób, by zobaczyć, czy i dlaczego FFmpeg zawiódł.
+- **`crash_log.txt`** — ślad twardego crashu (zrzut stosów wątków) oraz nieobsłużone wyjątki.
 
 ## Synchronizacja po API — „Pobierz" vs „Pobierz i przytnij"
 

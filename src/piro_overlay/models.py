@@ -67,6 +67,39 @@ class Session:
             return self.czas_bazowy
         return self.shots[-1].czas if self.shots else None
 
+    def to_dict(self) -> dict:
+        """Serializuje sesję do słownika gotowego do zapisu JSON (np. kolejka renderów)."""
+        return {
+            "shots": [{"numer": s.numer, "czas": s.czas, "split": s.split}
+                      for s in self.shots],
+            "nazwa_toru": self.nazwa_toru,
+            "uczestnik": self.uczestnik,
+            "liczba_strzalow": self.liczba_strzalow,
+            "czas_bazowy": self.czas_bazowy,
+            "suma_kar": self.suma_kar,
+            "czas_koncowy": self.czas_koncowy,
+            "hit_factor": self.hit_factor,
+        }
+
+    @staticmethod
+    def from_dict(d: dict) -> "Session":
+        """Odtwarza sesję ze słownika (odwrotność `to_dict`)."""
+        shots = [
+            Shot(numer=int(s["numer"]), czas=float(s["czas"]),
+                 split=(None if s.get("split") is None else float(s["split"])))
+            for s in d.get("shots", [])
+        ]
+        return Session(
+            shots=shots,
+            nazwa_toru=d.get("nazwa_toru"),
+            uczestnik=d.get("uczestnik"),
+            liczba_strzalow=d.get("liczba_strzalow"),
+            czas_bazowy=d.get("czas_bazowy"),
+            suma_kar=d.get("suma_kar"),
+            czas_koncowy=d.get("czas_koncowy"),
+            hit_factor=d.get("hit_factor"),
+        )
+
 
 # Predefiniowane kotwice (rogi/krawędzie) pozycjonowania panelu.
 ANCHOR_POSITIONS = (

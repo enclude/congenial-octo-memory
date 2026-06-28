@@ -15,11 +15,28 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
-from . import ffmpeg, overlay
+from . import config, ffmpeg, overlay
 from .models import AnchorMode, OverlayStyle, Session
 
 ProgressCb = Callable[[float], None]  # postęp 0.0–1.0
 CancelCheck = Callable[[], bool]      # zwraca True gdy render ma zostać przerwany
+ProcessCb = Callable[[object], None]  # przekazuje uchwyt Popen (lub None) — do ubicia
+
+
+def _log_render(msg: str) -> None:
+    """Dopisuje wiersz do dziennika renderów w AppData (diagnostyka zawieszeń/crashy).
+
+    Cichy i odporny na błędy — diagnostyka nie może wywrócić renderu. Plik bywa
+    jedynym śladem, gdy FFmpeg zawiesza się albo aplikacja pada twardo."""
+    try:
+        path = config.config_dir() / "render_log.txt"
+        # przytnij, jeśli urósł (prosty bezpiecznik, bez rotacji)
+        if path.exists() and path.stat().st_size > 512 * 1024:
+            path.write_text("", encoding="utf-8")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(msg.rstrip() + "\n")
+    except Exception:  # noqa: BLE001
+        pass
 
 _LAST_SHOT_HOLD = 2.0  # ile sekund trzymać panel ostatniego strzału przed podsumowaniem
 
@@ -439,7 +456,8 @@ def render_video(video_path: str | Path, session: Session, t0: float,
                  encoder: str = "auto",
                  on_encoder: Callable[[str], None] | None = None,
                  on_warn: Callable[[str], None] | None = None,
-                 cancel_check: CancelCheck | None = None) -> Path:
+                 cancel_check: CancelCheck | None = None,
+                 on_process: ProcessCb | None = None) -> Path:
     """Renderuje wideo wynikowe z nakładką. Zwraca ścieżkę do pliku wyjściowego.
 
     trim_start / trim_end — opcjonalny fragment źródła (s) do wycięcia. Eksportowany
@@ -471,7 +489,7 @@ def render_video(video_path: str | Path, session: Session, t0: float,
         seek = ["-ss", f"{src_start:.3f}"] if src_start > 0 else []
         inputs: list[str] = [*seek, "-i", video_path]
         filter_parts: list[str] = []
-        cur = "0:v"
+        cur = "0:v:0"   # TYLKO pierwszy strumień wideo (DJI ma drugi: miniatura MJPEG)
 
         used = 0
         for ev in events:
@@ -519,7 +537,8 @@ def render_video(video_path: str | Path, session: Session, t0: float,
 
         chosen = _resolve_encoder(encoder)
         try:
-            _run_with_progress(build_cmd(chosen), out_duration, progress_cb, cancel_check)
+            _run_with_progress(build_cmd(chosen), out_duration, progress_cb,
+                               cancel_check, on_process)
             if on_encoder:
                 on_encoder(chosen)
         except RuntimeError as exc:
@@ -529,7 +548,8 @@ def render_video(video_path: str | Path, session: Session, t0: float,
             if on_warn:
                 on_warn(f"Enkoder {chosen} zawiódł, używam CPU (x264).\n\n"
                         f"Powód (z FFmpeg):\n{_short_err(exc)}")
-            _run_with_progress(build_cmd("libx264"), out_duration, progress_cb, cancel_check)
+            _run_with_progress(build_cmd("libx264"), out_duration, progress_cb,
+                               cancel_check, on_process)
             if on_encoder:
                 on_encoder("libx264")
 
@@ -541,7 +561,8 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
                 progress_cb: ProgressCb | None = None,
                 trim_start: float | None = None,
                 trim_end: float | None = None,
-                cancel_check: CancelCheck | None = None) -> Path:
+                cancel_check: CancelCheck | None = None,
+                on_process: ProcessCb | None = None) -> Path:
     """Renderuje WebM (VP9 + Opus) z wypalona nakładką.
 
     Nie wspiera NVENC — VP9 jest zawsze programowy (libvpx-vp9). Dobry do
@@ -567,7 +588,7 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
         seek = ["-ss", f"{src_start:.3f}"] if src_start > 0 else []
         inputs: list[str] = [*seek, "-i", video_path]
         filter_parts: list[str] = []
-        cur = "0:v"
+        cur = "0:v:0"   # TYLKO pierwszy strumień wideo (DJI ma drugi: miniatura MJPEG)
 
         used = 0
         for ev in events:
@@ -608,7 +629,7 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
             "-c:a", "libopus", "-b:a", "96k",
             str(out_path),
         ]
-        _run_with_progress(cmd, out_duration, progress_cb, cancel_check)
+        _run_with_progress(cmd, out_duration, progress_cb, cancel_check, on_process)
 
     return out_path
 
@@ -620,7 +641,8 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
                trim_end: float | None = None,
                fps: int = 12,
                max_width: int = 640,
-               cancel_check: CancelCheck | None = None) -> Path:
+               cancel_check: CancelCheck | None = None,
+               on_process: ProcessCb | None = None) -> Path:
     """Renderuje animowany GIF z wypalona nakładką (2-pass: palettegen + paletteuse).
 
     fps — liczba klatek na sekundę GIF (domyślnie 12; przy 24+ plik rośnie drastycznie).
@@ -648,7 +670,7 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
         seek = ["-ss", f"{src_start:.3f}"] if src_start > 0 else []
         inputs: list[str] = [*seek, "-i", video_path]
         filter_parts: list[str] = []
-        cur = "0:v"
+        cur = "0:v:0"   # TYLKO pierwszy strumień wideo (DJI ma drugi: miniatura MJPEG)
 
         used = 0
         for ev in events:
@@ -713,7 +735,7 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
             "-loop", "0",
             str(out_path),
         ]
-        _run_with_progress(cmd2, out_duration, progress_cb, cancel_check)
+        _run_with_progress(cmd2, out_duration, progress_cb, cancel_check, on_process)
 
     return out_path
 
@@ -725,7 +747,8 @@ def trim_video(video_path: str | Path, out_path: str | Path,
                progress_cb: ProgressCb | None = None,
                on_encoder: Callable[[str], None] | None = None,
                on_warn: Callable[[str], None] | None = None,
-               cancel_check: CancelCheck | None = None) -> Path:
+               cancel_check: CancelCheck | None = None,
+               on_process: ProcessCb | None = None) -> Path:
     """Przycina wideo bez nakładki. Zachowuje audio, re-enkoduje wideo.
 
     Parametry trim_start / trim_end i encoder działają tak samo jak w render_video.
@@ -745,7 +768,7 @@ def trim_video(video_path: str | Path, out_path: str | Path,
         return [
             ffmpeg.ffmpeg_exe(), "-y", *hw, *seek, "-i", video_path,
             "-t", f"{out_duration:.3f}",
-            "-map", "0:v", "-map", "0:a?",
+            "-map", "0:v:0", "-map", "0:a?",   # tylko 1. wideo (pomiń miniaturę MJPEG DJI)
             *_video_encoder_args(enc),
             "-c:a", "aac", "-movflags", "+faststart",
             str(out_path),
@@ -753,7 +776,8 @@ def trim_video(video_path: str | Path, out_path: str | Path,
 
     chosen = _resolve_encoder(encoder)
     try:
-        _run_with_progress(build_cmd(chosen), out_duration, progress_cb, cancel_check)
+        _run_with_progress(build_cmd(chosen), out_duration, progress_cb,
+                           cancel_check, on_process)
         if on_encoder:
             on_encoder(chosen)
     except RuntimeError as exc:
@@ -762,7 +786,8 @@ def trim_video(video_path: str | Path, out_path: str | Path,
         if on_warn:
             on_warn(f"Enkoder {chosen} zawiódł, używam CPU (x264).\n\n"
                     f"Powód (z FFmpeg):\n{_short_err(exc)}")
-        _run_with_progress(build_cmd("libx264"), out_duration, progress_cb, cancel_check)
+        _run_with_progress(build_cmd("libx264"), out_duration, progress_cb,
+                           cancel_check, on_process)
         if on_encoder:
             on_encoder("libx264")
 
@@ -781,32 +806,56 @@ def _short_err(exc: Exception) -> str:
 
 
 _TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
+# Z `-progress`: `out_time_ms=` (mikrosekundy mimo nazwy) — pewniejsze niż „time=".
+_OUT_TIME_MS_RE = re.compile(r"out_time_(?:ms|us)=(\d+)")
 
 
 def _run_with_progress(cmd: list[str], duration: float, progress_cb: ProgressCb | None,
-                       cancel_check: CancelCheck | None = None) -> None:
+                       cancel_check: CancelCheck | None = None,
+                       on_process: ProcessCb | None = None) -> None:
+    # `-progress pipe:2 -nostats` → FFmpeg wypisuje postęp REGULARNIE (co ~0.5 s),
+    # niezależnie od tego jak wolno liczą się klatki. Bez tego ciężki filtergraph
+    # potrafił nie wypisać NIC przez dziesiątki sekund → brak postępu i „Zatrzymaj"
+    # nie miało kiedy zadziałać (pętla czytająca stderr blokowała się).
+    cmd = [cmd[0], "-progress", "pipe:2", "-nostats", *cmd[1:]]
+    _log_render(f"START ({duration:.1f}s): {' '.join(cmd)}")
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                             text=True, creationflags=ffmpeg.CREATE_NO_WINDOW)
+    if on_process:
+        on_process(proc)   # pozwól workerowi ubić proces przy „Zatrzymaj"
     tail: list[str] = []
     assert proc.stderr is not None
-    for line in proc.stderr:
-        if cancel_check and cancel_check():
-            proc.kill()
-            proc.wait()
-            raise RenderCancelled()
-        tail.append(line)
-        if len(tail) > 50:
-            tail.pop(0)
-        if progress_cb and duration > 0:
-            m = _TIME_RE.search(line)
-            if m:
-                h, mm, s = m.groups()
-                t = int(h) * 3600 + int(mm) * 60 + float(s)
-                progress_cb(min(t / duration, 1.0))
+    try:
+        for line in proc.stderr:
+            if cancel_check and cancel_check():
+                proc.kill()
+                proc.wait()
+                _log_render("CANCELLED")
+                raise RenderCancelled()
+            tail.append(line)
+            if len(tail) > 80:
+                tail.pop(0)
+            if progress_cb and duration > 0:
+                # `-progress` daje wiersze `out_time_ms=` / `out_time=`; łapiemy oba.
+                mms = _OUT_TIME_MS_RE.search(line)
+                if mms:
+                    progress_cb(min(int(mms.group(1)) / 1e6 / duration, 1.0))
+                else:
+                    m = _TIME_RE.search(line)
+                    if m:
+                        h, mm, s = m.groups()
+                        t = int(h) * 3600 + int(mm) * 60 + float(s)
+                        progress_cb(min(t / duration, 1.0))
+    finally:
+        if on_process:
+            on_process(None)
     proc.wait()
     if cancel_check and cancel_check():
+        _log_render("CANCELLED")
         raise RenderCancelled()
     if proc.returncode != 0:
+        _log_render(f"FAIL rc={proc.returncode}:\n" + "".join(tail)[-3000:])
         raise RuntimeError("FFmpeg zakończył się błędem:\n" + "".join(tail))
+    _log_render("OK")
     if progress_cb:
         progress_cb(1.0)
