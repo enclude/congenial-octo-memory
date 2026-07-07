@@ -43,29 +43,29 @@
       <div class="step-rail"><span class="step-no">02</span><span class="step-tick">✓</span></div>
       <div class="step-body">
         <h2>Oś czasu strzałów</h2>
-        <label class="check"><input type="checkbox" id="no-overlay-check">
-          Tylko przytnij — wykryj T0 i przycięcie, bez nakładki (oś czasu niepotrzebna)</label>
-        <div id="session-fields">
-          <div class="tabs" role="tablist">
-            <button class="tab active" data-tab="id" role="tab">ID z kalkulatora</button>
-            <button class="tab" data-tab="timeline" role="tab">Wklej oś czasu</button>
-          </div>
-          <div class="tab-pane" id="pane-id">
-            <div class="row">
-              <input type="number" id="session-id" min="1" placeholder="np. 128" class="mono">
-              <button class="btn" id="fetch-id">Pobierz</button>
-            </div>
-          </div>
-          <div class="tab-pane" id="pane-timeline" hidden>
-            <textarea id="timeline-text" rows="3" class="mono"
-              placeholder="1: 2.81s | 2: 4.63s (+1.82s) | 3: 6.02s (+1.39s)"></textarea>
-            <button class="btn" id="parse-timeline">Zastosuj</button>
-          </div>
-          <div class="shots" id="shots" hidden>
-            <p class="shots-meta" id="shots-meta"></p>
-            <ol class="shot-list mono" id="shot-list"></ol>
+        <p class="hint">Opcjonalna, gdy zaznaczysz „bez nakładki” — ale jeśli ją podasz,
+          auto-przycięcie użyje jej (ostatni strzał + margines) do lepszego wyniku.</p>
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="id" role="tab">ID z kalkulatora</button>
+          <button class="tab" data-tab="timeline" role="tab">Wklej oś czasu</button>
+        </div>
+        <div class="tab-pane" id="pane-id">
+          <div class="row">
+            <input type="number" id="session-id" min="1" placeholder="np. 128" class="mono">
+            <button class="btn" id="fetch-id">Pobierz</button>
           </div>
         </div>
+        <div class="tab-pane" id="pane-timeline" hidden>
+          <textarea id="timeline-text" rows="3" class="mono"
+            placeholder="1: 2.81s | 2: 4.63s (+1.82s) | 3: 6.02s (+1.39s)"></textarea>
+          <button class="btn" id="parse-timeline">Zastosuj</button>
+        </div>
+        <div class="shots" id="shots" hidden>
+          <p class="shots-meta" id="shots-meta"></p>
+          <ol class="shot-list mono" id="shot-list"></ol>
+        </div>
+        <label class="check"><input type="checkbox" id="no-overlay-check">
+          Bez nakładki — tylko przytnij wideo (oś czasu wpływa jedynie na auto-przycięcie)</label>
       </div>
     </section>
 
@@ -135,7 +135,9 @@
 
   <footer class="foot">
     <button class="link-btn" id="reset-btn" hidden>× zacznij od nowa</button>
-    <p class="mono ver">Piro Overlay Web</p>
+    <p class="mono ver">Piro Overlay Web <span id="app-version"></span> ·
+      <a id="repo-link" href="https://github.com/enclude/congenial-octo-memory"
+         target="_blank" rel="noopener">kod źródłowy</a></p>
   </footer>
 
   <div class="toast mono" id="toast" hidden></div>

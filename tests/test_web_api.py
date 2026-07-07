@@ -25,6 +25,15 @@ def _upload(client: TestClient, video: Path, name: str = "tiny.mp4"):
                        headers={"X-Filename": name})
 
 
+def test_version_endpoint(client: TestClient):
+    from piro_overlay import __version__
+    r = client.get("/api/version")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["version"] == __version__
+    assert data["repo"].startswith("https://github.com/")
+
+
 def test_upload_sets_cookie_and_probes(client: TestClient, tiny_video: Path):
     r = _upload(client, tiny_video)
     assert r.status_code == 201, r.text
@@ -185,6 +194,19 @@ def test_full_render_cycle_no_overlay(client: TestClient, tiny_video: Path):
     dl = client.get(f"/api/jobs/{job_id}/download")
     assert dl.status_code == 200
     assert len(dl.content) > 1000
+
+
+def test_full_render_cycle_no_overlay_with_session(client: TestClient, tiny_video: Path):
+    # Oś czasu może być podana też bez nakładki — użyta tylko do auto-przycięcia
+    # (ostatni strzał + margines), render i tak nie wypala żadnej grafiki.
+    job_id = _upload(client, tiny_video).json()["id"]
+    client.post(f"/api/jobs/{job_id}/session",
+                json={"source": "timeline", "timeline": "1: 0.5s | 2: 1.5s (+1.0s)"})
+    r = client.post(f"/api/jobs/{job_id}/render",
+                    json={"no_overlay": True, "trim_start": 0.0, "trim_end": 2.0})
+    assert r.status_code == 202, r.text
+    data = _wait_state(client, job_id, {"done", "failed"})
+    assert data["state"] == "done", data["error"]
 
 
 def test_render_no_overlay_rejects_non_mp4(client: TestClient, tiny_video: Path):

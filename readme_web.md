@@ -10,8 +10,9 @@ web niczego nie zmienia w GUI/CLI ani w buildzie PyInstaller.
 
 1. **Wgraj wideo** — przeciągnij plik (MP4/MOV/MKV/AVI), pasek postępu uploadu.
 2. **Oś czasu strzałów** — ID wyniku z kalkulatora (pobranie z API) albo wklejony tekst
-   `"1: 2.81s | 2: 4.63s (+1.82s)"`. Checkbox **„Tylko przytnij"** pomija ten krok
-   całkowicie — zobacz „Tylko przytnij (bez nakładki)" niżej.
+   `"1: 2.81s | 2: 4.63s (+1.82s)"`. **Opcjonalna** przy checkboksie „Bez nakładki” (patrz
+   „Bez nakładki — tylko przycięcie” niżej) — ale nawet wtedy podanie ID/tekstu poprawia
+   auto-przycięcie.
 3. **Sygnał startu** — auto-detekcja bzyczka shot-timera (T0) + automatyczne przycięcie;
    gdy bzyczka nie słychać, T0 ustawia się ręcznie w kroku 4.
 4. **Podgląd i korekta** — klatka z nakładką dokładnie taką, jaka będzie w wyniku
@@ -19,20 +20,22 @@ web niczego nie zmienia w GUI/CLI ani w buildzie PyInstaller.
 5. **Render i pobranie** — MP4 (H.264) / WebM (VP9) / GIF, postęp na żywo (SSE),
    przycisk „Zatrzymaj", link do pobrania.
 
-## Tylko przytnij (bez nakładki)
+## Bez nakładki — tylko przycięcie
 
-Checkbox **„Tylko przytnij"** w kroku 2 zmienia przepływ na samo wykrycie T0 i przycięcie
-źródła — bez żadnej informacji o strzałach na obrazie, więc oś czasu strzałów jest zbędna:
+Checkbox **„Bez nakładki"** w kroku 2 wyłącza wypalanie grafiki o strzałach na wideo —
+render tylko wykrywa T0 i przycina źródło. Oś czasu strzałów (ID/tekst) zostaje
+**opcjonalna, ale przydatna**: jeśli ją podasz, auto-przycięcie użyje jej do policzenia
+okna „ostatni strzał + margines" (dokładniej niż stałe okno); bez niej korzysta ze
+stałego okna **75 s po T0** (jak w CLI bez `--timeline`/`--id`).
 
-- Krok 2 (oś czasu) i pola język/zegar w kroku 4 się chowają — nie mają zastosowania.
+- Pola język i płynący zegar w kroku 4 się chowają — nie mają zastosowania bez nakładki.
 - Pole „Przytnij do (s)" zastępowane jest polem **„Długość od T0 (s)"** — wygodniej podać
   ile sekund materiału chcesz od sygnału startu, niż liczyć absolutny koniec przycięcia.
-  Bez osi strzałów detekcja i tak nie ma punktu odniesienia „ostatni strzał + margines",
-  więc domyślne okno to **75 s po T0** (jak w CLI bez `--timeline`/`--id`), edytowalne.
 - Render wspiera wyłącznie **MP4** (przycięcie koduje audio jako AAC — niekompatybilne
   z kontenerami WebM/GIF).
 
-Odpowiednik w CLI: `piro-overlay --video in.mp4 --auto --auto-window 75 --no-overlay`.
+Odpowiednik w CLI: `piro-overlay --video in.mp4 --id 5 --auto --no-overlay` (z osią) albo
+`piro-overlay --video in.mp4 --auto --auto-window 75 --no-overlay` (bez osi).
 
 ## Uruchomienie
 
@@ -102,6 +105,7 @@ nie ma jeszcze cookie sesji.
 
 | Endpoint | Działanie |
 |---|---|
+| `GET /api/version` | `{version, repo}` — stopka frontendu |
 | `POST /api/jobs` | upload (body = plik, nagłówek `X-Filename`) → JSON zadania |
 | `POST /api/jobs/{id}/session` | `{source:"id"\|"timeline", id?, timeline?}` |
 | `POST /api/jobs/{id}/analyze` | detekcja T0 + auto-przycięcie (`t0:null` gdy brak bzyczka) |

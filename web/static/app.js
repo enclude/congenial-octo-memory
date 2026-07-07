@@ -14,6 +14,16 @@ const job = {
 
 let es = null; // EventSource aktywnego renderu
 
+/* ── stopka: wersja z backendu (jedno źródło prawdy: __init__.py) ──────── */
+
+fetch("/api/version")
+  .then((r) => r.json())
+  .then((data) => {
+    $("app-version").textContent = "v" + data.version;
+    $("repo-link").href = data.repo;
+  })
+  .catch(() => {}); // stopka ma statyczny link jako fallback — brak wersji nie jest krytyczny
+
 /* ── pomocnicze ─────────────────────────────────────────────── */
 
 function toast(msg) {
@@ -118,8 +128,10 @@ $("parse-timeline").addEventListener("click", () =>
   setSession({ source: "timeline", timeline: $("timeline-text").value }));
 
 $("no-overlay-check").addEventListener("change", () => {
+  // Oś czasu (ID/tekst) zostaje widoczna i opcjonalna nawet bez nakładki — jeśli
+  // podana, auto-przycięcie i tak z niej korzysta (ostatni strzał + margines),
+  // tyle że render nie wypala żadnej grafiki na wideo.
   job.noOverlay = $("no-overlay-check").checked;
-  $("session-fields").hidden = job.noOverlay;
   $("lang-field").hidden = job.noOverlay;
   $("clock-field").hidden = job.noOverlay;
   $("trim-end-field").hidden = job.noOverlay;
@@ -128,11 +140,8 @@ $("no-overlay-check").addEventListener("change", () => {
   $("no-overlay-hint").hidden = !job.noOverlay;
   if (job.noOverlay) {
     $("format-select").value = "mp4";
-    setStep("step-session", "done");
     if ($("duration-input").value === "") $("duration-input").value = "75.0";
     syncTrimEndFromDuration();
-  } else {
-    setStep("step-session", job.hasSession ? "done" : "active");
   }
   refreshRenderReady();
   schedulePreview();

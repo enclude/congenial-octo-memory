@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from piro_overlay import ffmpeg, pipeline, preview
+from piro_overlay import __version__, ffmpeg, pipeline, preview
 from piro_overlay.api import ApiError
 from piro_overlay.models import Lang, OverlayStyle
 
@@ -27,6 +27,14 @@ from .sessions import ensure_sid, require_sid
 from .settings import Settings
 
 router = APIRouter(prefix="/api")
+
+_REPO_URL = "https://github.com/enclude/congenial-octo-memory"
+
+
+@router.get("/version")
+def version() -> dict:
+    """Wersja aplikacji + link do repo — stopka frontendu (jedno źródło prawdy: __init__.py)."""
+    return {"version": __version__, "repo": _REPO_URL}
 
 # Kontenery wideo przyjmowane na wejściu (rozszerzenie z nagłówka X-Filename;
 # faktyczną zawartość i tak weryfikuje ffmpeg.probe po zapisie).

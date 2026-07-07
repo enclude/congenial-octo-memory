@@ -339,25 +339,33 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   (testsrc + ton 2700 Hz w 0.5–0.9 s = sztuczny bzyczek dla testu `analyze`).
 - **Dev lokalny:** `pip install -e .[web]`, potem
   `PYTHONPATH=src uvicorn web.backend.app:create_app --factory --reload`.
-- **„Tylko przytnij" — przycięcie bez nakładki (v0.24.0):** checkbox w kroku 02
-  (`#no-overlay-check`) chowa oś czasu strzałów (niepotrzebna — analogicznie do
-  CLI `--no-overlay`, patrz `trim_video`). Odblokowanie kroku render nie wymaga
-  wtedy sesji: `refreshRenderReady` sprawdza `job.noOverlay || job.hasSession`
-  (krok „Sygnał startu" jest odblokowany od razu po uploadzie niezależnie od
-  sesji — flow już był rozłączony). `/api/jobs/{id}/analyze` działał tu BEZ zmian:
-  `pipeline.compute_trim` z `session=None` i tak spada na `DEFAULT_AUTO_WINDOW`
-  (75 s po T0), tak samo jak CLI bez osi. W kroku 04 pole „Przytnij do (s)"
-  jest zastępowane polem „Długość od T0 (s)" (`#duration-input` — czysty JS,
-  `syncTrimEndFromDuration()` przelicza `trim-end = t0 + duration` przy każdej
-  zmianie T0/długości; backend zawsze dostaje `trim_start`/`trim_end`
-  absolutne, jak dotychczas — `/analyze`/`/render` NIE wiedzą o „długości").
-  Backend: `RenderBody.no_overlay` (bool) — gdy `True`, `/render` NIE wymaga
-  sesji/T0 i wymusza `format == "mp4"` (422 inaczej — `trim_video` koduje
-  audio jako AAC+faststart, niekompatybilne z WebM/GIF); `workers.run_render`
-  dostaje `no_overlay` i woła `render.trim_video` zamiast `render_video`/
-  `_webm`/`_gif` (ten sam `common` dict progress/cancel/on_process — sygnatury
-  się zgadzają). `/preview` i `compose_preview` nie wymagały zmian: `session
-  is None` już zwracał czystą klatkę bez nakładki.
+- **„Bez nakładki" — przycięcie bez wypalania grafiki (v0.24.0):** checkbox w kroku 02
+  (`#no-overlay-check`) wyłącza render nakładki; oś czasu (ID/tekst) NIE jest chowana —
+  zostaje opcjonalna, bo gdy jest podana, auto-przycięcie i tak z niej korzysta (ostatni
+  strzał + margines, przez `pipeline.compute_trim(session=...)` — działa niezależnie od
+  nakładki). WAŻNE: nie chować kroku „Oś czasu" przy tym checkboksie — ktoś może chcieć
+  przycięcie zsynchronizowane z ID z API, ale bez wypalonej grafiki. Odblokowanie kroku
+  render nie wymaga sesji: `refreshRenderReady` sprawdza `job.noOverlay || job.hasSession`
+  (krok „Sygnał startu" jest odblokowany od razu po uploadzie niezależnie od sesji — flow
+  już był rozłączony). `/api/jobs/{id}/analyze` działał tu BEZ zmian: `pipeline.compute_trim`
+  z `session=None` spada na `DEFAULT_AUTO_WINDOW` (75 s po T0, jak CLI bez osi), a z sesją
+  liczy jak zwykle. W kroku 04 pole „Przytnij do (s)" jest zastępowane polem „Długość od
+  T0 (s)" (`#duration-input` — czysty JS, `syncTrimEndFromDuration()` przelicza
+  `trim-end = t0 + duration` przy każdej zmianie T0/długości; backend zawsze dostaje
+  `trim_start`/`trim_end` absolutne, jak dotychczas — `/analyze`/`/render` NIE wiedzą o
+  „długości"). Backend: `RenderBody.no_overlay` (bool) — gdy `True`, `/render` NIE wymaga
+  sesji/T0 (ale sesja, jeśli jest, i tak trafia do `pipeline.compute_trim` przez `/analyze`)
+  i wymusza `format == "mp4"` (422 inaczej — `trim_video` koduje audio jako AAC+faststart,
+  niekompatybilne z WebM/GIF); `workers.run_render` dostaje `no_overlay` i woła
+  `render.trim_video` zamiast `render_video`/`_webm`/`_gif` (ten sam `common` dict
+  progress/cancel/on_process — sygnatury się zgadzają; `trim_video` NIE dostaje `session`,
+  więc podana oś i tak nigdy nie trafia na obraz). `/preview` i `compose_preview` nie
+  wymagały zmian: `session is None` już zwracał czystą klatkę bez nakładki.
+- **Stopka: wersja + link do repo (v0.24.0):** `GET /api/version` (`web/backend/api.py`)
+  zwraca `{version: __version__, repo: _REPO_URL}` — jedno źródło prawdy, jak GUI
+  (`from . import __version__`). Frontend (`app.js`, ładowane na starcie strony) uzupełnia
+  `#app-version`/`#repo-link` w stopce; statyczny href w `index.html` jest fallbackiem,
+  gdyby fetch padł (np. offline podgląd pliku).
 
 ## Uwagi / pułapki
 

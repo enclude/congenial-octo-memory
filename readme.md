@@ -350,8 +350,8 @@ GitHub Release. Można też odpalić ręcznie z zakładki **Actions → Build �
 Istnieje też **wersja webowa** (Docker na VPS, publiczna): upload wideo w przeglądarce →
 oś czasu (ID lub tekst) → auto-detekcja T0 → podgląd z korektą → render → pobranie.
 Reużywa te same moduły domenowe — `.exe` i web działają równolegle, z jednego repo. Dostępny
-jest też przełącznik **„Tylko przytnij"** — wykrywa T0 i przycina wideo bez żadnej nakładki
-(oś czasu strzałów jest wtedy niepotrzebna).
+jest też przełącznik **„Bez nakładki"** — wykrywa T0 i przycina wideo bez wypalania grafiki
+o strzałach (oś czasu jest wtedy opcjonalna, ale nadal poprawia auto-przycięcie, jeśli ją podasz).
 
 **Pełna dokumentacja: [readme_web.md](readme_web.md)** (uruchomienie, Docker,
 konfiguracja `PIRO_WEB_*`, ustawienia reverse proxy, API).
