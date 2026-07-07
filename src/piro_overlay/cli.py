@@ -72,7 +72,8 @@ def _resolve_t0(args: argparse.Namespace, session: Session | None,
 
 
 def _compute_trim(args: argparse.Namespace, t0: float | None,
-                  session: Session | None, duration: float | None):
+                  session: Session | None,
+                  duration: float | None) -> tuple[float | None, float | None]:
     """Zwraca (trim_start, trim_end). Reguły auto: 5 s przed T0 →
     okno stałe (--auto-window) albo ostatni strzał + margines (--tail)."""
     if not (args.auto or args.auto_trim or args.auto_window is not None):

@@ -25,7 +25,6 @@ from enum import Enum, auto
 from pathlib import Path
 
 import urllib.request
-import urllib.error
 import json
 
 from PySide6.QtCore import QEvent, QObject, QRect, Qt, QThread, QTimer, QUrl, Signal
@@ -47,6 +46,19 @@ from .parser import parse_timeline
 PREVIEW_HEIGHT = 360  # obniżona jakość podglądu — szybciej i lżej dla dużych plików
 _HANDLE_PX = 8        # tolerancja trafienia uchwytu przycięcia (px)
 _AXIS_H = 22          # wysokość paska osi czasu (px)
+
+_FORMAT_EXT = {"mp4": ".mp4", "webm": ".webm", "gif": ".gif"}  # format → rozszerzenie
+_SESSION_ID_MAX = 10_000_000   # górny zakres ID sesji API (główne okno i wsad)
+_DEFAULT_OFFSET_PX = 32        # domyślny offset panelu/zegara — musi zgadzać się
+                               # z pominięciami w _build_cli_command (krótsza komenda)
+_LEAD_IN_S = 5.0               # sekundy przed T0 przy auto-przycięciu
+_TRIM_TAIL_S = 5.0             # margines po ostatnim strzale przy auto-przycięciu
+_IMPORT_TAIL_S = 75.0          # okno po T0 przy detekcji po imporcie (brak osi czasu)
+_THREAD_JOIN_MS = 3000         # limit oczekiwania na wątki robocze przy zamykaniu
+_FRAME_DEBOUNCE_MS = 250       # debounce ekstrakcji klatki po zmianie kotwicy
+_SCRUBBER_DEBOUNCE_MS = 200    # debounce podglądu Ctrl+klik na waveformie
+_BUSY_RETRY_MS = 150           # ponowna próba, gdy worker klatki jeszcze pracuje
+_STYLE_AUTOSAVE_MS = 1000      # debounce autozapisu stylu na dysk
 
 # Kandydaci na krok głównych kresek (major ticks) — od 0.05 s do 1 godziny.
 _TICK_STEPS = (0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600)
@@ -222,18 +234,15 @@ class WaveformWorker(QThread):
 class StartDetectWorker(QThread):
     """Wykrywa bzyczek shot-timera (T0) w tle — FFT nie blokuje UI.
 
-    `purpose` ("import"/"api") wraca w sygnale, by handler wiedział jak ustawić
-    przycięcie po wykryciu (różne reguły dla importu pliku i pobrania z API).
     `gen` to token pokolenia — handler odrzuca wyniki starszych detekcji, żeby
-    np. wolniejsza detekcja „import" nie nadpisała świeższej „api".
+    wolniejsza, wcześniejsza detekcja nie nadpisała świeższej.
     """
-    done = Signal(int, str, object)   # (gen, purpose, detected_t0 lub None)
+    done = Signal(int, object)   # (gen, detected_t0 lub None)
 
-    def __init__(self, video_path: str, purpose: str, gen: int,
+    def __init__(self, video_path: str, gen: int,
                  win_start: float | None = None, win_end: float | None = None):
         super().__init__()
         self.video_path = video_path
-        self.purpose = purpose
         self.gen = gen
         # UWAGA: NIE nazywać tych pól `start`/`end` — przesłaniają QThread.start()
         # (worker.start() leciało wtedy jako None() → TypeError, detekcja T0 cicho padała).
@@ -245,7 +254,7 @@ class StartDetectWorker(QThread):
             t0 = audio_sync.detect_dji_start(self.video_path, start=self.win_start, end=self.win_end)
         except Exception:  # noqa: BLE001
             t0 = None
-        self.done.emit(self.gen, self.purpose, t0)
+        self.done.emit(self.gen, t0)
 
 
 # ----------------------------- kolejka renderów -----------------------------
@@ -484,9 +493,6 @@ class JobRowWidget(QWidget):
         self._apply_status(job.status)
 
     def update_progress(self, p: float) -> None:
-        # Pasek zawsze wyznaczony (0–100) → widać liczbowy % zamiast „barber pole".
-        if self._progress.maximum() == 0:
-            self._progress.setRange(0, 100)
         self._progress.setValue(int(p * 100))
 
     def update_status(self, status: JobStatus) -> None:
@@ -498,17 +504,15 @@ class JobRowWidget(QWidget):
             f"background:{color}; border-radius:7px;"
         )
         self._del_btn.setVisible(status == JobStatus.PENDING)
-        if status == JobStatus.RUNNING:
-            # Wyznaczony pasek z liczbowym % (postęp dochodzi z render._run_with_progress).
-            self._progress.setRange(0, 100)
-            self._progress.setFormat("%p%")
-        elif status == JobStatus.DONE:
-            self._progress.setRange(0, 100)
-            self._progress.setValue(100)
-        elif status == JobStatus.FAILED:
-            self._progress.setRange(0, 100)
+        if status == JobStatus.FAILED:
             self._progress.setFormat("błąd")
             self._progress.setStyleSheet("QProgressBar::chunk { background: #e05555; }")
+            return
+        # Powrót z FAILED (retry przez „Start kolejki") musi zdjąć czerwony pasek.
+        self._progress.setFormat("%p%")
+        self._progress.setStyleSheet("")
+        if status == JobStatus.DONE:
+            self._progress.setValue(100)
 
 
 class RenderQueueWindow(QWidget):
@@ -537,6 +541,8 @@ class RenderQueueWindow(QWidget):
 
         btn_row = QHBoxLayout()
         self._start_btn = QPushButton("Start kolejki")
+        self._start_btn.setToolTip("Renderuje oczekujące zadania po kolei "
+                                   "(nieudane ponawia automatycznie)")
         self._start_btn.clicked.connect(self._on_start)
         self._stop_btn = QPushButton("Zatrzymaj")
         self._stop_btn.setToolTip("Przerywa bieżący render i pauzuje kolejkę "
@@ -544,6 +550,7 @@ class RenderQueueWindow(QWidget):
         self._stop_btn.setEnabled(False)
         self._stop_btn.clicked.connect(self._on_stop)
         self._clear_btn = QPushButton("Wyczyść zakończone")
+        self._clear_btn.setToolTip("Usuwa z listy zadania ukończone i nieudane")
         self._clear_btn.clicked.connect(self._on_clear_finished)
         self._save_btn = QPushButton("Zapisz kolejkę")
         self._save_btn.setToolTip("Zapisz niewykonane zadania w AppData (odzysk po awarii)")
@@ -734,7 +741,8 @@ class BatchPrepWorker(QThread):
             except Exception:  # noqa: BLE001
                 dur = None
             start, end = render.auto_trim_window(
-                t0, session.shots[-1].czas, tail=5.0, lead_in=5.0, duration=dur)
+                t0, session.shots[-1].czas,
+                tail=_TRIM_TAIL_S, lead_in=_LEAD_IN_S, duration=dur)
             self.done.emit(self.row_id, {
                 "session": session, "t0": t0,
                 "trim_start": start, "trim_end": end,
@@ -793,7 +801,7 @@ class BatchRowWidget(QWidget):
 
         lay.addWidget(QLabel("ID:"))
         self._id_spin = QSpinBox()
-        self._id_spin.setRange(0, 9_999_999)
+        self._id_spin.setRange(0, _SESSION_ID_MAX)   # 0 = brak ID (wiersz nieprzygotowany)
         self._id_spin.setValue(row.session_id)
         self._id_spin.setFixedWidth(100)
         self._id_spin.valueChanged.connect(
@@ -900,6 +908,7 @@ class BatchDialog(QWidget):
 
         top = QHBoxLayout()
         add_btn = QPushButton("Dodaj pliki…")
+        add_btn.setToolTip("Dodaje pliki wideo do listy wsadowej")
         add_btn.clicked.connect(self._add_files)
         export_btn = QPushButton("Eksport → schowek")
         export_btn.setToolTip("Kopiuje listę jako wiersze „<ścieżka>;<ID>”")
@@ -947,7 +956,8 @@ class BatchDialog(QWidget):
         form.addRow("", self._participant_chk)
 
         self._format_combo = QComboBox()
-        for label, val in (("MP4 (H.264)", "mp4"), ("WebM (VP9)", "webm"), ("GIF", "gif")):
+        for label, val in (("MP4 (H.264)", "mp4"), ("WebM (VP9)", "webm"),
+                           ("GIF (animowany)", "gif")):
             self._format_combo.addItem(label, val)
         self._format_combo.currentIndexChanged.connect(lambda *_: self._refresh())
         form.addRow("Format:", self._format_combo)
@@ -977,8 +987,12 @@ class BatchDialog(QWidget):
 
         btns = QHBoxLayout()
         self._prep_btn = QPushButton("Przygotuj wszystkie")
+        self._prep_btn.setToolTip("Dla plików z ID: pobiera sesję z API, wykrywa "
+                                  "sygnał startu (T0) i liczy auto-przycięcie")
         self._prep_btn.clicked.connect(self._prepare_all)
         self._enqueue_btn = QPushButton("Wyślij gotowe do kolejki")
+        self._enqueue_btn.setToolTip("Buduje zadania renderu z przygotowanych "
+                                     "plików i dodaje je do kolejki renderów")
         self._enqueue_btn.clicked.connect(self._enqueue_ready)
         self._clear_btn = QPushButton("Wyczyść wszystko")
         self._clear_btn.setToolTip("Usuwa wszystkie pliki z listy wsadowej")
@@ -1193,7 +1207,7 @@ class BatchDialog(QWidget):
                                 "Wskaż istniejący katalog docelowy.")
             return
         fmt = self._format_combo.currentData()
-        ext = {"mp4": ".mp4", "webm": ".webm", "gif": ".gif"}.get(fmt, ".mp4")
+        ext = _FORMAT_EXT.get(fmt, ".mp4")
         suffix = self._suffix_edit.text()
         add_participant = self._participant_chk.isChecked()
         no_overlay = not self._overlay_chk.isChecked()
@@ -1800,7 +1814,7 @@ class MainWindow(QMainWindow):
         self.timeline_edit.textChanged.connect(self._update_preview)
         form.addRow("Oś czasu", self.timeline_edit)
 
-        self.id_spin = QSpinBox(); self.id_spin.setRange(1, 10_000_000)
+        self.id_spin = QSpinBox(); self.id_spin.setRange(1, _SESSION_ID_MAX)
         fetch = QPushButton("Pobierz")
         fetch.setToolTip("Pobiera oś czasu i metadane z API (bez zmiany przycięcia).")
         fetch.clicked.connect(self._fetch_id)
@@ -1868,7 +1882,7 @@ class MainWindow(QMainWindow):
         trow = QHBoxLayout(); trow.addWidget(self.trim_start_spin); trow.addWidget(self.trim_end_spin)
         form.addRow("Przytnij od / do", _wrap(trow))
 
-        self.tail_spin = _dspin(0.0, 60.0, 0.5, " s", 5.0)
+        self.tail_spin = _dspin(0.0, 60.0, 0.5, " s", _TRIM_TAIL_S)
         self.tail_spin.setToolTip("Margines (s) doliczany po ostatnim strzale przy auto-przycięciu.")
         self.tail_spin.setMaximumWidth(120)  # węższe pole, ale bez ucinania sufiksu „ s"
         autotrim_btn = QPushButton("Auto-przycięcie")
@@ -1902,7 +1916,8 @@ class MainWindow(QMainWindow):
         self.pos_combo.currentIndexChanged.connect(self._update_preview)
         form.addRow("Pozycja", self.pos_combo)
 
-        self.off_x = _ispin(0, 8000, 32); self.off_y = _ispin(0, 8000, 32)
+        self.off_x = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
+        self.off_y = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
         self.off_x.valueChanged.connect(self._update_preview)
         self.off_y.valueChanged.connect(self._update_preview)
         orow = QHBoxLayout(); orow.addWidget(self.off_x); orow.addWidget(self.off_y)
@@ -1943,7 +1958,8 @@ class MainWindow(QMainWindow):
         self.clock_pos_combo.currentIndexChanged.connect(self._update_preview)
         form.addRow("Pozycja zegara", self.clock_pos_combo)
 
-        self.clock_off_x = _ispin(0, 8000, 32); self.clock_off_y = _ispin(0, 8000, 32)
+        self.clock_off_x = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
+        self.clock_off_y = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
         self.clock_off_x.setToolTip("Offset zegara X (używany, gdy pozycja ≠ „auto”).")
         self.clock_off_y.setToolTip("Offset zegara Y (używany, gdy pozycja ≠ „auto”).")
         self.clock_off_x.valueChanged.connect(self._update_preview)
@@ -2092,6 +2108,8 @@ class MainWindow(QMainWindow):
         self._refresh_nvenc_status()
         v.addWidget(self.nvenc_label)
         diag = QPushButton("Diagnostyka NVENC")
+        diag.setToolTip("Pokazuje status NVENC, użytą binarkę FFmpeg "
+                        "i szczegóły błędu, gdy test kodowania nie przeszedł")
         diag.clicked.connect(self._show_nvenc_diag)
         v.addWidget(diag)
         cli_btn = QPushButton("Pokaż komendę CLI")
@@ -2118,8 +2136,11 @@ class MainWindow(QMainWindow):
         # Wiersz 2: kolejka renderów.
         qrow = QHBoxLayout()
         self.queue_add_btn = QPushButton("Dodaj do kolejki")
+        self.queue_add_btn.setToolTip(
+            "Dodaje render z bieżącymi ustawieniami jako zadanie kolejki")
         self.queue_add_btn.clicked.connect(self._add_to_queue)
         self.queue_show_btn = QPushButton("Kolejka")
+        self.queue_show_btn.setToolTip("Otwiera okno kolejki renderów")
         self.queue_show_btn.clicked.connect(self._show_queue_window)
         qrow.addWidget(self.queue_add_btn)
         qrow.addWidget(self.queue_show_btn)
@@ -2185,8 +2206,7 @@ class MainWindow(QMainWindow):
         self.video_path = path
         self.video_edit.setText(path)
         p = Path(path)
-        ext_map = {"mp4": ".mp4", "webm": ".webm", "gif": ".gif"}
-        out_ext = ext_map.get(self.format_combo.currentData(), ".mp4")
+        out_ext = _FORMAT_EXT.get(self.format_combo.currentData(), ".mp4")
         self.out_edit.setText(str(p.with_name(p.stem + "_PiRoOverlay" + out_ext)))
         # Inwaliduj cache — nowe wideo, stara klatka nieaktualna
         self._cached_frame = None
@@ -2217,9 +2237,7 @@ class MainWindow(QMainWindow):
         self.waveform.set_data(env, dur, onsets)
         for s in (self.trim_start_spin, self.trim_end_spin, self.t0_spin):
             s.setMaximum(max(dur, 1.0))
-        self.trim_start_spin.blockSignals(True); self.trim_end_spin.blockSignals(True)
-        self.trim_start_spin.setValue(0.0); self.trim_end_spin.setValue(dur)
-        self.trim_start_spin.blockSignals(False); self.trim_end_spin.blockSignals(False)
+        self._set_trim_silently(0.0, dur)
         self._update_preview()
         # Jeśli ten plik był już renderowany/dodany do kolejki — przywróć jego ustawienia
         # i NIE uruchamiaj auto-detekcji (zapisany T0/przycięcie ma pierwszeństwo).
@@ -2233,19 +2251,18 @@ class MainWindow(QMainWindow):
             return
         # Pierwszy raz dla tego pliku → wykryj T0 (buzzer) i ustaw przycięcie.
         self._file_settings_ready = True
-        self._auto_detect_t0("import")
+        self._auto_detect_t0()
 
-    def _auto_detect_t0(self, purpose: str) -> None:
-        """Startuje detekcję bzyczka (T0) w tle; po wykryciu ustawia kotwicę + trim.
-
-        purpose="import" — przycięcie: 5 s przed T0 → max 75 s po T0.
-        purpose="api"    — przycięcie: 5 s przed T0 → ostatni strzał + 5 s.
+    def _auto_detect_t0(self) -> None:
+        """Startuje detekcję bzyczka (T0) w tle po imporcie pliku; po wykryciu
+        ustawia kotwicę + przycięcie: 5 s przed T0 → max 75 s po T0.
+        (Przycięcie po pobraniu z API robi synchronicznie „Pobierz i przytnij".)
         """
         if not self.video_path:
             return
         src = self.lrf_path or self.video_path
         self._detect_gen += 1
-        worker = StartDetectWorker(src, purpose, self._detect_gen)
+        worker = StartDetectWorker(src, self._detect_gen)
         worker.done.connect(self._on_autodetect_t0)
         # Trzymaj referencję dopóki wątek żyje — inaczej QThread może zostać
         # zniszczony w trakcie działania (crash). Sprzątamy po zakończeniu.
@@ -2254,25 +2271,33 @@ class MainWindow(QMainWindow):
                                 if w in self._detect_workers else None)
         worker.start()
 
-    def _on_autodetect_t0(self, gen: int, purpose: str, detected) -> None:
-        # Automatyczna detekcja po imporcie pliku: T0 + okno 5 s przed → max 75 s po T0.
-        # (Przycięcie po API obsługuje synchronicznie „Pobierz i przytnij".)
+    def _on_autodetect_t0(self, gen: int, detected) -> None:
         if gen != self._detect_gen:
             return  # przestarzały wynik (nowsza detekcja już w toku) — ignoruj
         if detected is None:
             return  # nie wykryto — użytkownik ustawi ręcznie, bez komunikatu
-        # Wykryty bzyczek JEST sygnałem startu → wymuś tryb START_SIGNAL.
-        idx = self.anchor_combo.findData(AnchorMode.START_SIGNAL.value)
-        if idx >= 0:
-            self.anchor_combo.setCurrentIndex(idx)
+        self._force_start_signal_mode()
         self.t0_spin.setValue(detected)
         dur = self.waveform.duration or None
-        start = max(0.0, detected - 5.0)
-        end = detected + 75.0
+        start = max(0.0, detected - _LEAD_IN_S)
+        end = detected + _IMPORT_TAIL_S
         if dur:
             end = min(end, dur)
         self.trim_start_spin.setValue(start)
         self.trim_end_spin.setValue(end)
+
+    def _force_start_signal_mode(self) -> None:
+        """Wykryty bzyczek JEST sygnałem startu → wymuś tryb kotwicy START_SIGNAL."""
+        idx = self.anchor_combo.findData(AnchorMode.START_SIGNAL.value)
+        if idx >= 0:
+            self.anchor_combo.setCurrentIndex(idx)
+
+    def _set_trim_silently(self, start: float, end: float) -> None:
+        """Ustawia spiny przycięcia bez emitowania sygnałów (bez pętli zwrotnej
+        waveform ↔ spinboxy)."""
+        self.trim_start_spin.blockSignals(True); self.trim_end_spin.blockSignals(True)
+        self.trim_start_spin.setValue(start); self.trim_end_spin.setValue(end)
+        self.trim_start_spin.blockSignals(False); self.trim_end_spin.blockSignals(False)
 
     def _choose_output(self):
         fmt = self.format_combo.currentData()
@@ -2361,14 +2386,13 @@ class MainWindow(QMainWindow):
                     "lub „Wykryj sygnał startu”) i kliknij „Pobierz i przytnij” ponownie.")
                 return
             t0 = detected
-            idx = self.anchor_combo.findData(AnchorMode.START_SIGNAL.value)
-            if idx >= 0:
-                self.anchor_combo.setCurrentIndex(idx)
+            self._force_start_signal_mode()
             self.t0_spin.setValue(t0)
 
         dur = self.waveform.duration or None
         start, end = render.auto_trim_window(
-            t0, session.shots[-1].czas, tail=5.0, lead_in=5.0, duration=dur)
+            t0, session.shots[-1].czas,
+            tail=_TRIM_TAIL_S, lead_in=_LEAD_IN_S, duration=dur)
         self.trim_start_spin.setValue(start)
         self.trim_end_spin.setValue(end)
         self.statusBar().showMessage(
@@ -2411,9 +2435,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Detekcja",
                                 "Nie wykryto sygnału startu — ustaw ręcznie.")
             return
-        idx = self.anchor_combo.findData(AnchorMode.START_SIGNAL.value)
-        if idx >= 0:
-            self.anchor_combo.setCurrentIndex(idx)
+        self._force_start_signal_mode()
         self.t0_spin.setValue(detected)  # wywoła _on_t0_spin → waveform + podgląd
 
     def _next_candidate(self):
@@ -2432,9 +2454,7 @@ class MainWindow(QMainWindow):
         self.t0_spin.setValue(t)
 
     def _on_wave_trim(self, start: float, end: float):
-        self.trim_start_spin.blockSignals(True); self.trim_end_spin.blockSignals(True)
-        self.trim_start_spin.setValue(start); self.trim_end_spin.setValue(end)
-        self.trim_start_spin.blockSignals(False); self.trim_end_spin.blockSignals(False)
+        self._set_trim_silently(start, end)
 
     def _on_t0_spin(self, v: float):
         self.waveform.set_anchor(v)
@@ -2466,14 +2486,14 @@ class MainWindow(QMainWindow):
         if not self.video_path:
             return
         self._scrubber_t = t
-        self._scrubber_timer.start(200)
+        self._scrubber_timer.start(_SCRUBBER_DEBOUNCE_MS)
 
     def _do_scrubber_preview(self) -> None:
         t = getattr(self, "_scrubber_t", None)
         if t is None or not self.video_path:
             return
         if self._frame_worker and self._frame_worker.isRunning():
-            self._scrubber_timer.start(150)
+            self._scrubber_timer.start(_BUSY_RETRY_MS)
             return
         self._frame_worker = FrameExtractWorker(self.lrf_path or self.video_path, t)
         self._frame_worker.done.connect(self._on_scrubber_frame_ready)
@@ -2493,7 +2513,7 @@ class MainWindow(QMainWindow):
             pstyle = self._scaled_style(style, frame.size[1])
             t0 = audio_sync.resolve_t0(self.t0_spin.value(), mode, session.shots[0].czas)
             duration = self.waveform.duration or (t + 10)
-            events = render.build_events(session, t0, pstyle, mode, frame.size, duration)
+            events = render.build_events(session, t0, pstyle, frame.size, duration)
             composite = frame.copy()
             for ev in events:
                 if ev.start <= t < ev.end:
@@ -2509,11 +2529,12 @@ class MainWindow(QMainWindow):
                 self._composite_clock(composite, pstyle, session, t - t0)
             self._show_image(composite)
         except Exception:  # noqa: BLE001
+            _log_ui_error("scrubber")
             self._show_image(frame)
 
     def _request_frame(self):
-        """Kotwica się zmieniła → wyciągnij nową klatkę w tle (debounce 250 ms)."""
-        self._preview_timer.start(250)
+        """Kotwica się zmieniła → wyciągnij nową klatkę w tle (debounce)."""
+        self._preview_timer.start(_FRAME_DEBOUNCE_MS)
 
     def _do_request_frame(self):
         """Uruchamiane przez timer — startuje workera jeśli nie ma aktywnego."""
@@ -2523,7 +2544,7 @@ class MainWindow(QMainWindow):
         if (self._frame_worker and self._frame_worker.isRunning()):
             if abs(self._frame_worker.anchor_t - anchor_t) < 0.01:
                 return  # ten sam timestamp, poczekaj na wynik
-            self._preview_timer.start(150)  # inny czas — retry gdy worker skończy
+            self._preview_timer.start(_BUSY_RETRY_MS)  # inny czas — retry gdy worker skończy
             return
         self._frame_worker = FrameExtractWorker(self.lrf_path or self.video_path, anchor_t)
         self._frame_worker.done.connect(self._on_frame_ready)
@@ -2586,8 +2607,10 @@ class MainWindow(QMainWindow):
                 self._composite_clock(frame, pstyle, session, elapsed)
             self._show_image(frame)
         except Exception:  # noqa: BLE001
-            pass
-        self._autosave_timer.start(1000)
+            # Bez modala (podgląd odświeża się przy każdej zmianie stylu), ale ze
+            # śladem — ciche połykanie maskowało błędy kompozycji nakładek.
+            _log_ui_error("podgląd")
+        self._autosave_timer.start(_STYLE_AUTOSAVE_MS)
 
     def _preview_scale(self, frame_h: int) -> float:
         """Współczynnik klatka_podglądu / wideo (do skalowania offsetów). 1.0 gdy brak."""
@@ -2673,7 +2696,7 @@ class MainWindow(QMainWindow):
         scale = self._preview_scale(fh) or 1.0
         if g["key"] == "panel":
             pos = self.pos_combo.currentText()
-            ox, oy, horiz = self._invert_offset(pos, (nx, ny), (g["w"], g["h"]), (fw, fh))
+            ox, oy, _ = self._invert_offset(pos, (nx, ny), (g["w"], g["h"]), (fw, fh))
             if ox is not None:
                 self.off_x.setValue(int(round(ox / scale)))
             self.off_y.setValue(int(round(oy / scale)))
@@ -2685,7 +2708,7 @@ class MainWindow(QMainWindow):
                 cidx = self.clock_pos_combo.findData(cp)
                 if cidx >= 0:
                     self.clock_pos_combo.setCurrentIndex(cidx)
-            ox, oy, horiz = self._invert_offset(cp, (nx, ny), (g["w"], g["h"]), (fw, fh))
+            ox, oy, _ = self._invert_offset(cp, (nx, ny), (g["w"], g["h"]), (fw, fh))
             if ox is not None:
                 self.clock_off_x.setValue(int(round(ox / scale)))
             self.clock_off_y.setValue(int(round(oy / scale)))
@@ -2779,7 +2802,7 @@ class MainWindow(QMainWindow):
         self.t0_spin.setValue(float(data.get("t0", 0.0)))
         self.trim_start_spin.setValue(float(data.get("trim_start", 0.0)))
         self.trim_end_spin.setValue(float(data.get("trim_end", 0.0)))
-        self.tail_spin.setValue(float(data.get("tail", 5.0)))
+        self.tail_spin.setValue(float(data.get("tail", _TRIM_TAIL_S)))
         self.gpu_chk.setChecked(bool(data.get("gpu", True)))
         self.no_overlay_chk.setChecked(bool(data.get("no_overlay", False)))
         fidx = self.format_combo.findData(data.get("format", "mp4"))
@@ -2851,9 +2874,9 @@ class MainWindow(QMainWindow):
                 parts += ["--clock"]
                 if style.clock_position != "auto":
                     parts += ["--clock-position", style.clock_position]
-                    if style.clock_offset_x != 32:
+                    if style.clock_offset_x != _DEFAULT_OFFSET_PX:
                         parts += ["--clock-offset-x", str(style.clock_offset_x)]
-                    if style.clock_offset_y != 32:
+                    if style.clock_offset_y != _DEFAULT_OFFSET_PX:
                         parts += ["--clock-offset-y", str(style.clock_offset_y)]
 
         out = self.out_edit.text()
@@ -2921,11 +2944,15 @@ class MainWindow(QMainWindow):
             self.cancel_btn.setEnabled(False)
             self.cancel_btn.setText("Zatrzymywanie…")
 
-    def _on_cancelled(self):
+    def _reset_render_ui(self) -> None:
+        """Przywraca przyciski renderu po zakończeniu (sukces/błąd/anulowanie)."""
         self._render_busy = False
         self.render_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.setText("Zatrzymaj")
+
+    def _on_cancelled(self):
+        self._reset_render_ui()
         self.progress.setValue(0)
         QMessageBox.information(self, "Zatrzymano", "Renderowanie zostało przerwane.")
 
@@ -2984,8 +3011,7 @@ class MainWindow(QMainWindow):
             return
         p = Path(current)
         fmt = self.format_combo.currentData()
-        ext_map = {"mp4": ".mp4", "webm": ".webm", "gif": ".gif"}
-        new_ext = ext_map.get(fmt, ".mp4")
+        new_ext = _FORMAT_EXT.get(fmt, ".mp4")
         # Zamień obecne rozszerzenie tylko jeśli jest znane (mp4/webm/gif/mov/avi/mkv).
         if p.suffix.lower() in (".mp4", ".webm", ".gif", ".mov", ".avi", ".mkv"):
             self.out_edit.setText(str(p.with_suffix(new_ext)))
@@ -2994,10 +3020,7 @@ class MainWindow(QMainWindow):
         self.appearance_box.setDisabled(bool(state))
 
     def _on_done(self, path: str):
-        self._render_busy = False
-        self.render_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False)
-        self.cancel_btn.setText("Zatrzymaj")
+        self._reset_render_ui()
         self.last_output = path
         self.open_btn.setVisible(True)
         self.open_btn.setEnabled(True)
@@ -3010,10 +3033,7 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Gotowe", msg)
 
     def _on_fail(self, msg: str):
-        self._render_busy = False
-        self.render_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False)
-        self.cancel_btn.setText("Zatrzymaj")
+        self._reset_render_ui()
         QMessageBox.critical(self, "Błąd renderowania", msg)
 
     def _add_to_queue(self):
@@ -3071,16 +3091,16 @@ class MainWindow(QMainWindow):
         # Przerwij bezpośredni render, by nie niszczyć działającego QThread.
         if self.worker is not None and self.worker.isRunning():
             self.worker.cancel()
-            self.worker.wait(3000)
+            self.worker.wait(_THREAD_JOIN_MS)
         if self._queue_runner is not None and self._queue_runner._running:
             self._queue_runner.stop()  # pauzuje kolejkę + ubija bieżący render
             w = self._queue_runner._active_worker
             if w is not None:
-                w.wait(3000)
+                w.wait(_THREAD_JOIN_MS)
         # Poczekaj na workery przygotowania wsadu (QThread niszczony w trakcie = crash).
         if self._batch_window is not None:
             for worker in list(self._batch_window._workers.values()):
-                worker.wait(3000)
+                worker.wait(_THREAD_JOIN_MS)
         event.accept()
 
     def _open_output_folder(self):
@@ -3144,6 +3164,20 @@ def _show_update_dialog(parent, new_version: str) -> None:
 
 
 # ----------------------------- helpery -----------------------------
+def _log_ui_error(context: str) -> None:
+    """Ślad cichych wyjątków UI (podgląd, scrubber) w crash_log.txt — bez modala.
+
+    Podgląd odświeża się przy każdej zmianie stylu, więc okno błędu byłoby spamem,
+    ale całkiem ciche połykanie maskowało błędy kompozycji nakładek."""
+    try:
+        path = config.config_dir() / "crash_log.txt"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"\n=== Wyjątek UI ({context}) ===\n")
+            traceback.print_exc(file=f)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _wrap(layout):
     w = QWidget(); w.setLayout(layout); return w
 

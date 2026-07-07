@@ -54,7 +54,7 @@ class _Event:
     xy: tuple[int, int] | None = None  # wymusza pozycję (np. zegar nad panelem)
 
 
-def build_events(session: Session, t0: float, style: OverlayStyle, mode: AnchorMode,
+def build_events(session: Session, t0: float, style: OverlayStyle,
                  video_size: tuple[int, int], duration: float) -> list[_Event]:
     """Tworzy listę zdarzeń nakładki z rozłącznymi oknami czasowymi."""
     shots = session.shots
@@ -479,7 +479,7 @@ def render_video(video_path: str | Path, session: Session, t0: float,
     out_duration = src_end - src_start
 
     # Zdarzenia liczone w czasie źródła; podsumowanie domykamy do końca fragmentu.
-    events = build_events(session, t0, style, mode, video_size, src_end)
+    events = build_events(session, t0, style, video_size, src_end)
     if not events:
         raise ValueError("Brak zdarzeń do nałożenia (pusta oś czasu?).")
     use_drawtext = prepare_clock(style)
@@ -578,7 +578,7 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
         raise ValueError("Koniec przycięcia musi być późniejszy niż początek.")
     out_duration = src_end - src_start
 
-    events = build_events(session, t0, style, mode, video_size, src_end)
+    events = build_events(session, t0, style, video_size, src_end)
     if not events:
         raise ValueError("Brak zdarzeń do nałożenia (pusta oś czasu?).")
     use_drawtext = prepare_clock(style)
@@ -659,7 +659,7 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
         raise ValueError("Koniec przycięcia musi być późniejszy niż początek.")
     out_duration = src_end - src_start
 
-    events = build_events(session, t0, style, mode, video_size, src_end)
+    events = build_events(session, t0, style, video_size, src_end)
     if not events:
         raise ValueError("Brak zdarzeń do nałożenia (pusta oś czasu?).")
     use_drawtext = prepare_clock(style)

@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.22.0
+> **Wersja:** 0.22.1
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
 **osi czasu strzałów** nakłada na film informacyjną grafikę (numer strzału, czas od startu,

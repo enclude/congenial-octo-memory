@@ -32,13 +32,6 @@ class VideoInfo:
     height: int
 
 
-def _has_nvenc_binary(path: str) -> bool:
-    try:
-        return "h264_nvenc" in _run([path, "-hide_banner", "-encoders"]).stdout
-    except Exception:  # noqa: BLE001
-        return False
-
-
 @functools.lru_cache(maxsize=1)
 def _resolve_ffmpeg() -> str:
     """Wybiera binarkę ffmpeg, unikając wyciągania pliku przez imageio-ffmpeg.
@@ -82,12 +75,15 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess:
                           creationflags=CREATE_NO_WINDOW)
 
 
+# Wiersz `-encoders` ma stałą 6-znakową kolumnę flag (np. ` V....D h264_nvenc …`).
+_ENCODER_RE = re.compile(r"^\s*[A-Z.]{6}\s+(\S+)", re.MULTILINE)
+
+
 @functools.lru_cache(maxsize=1)
 def available_encoders() -> frozenset[str]:
     """Zbiór nazw enkoderów dostępnych w binarce ffmpeg (cache)."""
     res = _run([ffmpeg_exe(), "-hide_banner", "-encoders"])
-    names = re.findall(r"^\s*[A-Z.]{6}\s+(\S+)", res.stdout, re.MULTILINE)
-    return frozenset(names)
+    return frozenset(_ENCODER_RE.findall(res.stdout))
 
 
 def has_nvenc() -> bool:
@@ -95,17 +91,17 @@ def has_nvenc() -> bool:
     return "h264_nvenc" in available_encoders()
 
 
+# Format wiersza `-filters`: ` T. drawtext   V->V   opis`. Kolumna flag bywa
+# 2–3 znaki (T/S/C/.), więc nie zakładamy stałej szerokości — kotwiczymy na
+# sygnaturze `wej->wyj`, a nazwę bierzemy tuż przed nią.
+_FILTER_RE = re.compile(r"^\s*[A-Z.]{1,3}\s+(\w+)\s+\S*->\S*", re.MULTILINE)
+
+
 @functools.lru_cache(maxsize=1)
 def available_filters() -> frozenset[str]:
-    """Zbiór nazw filtrów dostępnych w binarce ffmpeg (cache).
-
-    Format wiersza `-filters`: ` T. drawtext   V->V   opis`. Kolumna flag bywa
-    2–3 znaki (T/S/C/.), więc nie zakładamy stałej szerokości — kotwiczymy na
-    sygnaturze `wej->wyj`, a nazwę bierzemy tuż przed nią.
-    """
+    """Zbiór nazw filtrów dostępnych w binarce ffmpeg (cache)."""
     res = _run([ffmpeg_exe(), "-hide_banner", "-filters"])
-    names = re.findall(r"^\s*[A-Z.]{1,3}\s+(\w+)\s+\S*->\S*", res.stdout, re.MULTILINE)
-    return frozenset(names)
+    return frozenset(_FILTER_RE.findall(res.stdout))
 
 
 def has_filter(name: str) -> bool:
@@ -168,6 +164,11 @@ def _probe_with_ffmpeg(video_path: str) -> VideoInfo:
     # Analizujemy tylko pierwszą linię ze strumieniem wideo, aby uniknąć
     # przypadkowych dopasowań (np. fragmentów innych metadanych).
     video_line = next((ln for ln in text.splitlines() if "Video:" in ln), "")
+    if not video_line:
+        # Bez tego wyjątku plik nieczytelny/bez wideo zwracał VideoInfo(0,0,0,0),
+        # a błąd wychodził dużo dalej z mylącym komunikatem (np. o przycięciu).
+        raise RuntimeError(
+            f"Nie udało się odczytać metadanych wideo:\n{text[-2000:]}")
     width = height = 0
     fps = 0.0
     rm = _RES_RE.search(video_line)

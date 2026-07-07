@@ -162,7 +162,7 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   eskejpu), a wartości opcji (text/x/y/enable) w apostrofach; eif daje tylko int, więc
   sekundy i dziesiąte liczone osobno przez `trunc`.
 - **Auto-detekcja T0 + przycięcie:** `gui.StartDetectWorker` (QThread) odpala
-  `detect_dji_start` w tle. Po wczytaniu pliku (`_on_wave_done` → `_auto_detect_t0("import")`):
+  `detect_dji_start` w tle. Po wczytaniu pliku (`_on_wave_done` → `_auto_detect_t0()`):
   T0 + przycięcie 5 s przed → max 75 s po T0. Przycisk „Pobierz i przytnij"
   (`_fetch_id_and_trim`): pobranie z API + T0 + przycięcie 5 s przed → ostatni strzał + 5 s.
   Zwykły „Pobierz" (`_fetch_id`) tylko pobiera dane (bez detekcji i przycięcia).

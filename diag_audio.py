@@ -1,12 +1,18 @@
 """Diagnostyka czasu analizy audio — uruchom z aktywnym venv:
-    .venv\\Scripts\\python diag_audio.py
+    .venv\\Scripts\\python diag_audio.py <ścieżka do pliku wideo/LRF>
 lub:
-    python diag_audio.py   (jeśli aktywny venv z numpy/imageio-ffmpeg)
+    python diag_audio.py <plik>   (jeśli aktywny venv z numpy/imageio-ffmpeg)
 """
 import sys, time, subprocess, io, shutil, struct, tempfile
 from pathlib import Path
 
-LRF = r"C:\Users\jaroslaw.zjawinski\Zjawa.IT - Jarosław Zjawiński\PIFPAF.FUN - Media - Dokumenty\Media\20260624 PiRO\DJI_20260624185208_0029_D.LRF"
+if len(sys.argv) < 2:
+    print("Użycie: python diag_audio.py <ścieżka do pliku wideo/LRF>")
+    sys.exit(2)
+LRF = sys.argv[1]
+if not Path(LRF).exists():
+    print(f"BŁĄD: plik nie istnieje: {LRF}")
+    sys.exit(2)
 
 try:
     import imageio_ffmpeg

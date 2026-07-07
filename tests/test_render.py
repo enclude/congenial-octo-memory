@@ -19,7 +19,7 @@ def test_clock_sequence_fallback(tmp_path):
     # strzale (2.5 s), jako 1 wejście. fps = fps wideo (równa kadencja, brak dudnienia).
     sess = Session(shots=[Shot(1, 1.0), Shot(2, 2.5, 1.5)])
     style = OverlayStyle(show_running_clock=True, position="bottom-left")
-    events = render.build_events(sess, 0.5, style, AnchorMode.START_SIGNAL, (640, 360), 8.0)
+    events = render.build_events(sess, 0.5, style, (640, 360), 8.0)
     seq = render._write_clock_sequence(
         tmp_path, style, (640, 360), events, t0=0.5, src_start=0.0, src_end=8.0,
         video_fps=30.0, last_shot_time=2.5)

@@ -22,6 +22,22 @@ def config_dir() -> Path:
     return d
 
 
+def _log_error(context: str, exc: Exception) -> None:
+    """Dopisuje błąd zapisu/odczytu konfiguracji do config_log.txt w AppData.
+
+    Operacje konfiguracyjne są best-effort (nie mogą wywrócić aplikacji), ale
+    cicha porażka zapisu ukrywała już bugi (np. last_style.json = 0 B) — plik
+    dziennika jest jedynym śladem, gdy ustawienia „znikają"."""
+    try:
+        path = config_dir() / "config_log.txt"
+        if path.exists() and path.stat().st_size > 256 * 1024:
+            path.write_text("", encoding="utf-8")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"{context}: {type(exc).__name__}: {exc}\n")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def last_style_path() -> Path:
     return config_dir() / "last_style.json"
 
@@ -29,8 +45,8 @@ def last_style_path() -> Path:
 def save_last_style(style: OverlayStyle) -> None:
     try:
         style.to_json(last_style_path())
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _log_error("save_last_style", exc)
 
 
 def load_last_style() -> OverlayStyle | None:
@@ -39,7 +55,8 @@ def load_last_style() -> OverlayStyle | None:
         return None
     try:
         return OverlayStyle.from_json(path)
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        _log_error("load_last_style", exc)
         return None
 
 
@@ -60,8 +77,8 @@ def save_last_dir(key: str, path: str | Path) -> None:
                 pass
         data[key] = str(path)
         p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _log_error("save_last_dir", exc)
 
 
 def load_last_dir(key: str) -> str | None:
@@ -76,7 +93,8 @@ def load_last_dir(key: str) -> str | None:
         if value and Path(value).is_dir():
             return value
         return None
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        _log_error("load_last_dir", exc)
         return None
 
 
@@ -104,7 +122,8 @@ def _load_file_store() -> dict:
         import json
         data = json.loads(p.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        _log_error("_load_file_store", exc)
         return {}
 
 
@@ -126,8 +145,8 @@ def save_file_settings(video_path: str | Path, data: dict) -> None:
                 store.pop(old, None)
         _file_settings_path().write_text(
             json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _log_error("save_file_settings", exc)
 
 
 def load_file_settings(video_path: str | Path) -> dict | None:
@@ -148,8 +167,8 @@ def save_queue(data: dict) -> None:
         import json
         queue_path().write_text(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        _log_error("save_queue", exc)
 
 
 def load_queue() -> dict | None:
@@ -161,5 +180,6 @@ def load_queue() -> dict | None:
             return None
         data = json.loads(p.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else None
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        _log_error("load_queue", exc)
         return None

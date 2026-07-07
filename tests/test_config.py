@@ -1,4 +1,4 @@
-"""Testy zapisu/odczytu ustawień per-plik (AppData)."""
+"""Testy zapisu/odczytu konfiguracji w AppData (styl, katalogi, per-plik, kolejka)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import importlib
 import pytest
 
 from piro_overlay import config
+from piro_overlay.models import OverlayStyle
 
 
 @pytest.fixture
@@ -56,3 +57,51 @@ def test_file_settings_corrupt_store_is_safe(cfg):
     # Zapis nadpisuje uszkodzony plik bez wyjątku.
     cfg.save_file_settings("/a.mp4", {"t0": 1.0})
     assert cfg.load_file_settings("/a.mp4") == {"t0": 1.0}
+
+
+# --- ostatni styl nakładki ---
+def test_last_style_roundtrip(cfg):
+    style = OverlayStyle(scale=1.7, position="top-right", offset_x=64)
+    cfg.save_last_style(style)
+    loaded = cfg.load_last_style()
+    assert loaded == style
+
+
+def test_last_style_missing_returns_none(cfg):
+    assert cfg.load_last_style() is None
+
+
+def test_last_style_corrupt_returns_none(cfg):
+    cfg.last_style_path().write_text("{not json", encoding="utf-8")
+    assert cfg.load_last_style() is None
+
+
+# --- ostatnio używane katalogi ---
+def test_last_dir_roundtrip(cfg, tmp_path):
+    cfg.save_last_dir("video", tmp_path)
+    assert cfg.load_last_dir("video") == str(tmp_path)
+
+
+def test_last_dir_missing_key_returns_none(cfg):
+    assert cfg.load_last_dir("nigdy") is None
+
+
+def test_last_dir_nonexistent_dir_returns_none(cfg, tmp_path):
+    cfg.save_last_dir("output", tmp_path / "usunięty")
+    assert cfg.load_last_dir("output") is None
+
+
+# --- kolejka renderów ---
+def test_queue_roundtrip(cfg):
+    payload = {"version": 1, "jobs": [{"id": "abc", "label": "x", "kwargs": {}}]}
+    cfg.save_queue(payload)
+    assert cfg.load_queue() == payload
+
+
+def test_queue_missing_returns_none(cfg):
+    assert cfg.load_queue() is None
+
+
+def test_queue_corrupt_returns_none(cfg):
+    cfg.queue_path().write_text("[1, 2", encoding="utf-8")
+    assert cfg.load_queue() is None

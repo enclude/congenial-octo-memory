@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 
 class AnchorMode(str, Enum):
@@ -209,7 +210,7 @@ class OverlayStyle:
             "start_banner_border_width": self.start_banner_border_width,
         }
 
-    def to_json(self, path) -> None:
+    def to_json(self, path: str | Path) -> None:
         """Zapisuje styl do pliku JSON."""
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
@@ -248,7 +249,7 @@ class OverlayStyle:
         )
 
     @staticmethod
-    def from_json(path) -> "OverlayStyle":
+    def from_json(path: str | Path) -> "OverlayStyle":
         """Wczytuje styl z pliku JSON."""
         with open(path, encoding="utf-8") as f:
             return OverlayStyle.from_dict(json.load(f))
