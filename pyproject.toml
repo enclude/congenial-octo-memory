@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "piro-overlay"
-version = "0.26.0"
+version = "0.27.0"
 description = "Nakładka informacyjna o strzałach (split/czas/hit factor) na wideo ze strzelania"
 readme = "readme.md"
 requires-python = ">=3.10"

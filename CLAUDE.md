@@ -141,6 +141,25 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   GUI: przycisk „Wykryj sygnał startu" (obok „Wykryj kotwicę") wymusza
   `AnchorMode.START_SIGNAL` i ustawia wynik jako T0; zwykłe „Wykryj kotwicę" używa
   `detect_start` (bez filtra, pierwszy onset).
+- **Dekodowanie ID sesji z sygnału tonowego (v0.27.0):** `audio_sync.decode_id_tone`
+  odczytuje 4-cyfrowe ID sesji z pary timer↔kamera — timer (www.timer.pifpaf.fun) po
+  zapisaniu sesji w bazie kalkulatora odtwarza kod przez głośnik telefonu: marker
+  5000 Hz („tu zaczyna się kod") + 4 cyfry, każda jako jeden z 10 tonów 5250–7500 Hz
+  (co 250 Hz), sekwencja powtórzona 2× dla odporności. Mikrofon kamery nagrywa to razem
+  z obrazem. Dekodowanie jest SLOT-owe (nie continuity-owe jak bzyczek): marker daje
+  kotwicę w czasie, więc każda cyfra jest odczytywana w z góry znanym oknie jako ton
+  o najwyższej koncentracji energii wśród 10 kandydatów — nie trzeba szukać ciągłości
+  per cyfra. Gdy sygnał wystąpił >1 raz, zwracany jest najczęstszy odczyt (best-effort).
+  Pasmo 5000–7500 Hz wybrano tak, by (1) NIE kolidować z pasmem bzyczka 2000–4500 Hz i
+  (2) zmieścić się pod Nyquistem tej samej ekstrakcji audio 16 kHz (`_load_audio`, Nyquist
+  8000 Hz) — bez potrzeby osobnej ścieżki ekstrakcji o wyższym sample rate. Potwierdzone
+  pomiarem na realnym nagraniu DJI Osmo Nano (generator testowy + `analyze_tone_test.py`,
+  poza repo): żaden kandydat do 10 kHz nie miał odczuwalnego zaniku w tym łańcuchu
+  głośnik telefonu → mikrofon kamery → kompresja wideo — 5000–7500 Hz ma spory zapas.
+  GUI: przycisk „Wykryj ID z audio" (grupa źródła danych, pod polem ID) woła
+  `decode_id_tone` NA `self.video_path` (świadomie NIE na proxy LRF — sygnał ID gra pod
+  koniec nagrania, poza oknem na które LRF było dotąd używane) i wpisuje wynik do
+  `id_spin`; nie robi auto-fetch — użytkownik klika „Pobierz" sam, jak przy T0.
 - **Płynący zegar od T0:** `OverlayStyle.show_running_clock` (checkbox „Płynący czas od T0").
   Nad nakładką ze strzałami tyka „T+x.xs" liczone od sygnału startu, widoczne od STARTU
   (t ≥ T0). `render.prepare_clock(style)` zwraca bool: `_clock_drawtext_seg` (filtr `drawtext`,

@@ -1829,6 +1829,15 @@ class MainWindow(QMainWindow):
         idrow.addWidget(fetch); idrow.addWidget(fetch_trim)
         form.addRow("ID", _wrap(idrow))
 
+        detect_id_tone = QPushButton("Wykryj ID z audio")
+        detect_id_tone.setToolTip(
+            "Szuka w nagraniu sygnału tonowego ID, który timer odtwarza po zapisie\n"
+            "sesji w bazie (marker 5000 Hz + 4 cyfry 5250–7500 Hz) i wpisuje wykryte ID.\n"
+            "Zawsze analizuje oryginalny plik (nie proxy LRF).")
+        detect_id_tone.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        detect_id_tone.clicked.connect(self._detect_id_tone)
+        form.addRow("", _wrap(detect_id_tone))
+
         self.api_meta_label = QLabel()
         self.api_meta_label.setStyleSheet("color: #aaaaaa;")
         self.api_meta_label.hide()
@@ -2437,6 +2446,30 @@ class MainWindow(QMainWindow):
             return
         self._force_start_signal_mode()
         self.t0_spin.setValue(detected)  # wywoła _on_t0_spin → waveform + podgląd
+
+    def _detect_id_tone(self):
+        """Dekoduje ID sesji z sygnału tonowego (timer po zapisie w bazie).
+
+        Zawsze analizuje `self.video_path` — NIE proxy LRF (proxy nie było
+        częścią pomiaru, którym dobrano pasmo 5000–7500 Hz, a sygnał ID gra
+        pod koniec nagrania, poza oknem, na którym LRF jest zwykle używane
+        do detekcji T0).
+        """
+        if not self.video_path:
+            QMessageBox.warning(self, "Brak wideo", "Najpierw wybierz plik wideo.")
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            detected = audio_sync.decode_id_tone(self.video_path)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if detected is None:
+            QMessageBox.warning(
+                self, "Detekcja",
+                "Nie znaleziono sygnału ID w audio — wpisz ID ręcznie.")
+            return
+        self.id_spin.setValue(detected)
+        self.statusBar().showMessage(f"Wykryto ID z audio: {detected}", 8000)
 
     def _next_candidate(self):
         """Proponuje kolejny wykryty onset (po aktualnej kotwicy) jako kotwicę."""

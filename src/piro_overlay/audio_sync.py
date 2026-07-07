@@ -270,6 +270,107 @@ def detect_dji_start(video_path: str | Path,
     return None
 
 
+_ID_TONE_MARKER_FREQ = 5000.0                                  # start kodu ID
+_ID_TONE_DIGIT_FREQS = [5250.0 + 250.0 * d for d in range(10)]  # cyfry 0-9
+_ID_TONE_BAND_HALFWIDTH = 70.0    # Hz — odstęp 250 Hz między tonami, spory zapas
+_ID_TONE_TONE_DUR = 0.20          # s — czas trwania jednego tonu (marker/cyfra)
+_ID_TONE_GAP = 0.05               # s — cisza między tonami
+_ID_TONE_SLOT = _ID_TONE_TONE_DUR + _ID_TONE_GAP
+_ID_TONE_DIGITS = 4               # "IDxxxx" — 0-9999, timer wysyła zero-padded
+_ID_TONE_CONC_MIN = 0.55          # próg koncentracji energii w paśmie tonu
+_ID_TONE_MARKER_MIN_RUN = 3       # ≥150 ms ciągłości markera (okna 50 ms)
+
+
+def decode_id_tone(video_path: str | Path,
+                   start: float | None = None,
+                   end: float | None = None) -> int | None:
+    """Dekoduje 4-cyfrowe ID sesji z sygnału tonowego nagranego przez kamerę.
+
+    Timer (www.timer.pifpaf.fun) po zapisaniu sesji w bazie kalkulatora może
+    odtworzyć ID jako sekwencję czystych tonów: marker (5000 Hz, „tu zaczyna
+    się kod") + 4 cyfry, każda jako jeden z 10 tonów 5250–7500 Hz (co 250 Hz),
+    powtórzoną dwukrotnie. Pasmo leży bezpiecznie powyżej bzyczka startu
+    (2000–4500 Hz, `detect_dji_start`) i poniżej Nyquista tej ekstrakcji audio
+    (16 kHz → 8 kHz) — potwierdzone pomiarem na nagraniu DJI Osmo Nano (żaden
+    kandydat do 10 kHz nie miał odczuwalnego zaniku).
+
+    Dekodowanie jest slot-owe: znajdujemy każdy marker (jak bzyczek — próg
+    koncentracji + ciągłość ≥150 ms), a każdą kolejną cyfrę odczytujemy w jej
+    z góry znanym oknie czasowym jako ton o najwyższej koncentracji energii
+    (nie trzeba szukać ciągłości per cyfra — pozycja w czasie jest znana).
+    Gdy sygnał wystąpił więcej niż raz (powtórzenia), zwracamy odczyt, który
+    się powtórzył; przy sprzecznych/pojedynczych odczytach nadal zwracamy
+    najczęstszy wynik (best-effort).
+
+    Zwraca dekodowane ID albo None, gdy nie znaleziono żadnego markera.
+    """
+    samples, sr = _load_audio(video_path)
+
+    lo = int(max(start, 0.0) * sr) if start is not None else 0
+    hi = int(end * sr) if end is not None else samples.size
+    lo = max(0, min(lo, samples.size))
+    hi = max(lo, min(hi, samples.size))
+    offset_s = lo / sr
+    chunk = samples[lo:hi]
+
+    win = max(1, int(sr * 0.05))  # okno 50 ms — jak detect_dji_start
+    n_windows = chunk.size // win
+    if n_windows == 0:
+        return None
+
+    seg = chunk[:n_windows * win].reshape(n_windows, win)
+    spec = np.abs(np.fft.rfft(seg * np.hanning(win), axis=1)) ** 2
+    freqs = np.fft.rfftfreq(win, 1.0 / sr)
+    total = spec.sum(axis=1) + 1e-12
+
+    def band_conc(center: float) -> np.ndarray:
+        band = (freqs >= center - _ID_TONE_BAND_HALFWIDTH) & (freqs <= center + _ID_TONE_BAND_HALFWIDTH)
+        return spec[:, band].sum(axis=1) / total
+
+    marker_conc = band_conc(_ID_TONE_MARKER_FREQ)
+    cand = marker_conc >= _ID_TONE_CONC_MIN
+    marker_starts = []
+    i = 0
+    while i < n_windows:
+        if cand[i]:
+            j = i
+            while j + 1 < n_windows and cand[j + 1]:
+                j += 1
+            if (j - i + 1) >= _ID_TONE_MARKER_MIN_RUN:
+                marker_starts.append(offset_s + i * win / sr)
+            i = j + 1
+        else:
+            i += 1
+
+    digit_conc = [band_conc(f) for f in _ID_TONE_DIGIT_FREQS]
+    win_s = win / sr
+
+    def read_digit(t_center: float) -> int | None:
+        idx = int((t_center - offset_s) / win_s)
+        lo_i, hi_i = max(0, idx - 1), min(n_windows, idx + 2)
+        if lo_i >= hi_i:
+            return None
+        levels = [float(digit_conc[d][lo_i:hi_i].mean()) for d in range(10)]
+        best = int(np.argmax(levels))
+        return best if levels[best] >= _ID_TONE_CONC_MIN else None
+
+    def decode_at(t_marker: float) -> int | None:
+        digits = []
+        for slot in range(_ID_TONE_DIGITS):
+            t_center = t_marker + _ID_TONE_SLOT * (slot + 1) + _ID_TONE_TONE_DUR / 2
+            d = read_digit(t_center)
+            if d is None:
+                return None
+            digits.append(str(d))
+        return int("".join(digits))
+
+    readings = [v for v in (decode_at(t) for t in marker_starts) if v is not None]
+    if not readings:
+        return None
+    values, counts = np.unique(readings, return_counts=True)
+    return int(values[np.argmax(counts)])
+
+
 def resolve_t0(anchor_time: float, mode: AnchorMode, first_shot_time: float) -> float:
     """Przelicza wykryty/wskazany punkt kotwicy na T0 (czas sygnału startu).
 
