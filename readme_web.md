@@ -12,7 +12,9 @@ web niczego nie zmienia w GUI/CLI ani w buildzie PyInstaller.
 2. **Oś czasu strzałów** — ID wyniku z kalkulatora (pobranie z API) albo wklejony tekst
    `"1: 2.81s | 2: 4.63s (+1.82s)"`. **Opcjonalna** przy checkboksie „Bez nakładki” (patrz
    „Bez nakładki — tylko przycięcie” niżej) — ale nawet wtedy podanie ID/tekstu poprawia
-   auto-przycięcie.
+   auto-przycięcie. Przycisk **„🔎 Wykryj z audio”** próbuje odczytać ID prosto z nagrania —
+   działa, gdy timer (np. [timer.pifpaf.fun](https://timer.pifpaf.fun)) po zapisaniu sesji
+   odtworzył sygnał tonowy ID, a mikrofon kamery go nagrał; brak sygnału — wpisz ID ręcznie.
 3. **Sygnał startu** — auto-detekcja bzyczka shot-timera (T0) + automatyczne przycięcie;
    gdy bzyczka nie słychać, T0 ustawia się ręcznie w kroku 4.
 4. **Podgląd i korekta** — klatka z nakładką dokładnie taką, jaka będzie w wyniku
@@ -114,6 +116,7 @@ nie ma jeszcze cookie sesji.
 | `GET /api/version` | `{version, repo}` — stopka frontendu |
 | `POST /api/jobs` | upload (body = plik, nagłówek `X-Filename`) → JSON zadania + `suggested_id` |
 | `POST /api/jobs/{id}/session` | `{source:"id"\|"timeline", id?, timeline?}` |
+| `POST /api/jobs/{id}/detect-id` | dekodowanie ID z sygnału tonowego (`id:null` gdy brak sygnału) |
 | `POST /api/jobs/{id}/analyze` | detekcja T0 + auto-przycięcie (`t0:null` gdy brak bzyczka) |
 | `GET /api/jobs/{id}/preview?t=&t0=&lang=&clock=&h=` | PNG klatki z nakładką |
 | `POST /api/jobs/{id}/render` | `{format, lang, clock, t0, trim_start, trim_end, no_overlay}` → 202 |

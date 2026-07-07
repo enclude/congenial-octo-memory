@@ -422,6 +422,14 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   absurdalnych wartości na starcie). Snapshot SSE (`state` przy `queued`/`rendering`, np. po
   odświeżeniu karty w trakcie renderu) teraz też woła `setProgress`/`updateEta` z `data.progress`
   — wcześniej ten branch nie odświeżał wcale paska postępu po reconnect.
+- **Wykrywanie ID z sygnału tonowego (v0.28.0):** `POST /api/jobs/{id}/detect-id` woła
+  `pipeline.detect_id_tone` (patrz sekcja o `audio_sync.decode_id_tone` wyżej — timer
+  odtwarza ID jako marker 5000 Hz + 4 cyfry 5250–7500 Hz po zapisie sesji w bazie kalkulatora)
+  i zwraca `{id: int|None}` — brak sygnału to NIE błąd (jak `/analyze` dla T0), frontend
+  prosi o ręczne ID. Guard identyczny jak `/analyze`: 409 gdy zadanie `QUEUED`/`RENDERING`.
+  Frontend: przycisk „🔎 Wykryj z audio" w kroku 02 (`pane-id`, obok „Pobierz") woła endpoint
+  i wpisuje wynik do `#session-id` — świadomie NIE auto-woła `setSession()` (użytkownik klika
+  „Pobierz" sam, jak w GUI), żeby błędnie zdekodowane ID nie ustawiło sesji bez potwierdzenia.
 
 ## Uwagi / pułapki
 

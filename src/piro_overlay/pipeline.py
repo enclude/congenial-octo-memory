@@ -41,6 +41,17 @@ def detect_start_signal(video: str | Path) -> float | None:
     return audio_sync.detect_dji_start(audio_source(video))
 
 
+def detect_id_tone(video: str | Path) -> int | None:
+    """ID sesji z sygnału tonowego (timer odtwarza go po zapisie w bazie).
+
+    ZAWSZE analizuje oryginalny plik, NIE `audio_source()`/proxy LRF — pasmo
+    5000-7500 Hz zweryfikowano pomiarem na oryginalnym pliku (DJI Osmo Nano),
+    a sygnał gra pod koniec nagrania, poza oknem na które LRF zwykle się
+    używa (detekcja T0 na początku).
+    """
+    return audio_sync.decode_id_tone(str(video))
+
+
 def detect_anchor(video: str | Path, start: float | None = None,
                   end: float | None = None) -> float | None:
     """Punkt kotwicy z pierwszego onsetu audio (bez filtra bzyczka)."""

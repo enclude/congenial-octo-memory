@@ -11,31 +11,9 @@ import subprocess
 import pytest
 
 from piro_overlay import ffmpeg
-from piro_overlay.audio_sync import (
-    _ID_TONE_DIGIT_FREQS,
-    _ID_TONE_MARKER_FREQ,
-    _ID_TONE_SLOT,
-    _ID_TONE_TONE_DUR,
-    decode_id_tone,
-)
+from piro_overlay.audio_sync import decode_id_tone
 
-_REPEAT_GAP = 0.3
-
-
-def _id_tone_expr(session_id: int, repeats: int = 2, amp: float = 0.8) -> str:
-    digits = f"{session_id:04d}"
-    terms = []
-    t0 = 0.0
-    for _ in range(repeats):
-        terms.append(f"if(between(t,{t0:.3f},{t0 + _ID_TONE_TONE_DUR:.3f}),"
-                     f"{amp}*sin(2*PI*{_ID_TONE_MARKER_FREQ}*t),0)")
-        for slot, ch in enumerate(digits):
-            freq = _ID_TONE_DIGIT_FREQS[int(ch)]
-            start = t0 + _ID_TONE_SLOT * (slot + 1)
-            terms.append(f"if(between(t,{start:.3f},{start + _ID_TONE_TONE_DUR:.3f}),"
-                         f"{amp}*sin(2*PI*{freq}*t),0)")
-        t0 += _ID_TONE_SLOT * (len(digits) + 1) + _REPEAT_GAP
-    return "+".join(terms), t0
+from conftest import id_tone_expr as _id_tone_expr
 
 
 def _render_wav(tmp_path, expr: str, duration: float):

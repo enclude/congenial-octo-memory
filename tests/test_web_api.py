@@ -121,6 +121,21 @@ def test_analyze_detects_buzzer(client: TestClient, tiny_video: Path):
     assert data["trim_end"] == pytest.approx(3.0, abs=0.3)  # clamp do długości
 
 
+def test_detect_id_decodes_tone(client: TestClient, id_tone_video: Path):
+    from conftest import ID_TONE_TEST_ID
+    job_id = _upload(client, id_tone_video, name="id_tone.mp4").json()["id"]
+    r = client.post(f"/api/jobs/{job_id}/detect-id")
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == ID_TONE_TEST_ID
+
+
+def test_detect_id_no_signal_returns_null(client: TestClient, tiny_video: Path):
+    job_id = _upload(client, tiny_video).json()["id"]
+    r = client.post(f"/api/jobs/{job_id}/detect-id")
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] is None
+
+
 def test_preview_returns_png_with_overlay(client: TestClient, tiny_video: Path):
     job_id = _upload(client, tiny_video).json()["id"]
     client.post(f"/api/jobs/{job_id}/session",

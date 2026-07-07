@@ -212,6 +212,23 @@ async def analyze(request: Request, job_id: str,
     return {"t0": t0, "trim_start": trim_start, "trim_end": trim_end}
 
 
+@router.post("/jobs/{job_id}/detect-id")
+async def detect_id(request: Request, job_id: str,
+                    sid: str = Depends(require_sid)) -> dict:
+    """Dekoduje ID sesji z sygnału tonowego (timer po zapisie w bazie).
+
+    Brak sygnału to nie błąd — zwracamy id=null, frontend prosi o ręczne ID.
+    """
+    job = _get_job(request, job_id, sid)
+    if job.state in (JobState.QUEUED, JobState.RENDERING):
+        raise HTTPException(status_code=409, detail="Zadanie jest w trakcie renderu.")
+    try:
+        detected = await _in_analyze_pool(request, pipeline.detect_id_tone, job.video_path)
+    except Exception as exc:  # noqa: BLE001 — analiza audio nie może ubić zadania
+        raise HTTPException(status_code=500, detail=f"Analiza audio nie powiodła się: {exc}")
+    return {"id": detected}
+
+
 def _extract_preview_frame(job: Job, t: float, h: int):
     """Klatka RGBA dla czasu t (wątek analizy) — z cache per zadanie."""
     key = (round(t, 2), h)

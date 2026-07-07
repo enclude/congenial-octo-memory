@@ -135,6 +135,30 @@ $("fetch-id").addEventListener("click", () =>
 $("parse-timeline").addEventListener("click", () =>
   setSession({ source: "timeline", timeline: $("timeline-text").value }));
 
+$("detect-id-btn").addEventListener("click", async () => {
+  const btn = $("detect-id-btn");
+  btn.disabled = true;
+  btn.textContent = "🔎 Analizuję audio…";
+  try {
+    const resp = await fetch(`/api/jobs/${job.id}/detect-id`, { method: "POST" });
+    if (!resp.ok) { toast(await apiError(resp)); return; }
+    const data = await resp.json();
+    const out = $("detect-id-result");
+    out.hidden = false;
+    if (data.id == null) {
+      out.textContent = "Nie znaleziono sygnału ID w audio — wpisz ID ręcznie.";
+      out.classList.add("warn");
+    } else {
+      $("session-id").value = data.id;
+      out.textContent = `✓ Wykryto ID ${data.id} — kliknij „Pobierz”.`;
+      out.classList.remove("warn");
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🔎 Wykryj z audio";
+  }
+});
+
 $("no-overlay-check").addEventListener("change", () => {
   // Oś czasu (ID/tekst) zostaje widoczna i opcjonalna nawet bez nakładki — jeśli
   // podana, auto-przycięcie i tak z niej korzysta (ostatni strzał + margines),
