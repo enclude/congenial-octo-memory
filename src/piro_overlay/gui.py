@@ -1836,7 +1836,8 @@ class MainWindow(QMainWindow):
             "Zawsze analizuje oryginalny plik (nie proxy LRF).")
         detect_id_tone.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         detect_id_tone.clicked.connect(self._detect_id_tone)
-        form.addRow("", _wrap(detect_id_tone))
+        detect_row = QHBoxLayout(); detect_row.addWidget(detect_id_tone)
+        form.addRow("", _wrap(detect_row))
 
         self.api_meta_label = QLabel()
         self.api_meta_label.setStyleSheet("color: #aaaaaa;")
