@@ -150,8 +150,14 @@ $("detect-id-btn").addEventListener("click", async () => {
       out.classList.add("warn");
     } else {
       $("session-id").value = data.id;
-      out.textContent = `✓ Wykryto ID ${data.id} — kliknij „Pobierz”.`;
       out.classList.remove("warn");
+      // Auto-pobranie sesji — jak przy suggested_id z historii pliku (upload()):
+      // samo wpisanie ID w pole bez pobrania sesji zostawiało "Renderuj" zablokowane
+      // (wymaga job.hasSession), co wyglądało na ukończony krok, a nie było.
+      const ok = await setSession({ source: "id", id: data.id });
+      out.textContent = ok
+        ? `✓ Wykryto i pobrano ID ${data.id}.`
+        : `✓ Wykryto ID ${data.id}, ale pobranie sesji nie powiodło się — kliknij „Pobierz”.`;
     }
   } finally {
     btn.disabled = false;

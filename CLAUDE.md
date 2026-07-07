@@ -444,9 +444,13 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   odtwarza ID jako marker 5000 Hz + 4 cyfry 5250–7500 Hz po zapisie sesji w bazie kalkulatora)
   i zwraca `{id: int|None}` — brak sygnału to NIE błąd (jak `/analyze` dla T0), frontend
   prosi o ręczne ID. Guard identyczny jak `/analyze`: 409 gdy zadanie `QUEUED`/`RENDERING`.
-  Frontend: przycisk „🔎 Wykryj z audio" w kroku 02 (`pane-id`, obok „Pobierz") woła endpoint
-  i wpisuje wynik do `#session-id` — świadomie NIE auto-woła `setSession()` (użytkownik klika
-  „Pobierz" sam, jak w GUI), żeby błędnie zdekodowane ID nie ustawiło sesji bez potwierdzenia.
+  Frontend: przycisk „🔎 Wykryj z audio" w kroku 02 (`pane-id`, obok „Pobierz") woła endpoint,
+  wpisuje wynik do `#session-id` i AUTO-WOŁA `setSession()` (v0.29.2 — pierwotnie świadomie
+  NIE auto-wołało, żeby błędnie zdekodowane ID nie ustawiło sesji bez potwierdzenia, ale to
+  zostawiało „Renderuj" zablokowane (wymaga `job.hasSession`) mimo wypełnionego pola ID i
+  wykrytego T0 — wyglądało na ukończony krok, a nie było; realny bug report). GUI nie miało
+  tego problemu — `_build_session()` i tak odpytuje `api.fetch_session(id_spin.value())` na
+  żądanie renderu, bez pośredniego stanu „sesja ustawiona".
 - **`session_meta.start_delay` (v0.29.1):** `Job.to_dict()` dokłada `start_delay` do
   `session_meta` (obok `nazwa_toru`/`uczestnik`) — patrz `Session.start_delay` w sekcji
   desktopowej wyżej. Czysto ekspozycyjne: frontend NIE wyświetla jeszcze tej wartości
