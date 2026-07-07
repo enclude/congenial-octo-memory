@@ -6,6 +6,28 @@ web niczego nie zmienia w GUI/CLI ani w buildzie PyInstaller.
 
 > Dokumentacja aplikacji desktopowej (.exe, GUI, CLI): [readme.md](readme.md)
 
+## Zrzuty ekranu
+
+### Wgrywanie wideo i oś czasu (z wykrywaniem ID z audio)
+
+Krok 01–02: upload, metadane wideo, ID z kalkulatora (ręcznie albo przyciskiem „🔎 Wykryj
+z audio”) i podgląd wczytanej osi czasu strzałów.
+
+![Widok wgrywania wideo i wykrywania ID z audio](pictures/web/01%20widok%20wgrywania%20wideo%20i%20wykrywania%20ID%20z%20audio.png)
+
+### Sygnał startu i podgląd z planszą START
+
+Krok 03–04: auto-detekcja T0 (bzyczek) z wynikiem przycięcia oraz podgląd WYSIWYG klatki
+z planszą START.
+
+![Widok wykrycia sygnału startu i podglądu z planszą START](pictures/web/02%20widok%20wykrycia%20sygnału%20startu%20i%20podglądu%20z%20planszą%20START.png)
+
+### Zakończony render
+
+Krok 05: pasek postępu na 100%, status „Gotowe" i przycisk pobrania wyniku.
+
+![Widok zakończonego renderu](pictures/web/03%20widok%20zakończonego%20renderu.png)
+
 ## Przepływ w przeglądarce
 
 1. **Wgraj wideo** — przeciągnij plik (MP4/MOV/MKV/AVI), pasek postępu uploadu.
