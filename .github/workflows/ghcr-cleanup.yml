@@ -1,0 +1,29 @@
+name: GHCR cleanup
+
+# Usuwa stare wersje obrazu ghcr.io/<owner>/congenial-octo-memory, zachowując
+# 10 najnowszych (niezależnie od tagu — latest/v*/sha-*). Repo, które publikuje
+# pakiet przez GITHUB_TOKEN (job "docker" w build.yml), dostaje automatycznie
+# rolę Admin w ustawieniach pakietu — dlatego domyślny github.token wystarcza
+# do usuwania. Jeśli mimo to dostaniesz 403, dodaj PAT (classic) ze scope'ami
+# read:packages + delete:packages jako sekret GHCR_CLEANUP_TOKEN i użyj go
+# w kroku poniżej.
+
+on:
+  schedule:
+    - cron: "0 3 * * 1" # co poniedziałek 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  clean:
+    name: Usuń stare wersje obrazu
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Usuń wszystkie oprócz 10 najnowszych wersji
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: congenial-octo-memory
+          package-type: container
+          min-versions-to-keep: 10
+          token: ${{ secrets.GITHUB_TOKEN }}
