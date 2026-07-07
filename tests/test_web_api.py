@@ -101,6 +101,26 @@ def test_set_session_from_api_id(client: TestClient, tiny_video: Path,
     assert r.json()["session_meta"]["uczestnik"] == "Test"
 
 
+def test_session_meta_carries_start_delay(client: TestClient, tiny_video: Path,
+                                          monkeypatch: pytest.MonkeyPatch):
+    from piro_overlay.models import Session, Shot
+    from piro_overlay import pipeline as pl
+    monkeypatch.setattr(pl.api, "fetch_session",
+                        lambda rid: Session(shots=[Shot(1, 2.28)], start_delay=2.1))
+    job_id = _upload(client, tiny_video).json()["id"]
+    r = client.post(f"/api/jobs/{job_id}/session", json={"source": "id", "id": 5})
+    assert r.status_code == 200, r.text
+    assert r.json()["session_meta"]["start_delay"] == 2.1
+
+
+def test_session_meta_start_delay_none_for_timeline(client: TestClient, tiny_video: Path):
+    job_id = _upload(client, tiny_video).json()["id"]
+    r = client.post(f"/api/jobs/{job_id}/session",
+                    json={"source": "timeline", "timeline": "1: 1.0s"})
+    assert r.status_code == 200, r.text
+    assert r.json()["session_meta"]["start_delay"] is None
+
+
 def test_set_session_rejects_empty_timeline(client: TestClient, tiny_video: Path):
     job_id = _upload(client, tiny_video).json()["id"]
     r = client.post(f"/api/jobs/{job_id}/session",

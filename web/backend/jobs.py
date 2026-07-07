@@ -123,6 +123,7 @@ class Job:
             "session_meta": {
                 "nazwa_toru": self.session.nazwa_toru,
                 "uczestnik": self.session.uczestnik,
+                "start_delay": self.session.start_delay,
             } if self.session is not None else None,
         }
 

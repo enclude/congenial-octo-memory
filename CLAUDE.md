@@ -447,6 +447,11 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   Frontend: przycisk „🔎 Wykryj z audio" w kroku 02 (`pane-id`, obok „Pobierz") woła endpoint
   i wpisuje wynik do `#session-id` — świadomie NIE auto-woła `setSession()` (użytkownik klika
   „Pobierz" sam, jak w GUI), żeby błędnie zdekodowane ID nie ustawiło sesji bez potwierdzenia.
+- **`session_meta.start_delay` (v0.29.1):** `Job.to_dict()` dokłada `start_delay` do
+  `session_meta` (obok `nazwa_toru`/`uczestnik`) — patrz `Session.start_delay` w sekcji
+  desktopowej wyżej. Czysto ekspozycyjne: frontend NIE wyświetla jeszcze tej wartości
+  (`app.js` czyta z `session_meta` tylko `nazwa_toru`/`uczestnik` do linii `shots-meta`) —
+  dane po prostu docierają do odpowiedzi API, gdyby przyszła funkcja chciała je pokazać.
 
 ## Uwagi / pułapki
 
