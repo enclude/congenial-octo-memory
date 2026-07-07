@@ -50,6 +50,23 @@ def create_app() -> FastAPI:
     app.state.store = JobStore()
     app.state.general_bucket = TokenBucket(settings.rate_per_min, 60.0)
     app.state.render_bucket = TokenBucket(settings.renders_per_hour, 3600.0)
+
+    @app.middleware("http")
+    async def _security_headers(request, call_next):
+        """Nagłówki obronne dla wszystkich odpowiedzi (API + statyczny frontend).
+
+        Aplikacja nie osadza żadnej treści zewnętrznej ani nie musi być osadzana
+        w cudzych ramkach — ciasny CSP/X-Frame-Options nic tu nie psuje, a
+        ogranicza skutki potencjalnego XSS/clickjackingu w warstwie ochronnej."""
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; img-src 'self' data:; style-src 'self'; "
+            "script-src 'self'; frame-ancestors 'none'")
+        return response
+
     app.include_router(api.router, dependencies=[Depends(general_rate)])
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 

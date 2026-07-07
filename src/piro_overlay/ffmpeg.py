@@ -32,6 +32,19 @@ class VideoInfo:
     height: int
 
 
+# Bezpieczeństwo: plik wejściowy pochodzi od użytkownika (upload w wersji WWW),
+# a FFmpeg autodetekuje demuxer po ZAWARTOŚCI, nie po rozszerzeniu — spreparowany
+# plik (np. playlista HLS/m3u8 czy lista `concat`) mimo rozszerzenia .mp4 potrafi
+# kazać FFmpeg otworzyć DOWOLNY protokół (http/https/subfile/concat/...), co daje
+# SSRF (żądania do sieci wewnętrznej) albo odczyt dowolnego pliku z dysku serwera.
+# `-protocol_whitelist file` ogranicza WSZYSTKIE zagnieżdżone otwarcia zasobów
+# (nie tylko główny -i) do lokalnych plików — nasze własne wejścia (source, PNG
+# paneli, sekwencja zegara) i tak zawsze używają protokołu `file`, więc to
+# ograniczenie niczego legalnego nie psuje. Dokładać PRZED każdym `-i`, który
+# otwiera plik pochodzący od użytkownika.
+UNTRUSTED_INPUT_ARGS = ["-protocol_whitelist", "file"]
+
+
 @functools.lru_cache(maxsize=1)
 def _resolve_ffmpeg() -> str:
     """Wybiera binarkę ffmpeg, unikając wyciągania pliku przez imageio-ffmpeg.
@@ -122,7 +135,7 @@ def probe(video_path: str | Path) -> VideoInfo:
 
 def _probe_with_ffprobe(probe_exe: str, video_path: str) -> VideoInfo | None:
     cmd = [
-        probe_exe, "-v", "error", "-select_streams", "v:0",
+        probe_exe, *UNTRUSTED_INPUT_ARGS, "-v", "error", "-select_streams", "v:0",
         "-show_entries", "stream=width,height,avg_frame_rate:format=duration",
         "-of", "json", video_path,
     ]
@@ -151,7 +164,7 @@ _FPS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*fps")
 
 def _probe_with_ffmpeg(video_path: str) -> VideoInfo:
     # `ffmpeg -i` bez wyjścia kończy się błędem, ale wypisuje metadane na stderr.
-    res = _run([ffmpeg_exe(), "-i", video_path])
+    res = _run([ffmpeg_exe(), *UNTRUSTED_INPUT_ARGS, "-i", video_path])
     text = res.stderr
 
     dm = _DUR_RE.search(text)
@@ -186,7 +199,7 @@ def extract_audio(video_path: str | Path, out_wav: str | Path,
     """Ekstrahuje audio do mono WAV (do detekcji T0)."""
     out_wav = Path(out_wav)
     cmd = [
-        ffmpeg_exe(), "-y", "-i", str(video_path),
+        ffmpeg_exe(), "-y", *UNTRUSTED_INPUT_ARGS, "-i", str(video_path),
         "-vn", "-ac", "1", "-ar", str(sample_rate),
         "-f", "wav", str(out_wav),
     ]
@@ -226,7 +239,7 @@ def extract_frame(video_path: str | Path, timestamp: float, out_png: str | Path,
     """
     out_png = Path(out_png)
     cmd = [
-        ffmpeg_exe(), "-y", "-ss", f"{max(timestamp, 0):.3f}",
+        ffmpeg_exe(), "-y", *UNTRUSTED_INPUT_ARGS, "-ss", f"{max(timestamp, 0):.3f}",
         "-i", str(video_path), "-frames:v", "1",
     ]
     if scale_height:

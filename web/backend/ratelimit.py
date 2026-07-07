@@ -1,8 +1,14 @@
 """Prosty rate limiting in-memory (token bucket) — bez zewnętrznych zależności.
 
-Klucz = sid z cookie, a gdy go brak — adres klienta. Aplikacja stoi ZA
-reverse proxy (nginx proxy manager na osobnym hoście, terminuje SSL), więc
-adres bierzemy z `X-Forwarded-For` (pierwszy wpis); bez proxy — z socketu.
+Klucz = sid z cookie, a gdy go brak — adres klienta. `X-Forwarded-For` jest
+w pełni kontrolowany przez klienta, dopóki nie ma między nim a aplikacją
+zaufanego reverse proxy, który go nadpisuje/dokłada na podstawie realnego
+adresu peera — bez takiego proxy ufanie temu nagłówkowi pozwala obejść limit
+(inny "adres" na każde żądanie). Dlatego jest używany TYLKO gdy
+`settings.trust_proxy_headers` jest jawnie włączone (patrz settings.py), a
+wtedy bierzemy OSTATNI wpis (dokładany przez najbliższy, zaufany hop), nie
+pierwszy (ten może być spreparowany przez klienta i doklejony przed prawdziwym
+adresem). Bez zaufanego proxy używamy bezpośrednio adresu z gniazda TCP.
 """
 
 from __future__ import annotations
@@ -49,9 +55,12 @@ def client_key(request: Request) -> str:
     sid = request.cookies.get(SID_COOKIE)
     if sid:
         return f"sid:{sid}"
-    fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return f"ip:{fwd.split(',')[0].strip()}"
+    trust_proxy = bool(getattr(request.app.state, "settings", None)
+                       and request.app.state.settings.trust_proxy_headers)
+    if trust_proxy:
+        fwd = request.headers.get("x-forwarded-for")
+        if fwd:
+            return f"ip:{fwd.split(',')[-1].strip()}"
     return f"ip:{request.client.host if request.client else 'unknown'}"
 
 

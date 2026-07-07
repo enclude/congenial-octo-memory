@@ -63,7 +63,7 @@ def _load_audio(video_path: str | Path) -> tuple[np.ndarray, int]:
     co eliminuje wyciąganie DLL przez PyInstaller i skanowanie Windows Defender.
     """
     cmd = [
-        ffmpeg.ffmpeg_exe(), "-y", "-i", str(video_path),
+        ffmpeg.ffmpeg_exe(), "-y", *ffmpeg.UNTRUSTED_INPUT_ARGS, "-i", str(video_path),
         "-vn", "-ac", "1", "-ar", "16000",
         "-f", "wav", "pipe:1",
     ]

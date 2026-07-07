@@ -487,7 +487,7 @@ def render_video(video_path: str | Path, session: Session, t0: float,
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         seek = ["-ss", f"{src_start:.3f}"] if src_start > 0 else []
-        inputs: list[str] = [*seek, "-i", video_path]
+        inputs: list[str] = [*ffmpeg.UNTRUSTED_INPUT_ARGS, *seek, "-i", video_path]
         filter_parts: list[str] = []
         cur = "0:v:0"   # TYLKO pierwszy strumień wideo (DJI ma drugi: miniatura MJPEG)
 
@@ -586,7 +586,7 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         seek = ["-ss", f"{src_start:.3f}"] if src_start > 0 else []
-        inputs: list[str] = [*seek, "-i", video_path]
+        inputs: list[str] = [*ffmpeg.UNTRUSTED_INPUT_ARGS, *seek, "-i", video_path]
         filter_parts: list[str] = []
         cur = "0:v:0"   # TYLKO pierwszy strumień wideo (DJI ma drugi: miniatura MJPEG)
 
@@ -668,7 +668,7 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
         tmp_dir = Path(tmp)
         palette = tmp_dir / "palette.png"
         seek = ["-ss", f"{src_start:.3f}"] if src_start > 0 else []
-        inputs: list[str] = [*seek, "-i", video_path]
+        inputs: list[str] = [*ffmpeg.UNTRUSTED_INPUT_ARGS, *seek, "-i", video_path]
         filter_parts: list[str] = []
         cur = "0:v:0"   # TYLKO pierwszy strumień wideo (DJI ma drugi: miniatura MJPEG)
 
@@ -766,7 +766,7 @@ def trim_video(video_path: str | Path, out_path: str | Path,
     def build_cmd(enc: str) -> list[str]:
         hw = ["-hwaccel", "cuda"] if enc == "h264_nvenc" else []
         return [
-            ffmpeg.ffmpeg_exe(), "-y", *hw, *seek, "-i", video_path,
+            ffmpeg.ffmpeg_exe(), "-y", *hw, *ffmpeg.UNTRUSTED_INPUT_ARGS, *seek, "-i", video_path,
             "-t", f"{out_duration:.3f}",
             "-map", "0:v:0", "-map", "0:a?",   # tylko 1. wideo (pomiń miniaturę MJPEG DJI)
             *_video_encoder_args(enc),

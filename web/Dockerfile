@@ -12,7 +12,8 @@ LABEL org.opencontainers.image.description="Piro Overlay Web — backend FastAPI
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 --shell /usr/sbin/nologin piroweb
 
 ENV PIRO_FFMPEG=/usr/bin/ffmpeg \
     XDG_CONFIG_HOME=/data/config \
@@ -30,6 +31,14 @@ RUN pip install --no-cache-dir -r web/requirements.txt
 COPY src ./src
 COPY assets ./assets
 COPY web ./web
+
+# Bezpieczeństwo: FFmpeg parsuje treść uploadowaną przez anonimowych userów z
+# internetu — ewentualna luka w FFmpeg (albo w zależnościach Pythona) NIE
+# powinna dawać roota w kontenerze. /data tworzymy w obrazie PRZED przejściem
+# na non-root, żeby Docker skopiował te uprawnienia do nazwanego wolumenu przy
+# jego pierwszym montowaniu (`piro-data:/data` w docker-compose.yml).
+RUN mkdir -p /data && chown -R piroweb:piroweb /app /data
+USER piroweb
 
 EXPOSE 8000
 

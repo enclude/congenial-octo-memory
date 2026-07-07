@@ -24,6 +24,13 @@ class Settings:
     encoder: str = "cpu"
     rate_per_min: int = 120
     renders_per_hour: int = 10
+    max_jobs_total: int = 60
+    # Bez zaufanego proxy przed aplikacją nagłówek X-Forwarded-For jest w pełni
+    # kontrolowany przez klienta — ufanie mu wprost pozwala obchodzić rate limit
+    # (inny "adres" na każde żądanie). Domyślnie WYŁĄCZONE; włączać tylko gdy
+    # aplikacja faktycznie stoi za reverse proxy, który nadpisuje/dokłada ten
+    # nagłówek na podstawie realnego adresu peera (patrz ratelimit.client_key).
+    trust_proxy_headers: bool = False
 
     @property
     def max_upload_bytes(self) -> int:
@@ -40,6 +47,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(_PREFIX + name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def load_settings() -> Settings:
     return Settings(
         data_dir=Path(os.environ.get(_PREFIX + "DATA_DIR", "web_data")),
@@ -52,4 +66,6 @@ def load_settings() -> Settings:
         encoder=os.environ.get(_PREFIX + "ENCODER", "cpu"),
         rate_per_min=_env_int("RATE_PER_MIN", 120),
         renders_per_hour=_env_int("RENDERS_PER_HOUR", 10),
+        max_jobs_total=_env_int("MAX_JOBS_TOTAL", 60),
+        trust_proxy_headers=_env_bool("TRUST_PROXY_HEADERS", False),
     )

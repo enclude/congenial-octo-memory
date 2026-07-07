@@ -9,7 +9,11 @@
 #       proxy_buffering off;                 # SSE (/api/jobs/*/events) musi płynąć
 #       proxy_read_timeout 3600s;            # długi render nie zrywa SSE
 #       proxy_request_buffering off;         # upload strumieniem, nie do bufora
-#   * NPM wysyła X-Forwarded-For domyślnie — rate limiting z niego korzysta.
+#   * NPM wysyła X-Forwarded-For domyślnie, ale rate limiting z niego NIE korzysta,
+#     dopóki jawnie nie włączysz PIRO_WEB_TRUST_PROXY_HEADERS=true — a to ma sens
+#     TYLKO gdy port 8000 poniżej jest osiągalny WYŁĄCZNIE z hosta NPM (firewall).
+#     Inaczej ktoś łączący się z pominięciem NPM w pełni kontroluje ten nagłówek
+#     i obchodzi limit żądań/renderów.
 
 services:
   piro-overlay-web:
@@ -30,6 +34,8 @@ services:
       PIRO_WEB_ENCODER: "cpu"         # VPS bez GPU/NVENC
       PIRO_WEB_RATE_PER_MIN: "120"
       PIRO_WEB_RENDERS_PER_HOUR: "10"
+      PIRO_WEB_MAX_JOBS_TOTAL: "60"        # sufit globalny, niezależny od cookie sid
+      PIRO_WEB_TRUST_PROXY_HEADERS: "false"  # patrz uwaga o X-Forwarded-For wyżej
     mem_limit: 12g
     restart: unless-stopped
 

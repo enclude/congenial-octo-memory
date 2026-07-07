@@ -456,6 +456,56 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   desktopowej wyżej. Czysto ekspozycyjne: frontend NIE wyświetla jeszcze tej wartości
   (`app.js` czyta z `session_meta` tylko `nazwa_toru`/`uczestnik` do linii `shots-meta`) —
   dane po prostu docierają do odpowiedzi API, gdyby przyszła funkcja chciała je pokazać.
+- **Hardening formularza uploadu i DoS (v0.30.0):**
+  - **`ffmpeg.UNTRUSTED_INPUT_ARGS` (`-protocol_whitelist file`) — SSRF/LFI przez spreparowane
+    „wideo":** FFmpeg autodetekuje demuxer po ZAWARTOŚCI pliku, nie po rozszerzeniu — plik z
+    rozszerzeniem `.mp4`, ale wewnątrz będący playlistą HLS/m3u8 albo listą `concat`, może
+    kazać FFmpeg otworzyć DOWOLNY protokół (`http://`, `subfile,file:`, `concat:...`), czyli
+    żądania do sieci wewnętrznej hosta (SSRF) albo odczyt dowolnego pliku z dysku serwera. To
+    znany, wielokrotnie zgłaszany wzorzec ataku na usługi „upload wideo → `ffmpeg -i`".
+    Poprawka dołożona PRZED każdym `-i`, który otwiera plik od użytkownika: `ffmpeg.py`
+    (`probe`/`_probe_with_ffprobe`/`_probe_with_ffmpeg`, `extract_audio`, `extract_frame`),
+    `audio_sync._load_audio`, `render.py` (`render_video`/`render_webm`/`render_gif`/
+    `trim_video` — główne wejście wideo). NIE dotyka własnych wejść (PNG paneli, `-f lavfi`,
+    sekwencja zegara `image2`) — te i tak zawsze używają protokołu `file`, więc whitelist
+    niczego legalnego nie psuje. Whitelist walidowany testami (`tests/test_ffmpeg.py`,
+    `tests/test_render.py`, `tests/test_audio_sync.py` — 141/141 zielone po zmianie).
+  - **`X-Forwarded-For` jest spoofowalny — rate limit nie może mu ufać domyślnie:**
+    `ratelimit.client_key` (gdy brak cookie `piro_sid`) do v0.29.2 brał PIERWSZY wpis XFF —
+    to pole w pełni kontrolowane przez klienta, dopóki między nim a aplikacją nie ma
+    zaufanego reverse proxy, który je nadpisuje/dokłada na podstawie realnego adresu
+    gniazda. Bez takiego proxy (albo gdy port aplikacji jest też osiągalny bezpośrednio,
+    z pominięciem NPM — patrz `docker-compose.yml`, `ports: 8000:8000`) atak mógł ustawiać
+    dowolny/losowy XFF na każde żądanie i całkowicie obchodzić `general_rate`/`render_rate`
+    (nielimitowane uploady/rendery = DoS na CPU i dysk). Fix: `settings.trust_proxy_headers`
+    (env `PIRO_WEB_TRUST_PROXY_HEADERS`, **domyślnie `False`**) — XFF jest ignorowany, dopóki
+    ktoś jawnie nie potwierdzi, że stoi za zaufanym proxy; gdy włączone, bierzemy OSTATNI wpis
+    (dokładany przez najbliższy hop), nie pierwszy. WAŻNE: samo włączenie tej flagi bez
+    odcięcia bezpośredniego dostępu do portu 8000 (firewall / bind tylko dla hosta NPM)
+    NIE chroni — atakujący łączący się z pominięciem proxy nadal w pełni kontroluje XFF,
+    włącznie z jego ostatnim wpisem.
+  - **Globalny sufit zadań niezależny od `sid` (`JobStore.count_active_total`,
+    `settings.max_jobs_total`, domyślnie 60):** limit `max_jobs_per_session` sam w sobie nie
+    chroni przed nadużyciem, bo `sid` to zwykłe cookie — klient, który go nie odsyła (nie
+    przeglądarka, tylko np. skrypt), dostaje przy KAŻDYM żądaniu nowy sid w odpowiedzi i
+    per-sesyjny limit nigdy się nie wypełnia. Sprawdzenie w `api.create_job` DODATKOWO do
+    `count_active` (per-sid) — niezależny bezpiecznik na dysk/CPU całego serwera.
+  - **Nagłówki bezpieczeństwa (`app.py`, middleware `_security_headers`):**
+    `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
+    ciasny `Content-Security-Policy` (`default-src 'self'`, brak inline script/style — frontend
+    już tak działa, `index.html`/`app.js` nie mają inline JS/CSS). Obrona w głąb — aplikacja
+    nie osadza treści zewnętrznej ani nie musi być osadzana w cudzych ramkach.
+  - **Kontener non-root (`web/Dockerfile`):** obraz tworzył proces jako root (domyślne dla
+    `python:3.12-slim` bez `USER`). Skoro FFmpeg parsuje treść uploadowaną przez anonimowych
+    userów z internetu, luka w FFmpeg (albo w zależnościach Pythona) nie powinna dawać roota
+    w kontenerze. Użytkownik `piroweb` (uid 10001) tworzony PRZED `COPY`/`chown`; `/data`
+    tworzone i `chown`-owane w obrazie PRZED przejściem na non-root, żeby Docker skopiował te
+    uprawnienia do nazwanego wolumenu (`piro-data:/data`) przy jego pierwszym montowaniu.
+  - **NIEZAŁATWIONE świadomie (do rozważenia osobno, poza zakresem tej zmiany):** brak tokenu
+    anty-CSRF (obrona dziś to wyłącznie `SameSite=Lax` na cookie `piro_sid`); brak skanowania
+    antywirusowego uploadów; port 8000 kontenera nadal wystawiony bezpośrednio w
+    `docker-compose.yml` — zalecane odcięcie firewallem do samego hosta NPM, dopiero wtedy
+    ma sens włączanie `PIRO_WEB_TRUST_PROXY_HEADERS`.
 
 ## Uwagi / pułapki
 

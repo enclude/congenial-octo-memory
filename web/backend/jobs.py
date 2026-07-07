@@ -163,3 +163,12 @@ class JobStore:
         with self._lock:
             return sum(1 for j in self._jobs.values()
                        if j.sid == sid and j.active)
+
+    def count_active_total(self) -> int:
+        """Aktywne zadania NIEZALEŻNIE od sid — `max_jobs_per_session` samo w sobie
+        nie chroni przed nadużyciem, bo sid jest tylko cookie: klient, który po
+        prostu je odrzuca (nie przeglądarka, np. skrypt), dostaje przy każdym
+        żądaniu "świeżą" sesję i limit per-sid nigdy się nie wypełnia. Twardy
+        globalny sufit jest niezależnym bezpiecznikiem na dysk/CPU całego serwera."""
+        with self._lock:
+            return sum(1 for j in self._jobs.values() if j.active)

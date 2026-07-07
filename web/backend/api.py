@@ -80,6 +80,12 @@ async def create_job(request: Request, sid: str = Depends(ensure_sid)) -> dict:
             status_code=429,
             detail=f"Limit {settings.max_jobs_per_session} aktywnych zadań — "
                    "usuń poprzednie lub poczekaj na ich wygaśnięcie.")
+    # Globalny sufit NIEZALEŻNY od sid — per-sesja limit powyżej nie chroni przed
+    # klientem, który po prostu nie odsyła cookie (patrz JobStore.count_active_total).
+    if store.count_active_total() >= settings.max_jobs_total:
+        raise HTTPException(
+            status_code=429,
+            detail="Serwer jest chwilowo przeciążony — spróbuj ponownie za chwilę.")
 
     filename = request.headers.get("x-filename") or "video.mp4"
     ext = Path(filename).suffix.lower() or ".mp4"
