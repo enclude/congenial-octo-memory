@@ -1,0 +1,37 @@
+# Piro Overlay Web — uruchomienie:  docker compose -f web/docker-compose.yml up -d --build
+#
+# RUCH Z INTERNETU: aplikacja NIE terminuje SSL — stoi za nginx proxy manager
+# (NPM) na OSOBNYM hoście. W konfiguracji proxy hosta w NPM ustaw:
+#   * Scheme: http, Forward Port: 8000 (ten host)
+#   * "Websockets Support" — niewymagane (SSE to zwykły HTTP)
+#   * zakładka Advanced — WYMAGANE dla uploadu i SSE:
+#       client_max_body_size 2100m;          # >= PIRO_WEB_MAX_UPLOAD_MB
+#       proxy_buffering off;                 # SSE (/api/jobs/*/events) musi płynąć
+#       proxy_read_timeout 3600s;            # długi render nie zrywa SSE
+#       proxy_request_buffering off;         # upload strumieniem, nie do bufora
+#   * NPM wysyła X-Forwarded-For domyślnie — rate limiting z niego korzysta.
+
+services:
+  piro-overlay-web:
+    build:
+      context: ..
+      dockerfile: web/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - piro-data:/data     # wideo po kilka GB — named volume, NIE tmpfs
+    environment:
+      PIRO_WEB_MAX_UPLOAD_MB: "2048"
+      PIRO_WEB_MAX_JOBS_PER_SESSION: "3"
+      PIRO_WEB_RENDER_WORKERS: "2"    # x264 i tak saturuje CPU; 2 tylko na >=8 vCPU
+      PIRO_WEB_ANALYZE_WORKERS: "2"
+      PIRO_WEB_JOB_TTL_MIN: "120"
+      PIRO_WEB_MAX_JOB_AGE_MIN: "720"
+      PIRO_WEB_ENCODER: "cpu"         # VPS bez GPU/NVENC
+      PIRO_WEB_RATE_PER_MIN: "120"
+      PIRO_WEB_RENDERS_PER_HOUR: "10"
+    mem_limit: 12g
+    restart: unless-stopped
+
+volumes:
+  piro-data:

@@ -1,0 +1,8 @@
+# Zależności obrazu Docker backendu WWW — domena BEZ PySide6 (Qt tylko w .exe).
+# Jedyne źródło prawdy dla kontenera; dev lokalny: pip install -e .[web]
+Pillow>=10.0
+numpy>=1.24
+requests>=2.31
+imageio-ffmpeg>=0.4.9
+fastapi>=0.110
+uvicorn[standard]>=0.29

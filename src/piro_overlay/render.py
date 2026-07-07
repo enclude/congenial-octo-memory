@@ -808,6 +808,12 @@ def _short_err(exc: Exception) -> str:
 _TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
 # Z `-progress`: `out_time_ms=` (mikrosekundy mimo nazwy) — pewniejsze niż „time=".
 _OUT_TIME_MS_RE = re.compile(r"out_time_(?:ms|us)=(\d+)")
+# Wiersze bloków `-progress pipe:2` (co ~0.5 s po ~12 linii). NIE trafiają do ogona
+# błędu — zalewały go tak, że komunikat „Błąd renderu" pokazywał sam postęp,
+# a faktyczny błąd FFmpeg (albo jego BRAK — proces ubity z zewnątrz) ginął.
+_PROGRESS_LINE_RE = re.compile(
+    r"^(?:frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time(?:_us|_ms)?"
+    r"|dup_frames|drop_frames|speed|progress)=")
 
 
 def _run_with_progress(cmd: list[str], duration: float, progress_cb: ProgressCb | None,
@@ -824,6 +830,7 @@ def _run_with_progress(cmd: list[str], duration: float, progress_cb: ProgressCb 
     if on_process:
         on_process(proc)   # pozwól workerowi ubić proces przy „Zatrzymaj"
     tail: list[str] = []
+    last_out_time = ""   # ostatnia pozycja `out_time=` — kontekst przy błędzie
     assert proc.stderr is not None
     try:
         for line in proc.stderr:
@@ -832,20 +839,24 @@ def _run_with_progress(cmd: list[str], duration: float, progress_cb: ProgressCb 
                 proc.wait()
                 _log_render("CANCELLED")
                 raise RenderCancelled()
+            if _PROGRESS_LINE_RE.match(line):
+                if line.startswith("out_time="):
+                    last_out_time = line.strip()
+                if progress_cb and duration > 0:
+                    # `-progress` daje wiersze `out_time_ms=` / `out_time=`; łapiemy oba.
+                    mms = _OUT_TIME_MS_RE.search(line)
+                    if mms:
+                        progress_cb(min(int(mms.group(1)) / 1e6 / duration, 1.0))
+                continue
             tail.append(line)
             if len(tail) > 80:
                 tail.pop(0)
             if progress_cb and duration > 0:
-                # `-progress` daje wiersze `out_time_ms=` / `out_time=`; łapiemy oba.
-                mms = _OUT_TIME_MS_RE.search(line)
-                if mms:
-                    progress_cb(min(int(mms.group(1)) / 1e6 / duration, 1.0))
-                else:
-                    m = _TIME_RE.search(line)
-                    if m:
-                        h, mm, s = m.groups()
-                        t = int(h) * 3600 + int(mm) * 60 + float(s)
-                        progress_cb(min(t / duration, 1.0))
+                m = _TIME_RE.search(line)
+                if m:
+                    h, mm, s = m.groups()
+                    t = int(h) * 3600 + int(mm) * 60 + float(s)
+                    progress_cb(min(t / duration, 1.0))
     finally:
         if on_process:
             on_process(None)
@@ -854,8 +865,21 @@ def _run_with_progress(cmd: list[str], duration: float, progress_cb: ProgressCb 
         _log_render("CANCELLED")
         raise RenderCancelled()
     if proc.returncode != 0:
-        _log_render(f"FAIL rc={proc.returncode}:\n" + "".join(tail)[-3000:])
-        raise RuntimeError("FFmpeg zakończył się błędem:\n" + "".join(tail))
+        detail = "".join(tail).strip()
+        if not detail:
+            # stderr urwał się w pół postępu — FFmpeg nie zdążył nic wypisać,
+            # czyli został ubity z zewnątrz (typowo: system przy braku pamięci).
+            detail = ("FFmpeg nie wypisał komunikatu błędu — proces został "
+                      "przerwany z zewnątrz (np. zabity przez system przy "
+                      "braku pamięci / limit RAM kontenera).")
+        if proc.returncode < 0:
+            detail += (f"\n(Proces ubity sygnałem {-proc.returncode} — kod ujemny "
+                       "oznacza przerwanie z zewnątrz, np. OOM killer przy braku RAM.)")
+        where = f" przy {last_out_time}" if last_out_time else ""
+        _log_render(f"FAIL rc={proc.returncode}{where}:\n" + detail[-3000:])
+        raise RuntimeError(
+            f"FFmpeg zakończył się błędem (kod {proc.returncode}{where}):\n"
+            + detail)
     _log_render("OK")
     if progress_cb:
         progress_cb(1.0)

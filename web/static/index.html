@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Piro Overlay — nakładka na wideo ze strzelania</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="scanlines" aria-hidden="true"></div>
+
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand-mark">▶</span>
+      <h1>PIRO<span class="thin">OVERLAY</span></h1>
+    </div>
+    <p class="tagline">split · czas · hit factor — prosto na Twoim wideo</p>
+  </header>
+
+  <main class="wizard">
+
+    <!-- ── 1 · WIDEO ─────────────────────────────────────────── -->
+    <section class="step" id="step-upload" data-state="active">
+      <div class="step-rail"><span class="step-no">01</span><span class="step-tick">✓</span></div>
+      <div class="step-body">
+        <h2>Wgraj wideo</h2>
+        <div class="dropzone" id="dropzone" tabindex="0" role="button"
+             aria-label="Wybierz lub upuść plik wideo">
+          <input type="file" id="file-input" accept=".mp4,.mov,.mkv,.avi" hidden>
+          <p class="dz-big">przeciągnij plik tutaj</p>
+          <p class="dz-small">albo kliknij — MP4 · MOV · MKV · AVI</p>
+        </div>
+        <div class="upload-progress" id="upload-progress" hidden>
+          <div class="bar"><div class="bar-fill" id="upload-bar"></div></div>
+          <span class="bar-label mono" id="upload-pct">0%</span>
+        </div>
+        <p class="file-info mono" id="file-info" hidden></p>
+      </div>
+    </section>
+
+    <!-- ── 2 · OŚ CZASU ──────────────────────────────────────── -->
+    <section class="step" id="step-session" data-state="locked">
+      <div class="step-rail"><span class="step-no">02</span><span class="step-tick">✓</span></div>
+      <div class="step-body">
+        <h2>Oś czasu strzałów</h2>
+        <label class="check"><input type="checkbox" id="no-overlay-check">
+          Tylko przytnij — wykryj T0 i przycięcie, bez nakładki (oś czasu niepotrzebna)</label>
+        <div id="session-fields">
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-tab="id" role="tab">ID z kalkulatora</button>
+            <button class="tab" data-tab="timeline" role="tab">Wklej oś czasu</button>
+          </div>
+          <div class="tab-pane" id="pane-id">
+            <div class="row">
+              <input type="number" id="session-id" min="1" placeholder="np. 128" class="mono">
+              <button class="btn" id="fetch-id">Pobierz</button>
+            </div>
+          </div>
+          <div class="tab-pane" id="pane-timeline" hidden>
+            <textarea id="timeline-text" rows="3" class="mono"
+              placeholder="1: 2.81s | 2: 4.63s (+1.82s) | 3: 6.02s (+1.39s)"></textarea>
+            <button class="btn" id="parse-timeline">Zastosuj</button>
+          </div>
+          <div class="shots" id="shots" hidden>
+            <p class="shots-meta" id="shots-meta"></p>
+            <ol class="shot-list mono" id="shot-list"></ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 3 · DETEKCJA ─────────────────────────────────────── -->
+    <section class="step" id="step-analyze" data-state="locked">
+      <div class="step-rail"><span class="step-no">03</span><span class="step-tick">✓</span></div>
+      <div class="step-body">
+        <h2>Sygnał startu</h2>
+        <p class="hint">Szukamy bzyczka shot-timera w ścieżce audio — to wyznacza T0
+           i automatyczne przycięcie.</p>
+        <button class="btn btn-accent" id="analyze-btn">⏱ Wykryj T0 i przytnij</button>
+        <p class="analyze-result mono" id="analyze-result" hidden></p>
+      </div>
+    </section>
+
+    <!-- ── 4 · PODGLĄD ──────────────────────────────────────── -->
+    <section class="step" id="step-preview" data-state="locked">
+      <div class="step-rail"><span class="step-no">04</span><span class="step-tick">✓</span></div>
+      <div class="step-body">
+        <h2>Podgląd i korekta</h2>
+        <div class="preview-frame">
+          <img id="preview-img" alt="Podgląd klatki z nakładką">
+          <div class="preview-loading" id="preview-loading" hidden>…</div>
+        </div>
+        <label class="slider-row">
+          <span class="mono" id="scrub-label">t = 0.0 s</span>
+          <input type="range" id="scrub" min="0" max="10" step="0.1" value="0">
+        </label>
+        <div class="grid-2">
+          <label>T0 (s) <input type="number" id="t0-input" step="0.01" class="mono"></label>
+          <label id="lang-field">Język
+            <select id="lang-select"><option value="pl">polski</option><option value="en">English</option></select>
+          </label>
+          <label>Przytnij od (s) <input type="number" id="trim-start" step="0.1" min="0" class="mono"></label>
+          <label id="trim-end-field">Przytnij do (s) <input type="number" id="trim-end" step="0.1" min="0" class="mono"></label>
+          <label id="duration-field" hidden>Długość od T0 (s) <input type="number" id="duration-input" step="0.1" min="0" class="mono"></label>
+        </div>
+        <label class="check" id="clock-field"><input type="checkbox" id="clock-check"> płynący czas od T0 (T+x.x s)</label>
+      </div>
+    </section>
+
+    <!-- ── 5 · RENDER ───────────────────────────────────────── -->
+    <section class="step" id="step-render" data-state="locked">
+      <div class="step-rail"><span class="step-no">05</span><span class="step-tick">✓</span></div>
+      <div class="step-body">
+        <h2>Render</h2>
+        <div class="row">
+          <select id="format-select">
+            <option value="mp4">MP4 (H.264)</option>
+            <option value="webm">WebM (VP9)</option>
+            <option value="gif">GIF</option>
+          </select>
+          <button class="btn btn-accent" id="render-btn">● Renderuj</button>
+          <button class="btn btn-danger" id="cancel-btn" hidden>■ Zatrzymaj</button>
+        </div>
+        <p class="hint" id="no-overlay-hint" hidden>Tryb „tylko przytnij” renderuje wyłącznie MP4.</p>
+        <div class="render-progress" id="render-progress" hidden>
+          <div class="bar"><div class="bar-fill" id="render-bar"></div></div>
+          <span class="bar-label mono" id="render-pct">0%</span>
+        </div>
+        <p class="render-status mono" id="render-status"></p>
+        <a class="btn btn-download" id="download-btn" hidden download>⬇ Pobierz wynik</a>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="foot">
+    <button class="link-btn" id="reset-btn" hidden>× zacznij od nowa</button>
+    <p class="mono ver">Piro Overlay Web</p>
+  </footer>
+
+  <div class="toast mono" id="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

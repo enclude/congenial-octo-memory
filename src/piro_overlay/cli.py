@@ -20,12 +20,11 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, api, audio_sync, ffmpeg, render
+from . import __version__, ffmpeg, pipeline, render
 from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session
-from .parser import parse_timeline
 
-# Domyślne okno czasu (s) po T0, gdy auto-przycięcie nie ma osi strzałów.
-_DEFAULT_AUTO_WINDOW = 75.0
+# Alias dla zgodności (testy/importy); źródło prawdy w pipeline.
+_DEFAULT_AUTO_WINDOW = pipeline.DEFAULT_AUTO_WINDOW
 
 
 def _default_output(video: str) -> str:
@@ -35,17 +34,7 @@ def _default_output(video: str) -> str:
 
 def _build_session(args: argparse.Namespace) -> Session | None:
     """Sesja z osi czasu (tekst lub API). None gdy nie podano źródła."""
-    if args.id is not None:
-        return api.fetch_session(args.id)
-    if args.timeline:
-        return Session(shots=parse_timeline(args.timeline))
-    return None
-
-
-def _audio_src(video: str) -> str:
-    """Plik do analizy audio — proxy LRF (DJI) jeśli jest obok, inaczej oryginał."""
-    lrf = ffmpeg.find_lrf(video)
-    return str(lrf) if lrf else video
+    return pipeline.build_session(args.timeline, args.id)
 
 
 def _resolve_t0(args: argparse.Namespace, session: Session | None,
@@ -54,21 +43,19 @@ def _resolve_t0(args: argparse.Namespace, session: Session | None,
     if args.t0 is not None:
         anchor = args.t0
     elif args.auto:
-        detected = audio_sync.detect_dji_start(_audio_src(args.video))
+        detected = pipeline.detect_start_signal(args.video)
         if detected is None:
             raise SystemExit("Nie wykryto sygnału startu (bzyczka) — podaj --t0 ręcznie.")
-        anchor = detected
-        print(f"Wykryty sygnał startu (T0): {anchor:.3f}s")
-        return anchor  # bzyczek JEST sygnałem startu → bez przeliczania względem strzału
+        print(f"Wykryty sygnał startu (T0): {detected:.3f}s")
+        return detected  # bzyczek JEST sygnałem startu → bez przeliczania względem strzału
     else:
-        detected = audio_sync.detect_start(
-            _audio_src(args.video), start=args.trim_start, end=args.trim_end)
+        detected = pipeline.detect_anchor(
+            args.video, start=args.trim_start, end=args.trim_end)
         if detected is None:
             raise SystemExit("Nie wykryto sygnału w audio — podaj --t0 ręcznie.")
         anchor = detected
         print(f"Wykryty punkt kotwicy: {anchor:.3f}s ({mode.value})")
-    first = session.shots[0].czas if (session and session.shots) else 0.0
-    return audio_sync.resolve_t0(anchor, mode, first)
+    return pipeline.compute_t0(anchor, mode, session)
 
 
 def _compute_trim(args: argparse.Namespace, t0: float | None,
@@ -76,23 +63,19 @@ def _compute_trim(args: argparse.Namespace, t0: float | None,
                   duration: float | None) -> tuple[float | None, float | None]:
     """Zwraca (trim_start, trim_end). Reguły auto: 5 s przed T0 →
     okno stałe (--auto-window) albo ostatni strzał + margines (--tail)."""
-    if not (args.auto or args.auto_trim or args.auto_window is not None):
-        return args.trim_start, args.trim_end
-    if t0 is None:
-        raise SystemExit("Auto-przycięcie wymaga T0 — użyj --auto lub --t0.")
-    start = max(0.0, t0 - args.lead_in)
-    if args.auto_window is not None:
-        end = t0 + args.auto_window
-    elif session and session.shots:
-        _, end = render.auto_trim_window(
-            t0, session.shots[-1].czas, tail=args.tail, lead_in=args.lead_in,
-            duration=duration)
-    else:
-        end = t0 + _DEFAULT_AUTO_WINDOW
-        print(f"Brak osi strzałów — używam stałego okna {_DEFAULT_AUTO_WINDOW:.0f} s po T0.")
-    if duration is not None:
-        end = min(end, duration)
-    print(f"Auto-przycięcie: {start:.2f}s – {end:.2f}s")
+    auto = args.auto or args.auto_trim
+    try:
+        start, end = pipeline.compute_trim(
+            t0, session, duration, auto=auto, auto_window=args.auto_window,
+            lead_in=args.lead_in, tail=args.tail,
+            trim_start=args.trim_start, trim_end=args.trim_end)
+    except pipeline.PipelineError as exc:
+        raise SystemExit(str(exc)) from None
+    if auto or args.auto_window is not None:
+        if args.auto_window is None and not (session and session.shots):
+            print(f"Brak osi strzałów — używam stałego okna "
+                  f"{_DEFAULT_AUTO_WINDOW:.0f} s po T0.")
+        print(f"Auto-przycięcie: {start:.2f}s – {end:.2f}s")
     return start, end
 
 

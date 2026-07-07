@@ -20,6 +20,16 @@ przyszły wariant WWW doda jedynie `web/` (backend + frontend) i zaimportuje ist
   (`START_SIGNAL` / `FIRST_SHOT`), `Lang` (`PL` / `EN`).
 - `parser.py` — `parse_timeline(text)`; format `"N: czas s (+split s)"` (split opcjonalny).
   Wspólny dla tekstu i pola `opis` z API.
+- `pipeline.py` — WSPÓLNA orkiestracja CLI+WWW (bez Qt/argparse/print): `build_session`,
+  `audio_source` (proxy LRF), `detect_start_signal` (bzyczek=T0), `detect_anchor`,
+  `compute_t0`, `compute_trim` (+`DEFAULT_AUTO_WINDOW`, `PipelineError`). Helpery w `cli.py`
+  są cienkimi wrapperami (zachowują printy i `SystemExit`); `tests/test_cli.py` pilnuje
+  równoważności. NOWĄ logikę przepływu dodawaj TU, nie w cli/gui/web.
+- `preview.py` — domenowa kompozycja podglądu klatki (Pillow): `compose_preview(frame,
+  session, t, t0, style, duration, video_h)` = panel aktywny dla t + zegar (zamrożony na
+  ostatnim strzale, jak w renderze); `scaled_style` skaluje offsety do rozdzielczości
+  podglądu (WYSIWYG). Odtwarza `gui._on_scrubber_frame_ready` — gui.py celowo NIE został
+  przepięty (świadoma duplikacja, zero ryzyka regresji .exe).
 - `api.py` — `fetch_session(id)` + `session_from_payload(payload)`. Oś czasu czytana z
   `data.opis`; metadane z `nazwa_toru`, `uczestnik`, `czasy.*`, `hit_factor`.
 - `i18n.py` — `Translator` z fallbackiem (wybrany język → EN → `[klucz]`). Etykiety dla
@@ -240,6 +250,13 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   wątków przy NATYWNYM crashu — segfault/`abort()`) + `sys/threading.excepthook` → `crash_log.txt`
   (oba w AppData). To jedyny ślad, gdy aplikacja pada twardo. UWAGA: `render.py` importuje teraz
   `config` (do ścieżki AppData) — bez cyklu (`config`→`models`).
+- **Ogon błędu bez spamu postępu + kod wyjścia (v0.23.1):** wiersze bloków `-progress pipe:2`
+  (`frame=`/`out_time=`/`speed=`/… — `_PROGRESS_LINE_RE`) NIE trafiają do `tail` błędu —
+  zalewały 80-liniowy ogon tak, że „Błąd renderu" pokazywał SAM postęp, a faktyczny błąd
+  FFmpeg (albo jego BRAK) ginął. RuntimeError niesie teraz kod wyjścia + ostatnie
+  `out_time=` („gdzie padło"); kod UJEMNY = proces ubity sygnałem (typowo OOM killer —
+  render 4K na x264 potrafi przekroczyć `mem_limit: 4g` z web/docker-compose.yml).
+  Web `workers.py` przy ucinaniu do 800 znaków zachowuje PIERWSZĄ linię (kod/pozycja).
 - **DJI = drugi strumień wideo (miniatura MJPEG) → `0:v:0`, nie `0:v` (v0.21.2):** pliki DJI
   (np. Osmo Nano) mają OPRÓCZ głównego HEVC jeszcze `Video: mjpeg ... (attached pic)` 640x480.
   `-map 0:v` (trim) i `[0:v]` (filtergraph) łapały OBA → FFmpeg próbował wepchnąć miniaturę jako
@@ -285,6 +302,43 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   MP4, weryfikuje go przez `probe` i zwraca `Path | None`. `gui._set_video` ustawia
   `self.lrf_path` i przekazuje go do `WaveformWorker` oraz `audio_sync.detect_start` —
   analiza audio chodzi na małym pliku, render zawsze na oryginalnym `video_path`.
+
+## Wersja webowa (`web/`) — v0.23.0
+
+Backend FastAPI + statyczny frontend (vanilla JS, PL) — importuje WYŁĄCZNIE domenę
+(`pipeline`, `preview`, `render`, `ffmpeg`, `api`, `models`). ZERO zmian w `gui.py`/
+`app.py`/`build_exe.spec`; PySide6 zostaje twardą zależnością pyproject (build .exe bez
+zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
+
+- **Moduły:** `web/backend/{app,settings,sessions,jobs,workers,api,ratelimit,cleanup}.py`,
+  frontend `web/static/{index.html,app.js,style.css}` (kreator 5 kroków).
+- **Przepływ:** `POST /api/jobs` (upload surowym strumieniem, nagłówek `X-Filename`,
+  licznik bajtów → 413; probe → 422 przy nie-wideo) → `/session` (ID z API lub timeline)
+  → `/analyze` (`pipeline.detect_start_signal` + `compute_trim`; brak bzyczka → `t0:null`)
+  → `/preview` (PNG: `ffmpeg.extract_frame` + `preview.compose_preview`, cache klatki per
+  job) → `/render` (202; pula wątków) → `/events` (SSE: state/progress/encoder/done/error,
+  snapshot na wejście, heartbeat 15 s) → `/download`. Anulowanie: `/cancel` = `cancel.set()`
+  + `proc.kill()` (uchwyt z `on_process` — jak w GUI).
+- **Multi-user:** cookie `piro_sid` (HttpOnly); cudzy/nieznany job → 404 (bez enumeracji);
+  katalogi `DATA_DIR/<sid>/<job_id>/` (nazwa klienta NIGDY w ścieżce — `source.<ext>`);
+  limity env `PIRO_WEB_*` (upload MB, joby/sesję, rate/min, rendery/h — patrz
+  `web/backend/settings.py`); token bucket in-memory; sprzątanie TTL co 10 min +
+  osierocone katalogi przy starcie.
+- **PUŁAPKA — magazyn in-memory:** uvicorn MUSI mieć `--workers 1` (wpisane w Dockerfile);
+  równoległość tylko przez pule wątków (`RENDER_WORKERS`, default 1 — x264 saturuje CPU).
+- **PUŁAPKA — FFmpeg w Dockerze:** `_resolve_ffmpeg` bierze systemową binarkę tylko z NVENC,
+  więc obraz ustawia `PIRO_FFMPEG=/usr/bin/ffmpeg` JAWNIE (apt ffmpeg = drawtext dla zegara);
+  encoder domyślnie `cpu`. `XDG_CONFIG_HOME=/data/config` przekierowuje logi render/config.
+- **Deploy:** `docker compose -f web/docker-compose.yml up -d --build`; SSL terminuje
+  nginx proxy manager na OSOBNYM hoście — w NPM (Advanced) wymagane:
+  `client_max_body_size >= limit uploadu`, `proxy_buffering off` (SSE),
+  `proxy_request_buffering off` (upload), `proxy_read_timeout 3600s`.
+- **Testy web:** `tests/test_web_api.py`, `tests/test_web_limits.py` —
+  `pytest.importorskip("fastapi")` (środowisko builda .exe bez extras zostaje zielone);
+  fixture `tiny_video` (`tests/conftest.py`) generuje realny MP4 przez lavfi
+  (testsrc + ton 2700 Hz w 0.5–0.9 s = sztuczny bzyczek dla testu `analyze`).
+- **Dev lokalny:** `pip install -e .[web]`, potem
+  `PYTHONPATH=src uvicorn web.backend.app:create_app --factory --reload`.
 
 ## Uwagi / pułapki
 

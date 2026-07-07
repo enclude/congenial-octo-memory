@@ -105,3 +105,41 @@ def test_auto_trim_clamps_to_duration():
 def test_auto_trim_start_not_negative():
     start, _ = auto_trim_window(3.0, 10.0)   # 3.0 - 5.0 < 0
     assert start == 0.0            # nie schodzi poniżej zera
+
+
+def test_progress_lines_filtered_from_error_tail():
+    # Wiersze bloków `-progress pipe:2` NIE mogą trafiać do ogona błędu — zalewały
+    # komunikat „Błąd renderu" tak, że faktyczny błąd FFmpeg ginął (v0.23.1).
+    progress = [
+        "frame=252\n", "fps=1.26\n", "stream_0_0_q=31.0\n",
+        "bitrate=22229.9kbits/s\n", "total_size=13893680\n",
+        "out_time_us=5000000\n", "out_time_ms=5000000\n",
+        "out_time=00:00:05.000000\n", "dup_frames=0\n", "drop_frames=0\n",
+        "speed=0.0251x\n", "progress=continue\n",
+        "frame=    0 fps=0.0 q=20.0 size=       0KiB time=N/A speed=N/A\n",
+    ]
+    for line in progress:
+        assert render._PROGRESS_LINE_RE.match(line), line
+    errors = [
+        "[out#0/mp4 @ 0x1] Could not write header: Invalid argument\n",
+        "Conversion failed!\n",
+        "Input #0, mov,mp4 from 'in.mp4':\n",
+        "  Stream #0:0[0x1](und): Video: hevc ...\n",
+    ]
+    for line in errors:
+        assert not render._PROGRESS_LINE_RE.match(line), line
+
+
+def test_run_with_progress_error_has_exit_code_and_real_message(tmp_path):
+    # FFmpeg pada (brak pliku wejściowego) → RuntimeError musi nieść kod wyjścia
+    # i faktyczny komunikat FFmpeg, a nie spam postępu.
+    import imageio_ffmpeg
+    import pytest
+    exe = imageio_ffmpeg.get_ffmpeg_exe()
+    cmd = [exe, "-i", str(tmp_path / "missing.mp4"), str(tmp_path / "out.mp4")]
+    with pytest.raises(RuntimeError) as ei:
+        render._run_with_progress(cmd, 1.0, None)
+    msg = str(ei.value)
+    assert "kod " in msg                    # kod wyjścia w nagłówku
+    assert "missing.mp4" in msg             # prawdziwy błąd FFmpeg zachowany
+    assert "progress=continue" not in msg   # bez spamu postępu
