@@ -253,7 +253,11 @@ $("scrub").addEventListener("input", () => {
   schedulePreview();
 });
 ["t0-input", "lang-select", "clock-check"].forEach((id) =>
-  $(id).addEventListener("input", () => { refreshRenderReady(); schedulePreview(); }));
+  $(id).addEventListener("input", () => {
+    if (id === "t0-input" && job.noOverlay) syncTrimEndFromDuration();
+    refreshRenderReady();
+    schedulePreview();
+  }));
 ["trim-start", "trim-end"].forEach((id) =>
   $(id).addEventListener("input", refreshRenderReady));
 
@@ -261,17 +265,19 @@ $("scrub").addEventListener("input", () => {
 
 function refreshRenderReady() {
   const hasT0 = $("t0-input").value !== "";
-  if (job.hasSession && hasT0) unlock("step-render");
+  const sessionOk = job.noOverlay || job.hasSession;
+  if (sessionOk && hasT0) unlock("step-render");
 }
 
 $("render-btn").addEventListener("click", async () => {
   const body = {
-    format: $("format-select").value,
+    format: job.noOverlay ? "mp4" : $("format-select").value,
     lang: $("lang-select").value,
     clock: $("clock-check").checked,
     t0: Number($("t0-input").value),
     trim_start: $("trim-start").value === "" ? null : Number($("trim-start").value),
     trim_end: $("trim-end").value === "" ? null : Number($("trim-end").value),
+    no_overlay: job.noOverlay,
   };
   const resp = await fetch(`/api/jobs/${job.id}/render`, {
     method: "POST",

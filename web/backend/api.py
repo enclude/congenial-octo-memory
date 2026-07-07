@@ -244,6 +244,7 @@ class RenderBody(BaseModel):
     t0: float | None = None
     trim_start: float | None = None
     trim_end: float | None = None
+    no_overlay: bool = False
 
 
 @router.post("/jobs/{job_id}/render", status_code=202,
@@ -253,11 +254,15 @@ async def start_render(request: Request, job_id: str, body: RenderBody,
     job = _get_job(request, job_id, sid)
     if job.state in (JobState.QUEUED, JobState.RENDERING):
         raise HTTPException(status_code=409, detail="Render już trwa.")
-    if job.session is None or not job.session.shots:
+    if not body.no_overlay and (job.session is None or not job.session.shots):
         raise HTTPException(status_code=422,
-                            detail="Najpierw ustaw oś czasu strzałów (ID lub tekst).")
+                            detail="Najpierw ustaw oś czasu strzałów (ID lub tekst) "
+                                   "albo włącz „tylko przytnij”.")
+    if body.no_overlay and body.format != "mp4":
+        raise HTTPException(status_code=422,
+                            detail="Tryb „tylko przytnij” renderuje wyłącznie MP4.")
     t0 = body.t0 if body.t0 is not None else job.t0
-    if t0 is None:
+    if not body.no_overlay and t0 is None:
         raise HTTPException(status_code=422,
                             detail="Brak T0 — użyj auto-detekcji lub podaj ręcznie.")
     try:
@@ -285,7 +290,7 @@ async def start_render(request: Request, job_id: str, body: RenderBody,
     style = OverlayStyle(lang=lang, show_running_clock=body.clock)
     request.app.state.render_pool.submit(
         workers.run_render, job, _settings(request), request.app.state.loop,
-        body.format, style)
+        body.format, style, body.no_overlay)
     return job.to_dict()
 
 

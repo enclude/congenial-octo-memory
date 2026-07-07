@@ -174,6 +174,26 @@ def test_render_requires_session_and_t0(client: TestClient, tiny_video: Path):
                        json={}).status_code == 422           # brak T0
 
 
+def test_full_render_cycle_no_overlay(client: TestClient, tiny_video: Path):
+    # „Tylko przytnij”: bez osi czasu strzałów i bez T0 w body — samo przycięcie.
+    job_id = _upload(client, tiny_video).json()["id"]
+    r = client.post(f"/api/jobs/{job_id}/render",
+                    json={"no_overlay": True, "trim_start": 0.0, "trim_end": 2.0})
+    assert r.status_code == 202, r.text
+    data = _wait_state(client, job_id, {"done", "failed"})
+    assert data["state"] == "done", data["error"]
+    dl = client.get(f"/api/jobs/{job_id}/download")
+    assert dl.status_code == 200
+    assert len(dl.content) > 1000
+
+
+def test_render_no_overlay_rejects_non_mp4(client: TestClient, tiny_video: Path):
+    job_id = _upload(client, tiny_video).json()["id"]
+    r = client.post(f"/api/jobs/{job_id}/render",
+                    json={"no_overlay": True, "format": "webm"})
+    assert r.status_code == 422
+
+
 def test_sse_snapshot_first(tmp_path: Path, tiny_video: Path,
                             monkeypatch: pytest.MonkeyPatch):
     # Zadanie w stanie terminalnym → strumień SSE kończy się po snapshocie.

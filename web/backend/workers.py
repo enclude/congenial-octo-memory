@@ -21,7 +21,7 @@ _PROGRESS_INTERVAL_S = 0.25  # throttling zdarzeń SSE `progress` (~4/s)
 
 
 def run_render(job: Job, settings: Settings, loop: asyncio.AbstractEventLoop,
-               fmt: str, style: OverlayStyle) -> None:
+               fmt: str, style: OverlayStyle, no_overlay: bool = False) -> None:
     """Body wątku renderu — wołane przez ThreadPoolExecutor.submit."""
 
     def publish(event: str, data: dict) -> None:
@@ -58,7 +58,10 @@ def run_render(job: Job, settings: Settings, loop: asyncio.AbstractEventLoop,
                   trim_end=job.trim_end, cancel_check=job.cancel.is_set,
                   on_process=on_process)
     try:
-        if fmt == "mp4":
+        if no_overlay:
+            render.trim_video(job.video_path, out, encoder=settings.encoder,
+                              on_encoder=on_encoder, **common)
+        elif fmt == "mp4":
             render.render_video(job.video_path, job.session, job.t0, style,
                                 AnchorMode.START_SIGNAL, out,
                                 encoder=settings.encoder, on_encoder=on_encoder,
