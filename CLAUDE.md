@@ -375,6 +375,23 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   Przycisk „Pobierz gotowe wideo" (dawniej „Pobierz wynik") jest jawnie chowany też w
   handlerze `error` SSE — błąd renderu nie może zostawić klikalnego linku do pliku, którego
   nie ma (poprzedni render mógł go zostawić widocznym).
+- **Pamięć plik → ID w SQLite (v0.25.0):** `web/backend/filedb.py` — tabela
+  `file_ids(filename PRIMARY KEY, result_id, updated_at)`, jedna baza per `sid`
+  (`DATA_DIR/<sid>/file_ids.db`, jak katalogi zadań — celowo NIE globalna, żeby nazwa
+  pliku jednego użytkownika nie podsuwała ID innemu na publicznym hostingu). Zapis
+  (`filedb.remember`) dopiero w `start_render`, i TYLKO gdy `job.session_source_id` jest
+  ustawione — ustawia je `set_session` przy `source="id"` (przy `"timeline"` czyści na
+  `None`), więc same przymiarki (fetch bez kliknięcia „Renderuj") nic nie zapisują.
+  `INSERT OR REPLACE` po `filename` (PRIMARY KEY) = trzyma tylko NAJNOWSZE ID dla danej
+  nazwy pliku (pomyłka poprawiona kolejnym renderem nadpisuje, nie duplikuje). Odczyt
+  (`filedb.lookup`) w `create_job` — odpowiedź uploadu niesie `suggested_id` (`None` gdy
+  brak dopasowania); `app.js` w handlerze uploadu auto-wywołuje `setSession({source:"id",
+  id: suggested_id})` i pokazuje toast, żeby użytkownik mógł to łatwo poprawić (wpisać
+  inne ID i kliknąć „Pobierz" ponownie). Zapis owinięty w `try/except Exception: pass` —
+  błąd SQLite (np. brak miejsca na dysku) NIE może zablokować renderu, to funkcja
+  pomocnicza, nie krytyczna ścieżka. WAŻNE: dopasowanie po nazwie pliku (nie hashu/treści)
+  — inny plik o tej samej nazwie dostanie tę samą podpowiedź (akceptowalne, bo tylko
+  auto-wypełnia pole, użytkownik i tak widzi/koryguje ID przed renderem).
 
 ## Uwagi / pułapki
 

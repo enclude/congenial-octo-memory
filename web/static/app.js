@@ -105,6 +105,14 @@ function upload(file) {
     unlock("step-session");
     unlock("step-analyze");
     initPreviewControls();
+    if (data.suggested_id != null) {
+      // Ten plik (po nazwie) był już renderowany z tym ID — auto-przypisz, ale
+      // pozwól łatwo poprawić (zwykłe pola, „Pobierz” nadpisze przy zmianie ID).
+      $("session-id").value = data.suggested_id;
+      setSession({ source: "id", id: data.suggested_id }).then((ok) => {
+        if (ok) toast(`Auto-przypisano ID ${data.suggested_id} — użyte ostatnio dla tego pliku.`);
+      });
+    }
   });
   xhr.addEventListener("error", () => toast("Błąd sieci przy uploadzie."));
   xhr.open("POST", "/api/jobs");
@@ -166,7 +174,7 @@ async function setSession(body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!resp.ok) { toast(await apiError(resp)); return; }
+  if (!resp.ok) { toast(await apiError(resp)); return false; }
   const data = await resp.json();
   job.hasSession = true;
   const meta = data.session_meta || {};
@@ -181,6 +189,7 @@ async function setSession(body) {
   setStep("step-session", "done");
   refreshRenderReady();
   schedulePreview();
+  return true;
 }
 
 /* ── krok 3: detekcja T0 ────────────────────────────────────── */

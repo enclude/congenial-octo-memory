@@ -20,7 +20,7 @@ from piro_overlay import __version__, ffmpeg, pipeline, preview
 from piro_overlay.api import ApiError
 from piro_overlay.models import Lang, OverlayStyle
 
-from . import workers
+from . import filedb, workers
 from .jobs import Job, JobState, JobStore
 from .ratelimit import render_rate
 from .sessions import ensure_sid, require_sid
@@ -52,6 +52,11 @@ def _settings(request: Request) -> Settings:
 
 def _store(request: Request) -> JobStore:
     return request.app.state.store
+
+
+def _file_ids_db(settings: Settings, sid: str) -> Path:
+    """Baza plik→ID dla tej sesji (per-sid — jak katalogi zadań, bez wycieku między userami)."""
+    return settings.data_dir / sid / "file_ids.db"
 
 
 def _get_job(request: Request, job_id: str, sid: str) -> Job:
@@ -124,11 +129,14 @@ async def create_job(request: Request, sid: str = Depends(ensure_sid)) -> dict:
     stem = _STEM_SAFE_RE.sub("_", Path(filename).stem).strip()[:80] or "video"
     job = Job(
         id=job_id, sid=sid, dir=job_dir, video_path=dest, orig_stem=stem,
+        orig_filename=filename,
         duration=info.duration or None,
         video_size=(info.width, info.height) if info.width else None,
     )
     store.add(job)
-    return job.to_dict()
+    data = job.to_dict()
+    data["suggested_id"] = filedb.lookup(_file_ids_db(settings, sid), filename)
+    return data
 
 
 @router.get("/jobs/{job_id}")
@@ -170,6 +178,8 @@ async def set_session(request: Request, job_id: str, body: SessionBody,
                             detail="Nie rozpoznano żadnego strzału w osi czasu.")
     job.session = session
     job.preview_cache = None
+    # Zapamiętane dopiero przy renderze (start_render) — same przymiarki się nie liczą.
+    job.session_source_id = result_id
     return job.to_dict()
 
 
@@ -295,6 +305,12 @@ async def start_render(request: Request, job_id: str, body: RenderBody,
     job.output_path = None
     job.finished = None
     job.state = JobState.QUEUED
+    if job.session_source_id is not None:
+        try:
+            filedb.remember(_file_ids_db(_settings(request), sid),
+                            job.orig_filename, job.session_source_id)
+        except Exception:  # noqa: BLE001 — zapamiętanie ID nie może zablokować renderu
+            pass
     style = OverlayStyle(lang=lang, show_running_clock=body.clock)
     request.app.state.render_pool.submit(
         workers.run_render, job, _settings(request), request.app.state.loop,

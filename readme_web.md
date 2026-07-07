@@ -100,13 +100,19 @@ nie ma jeszcze cookie sesji.
 - **Sprzątanie**: pętla co 10 min usuwa zakończone zadania po TTL, przeterminowane
   aktywne oraz osierocone katalogi (np. po restarcie kontenera).
 - **Anulowanie**: „Zatrzymaj" ubija proces FFmpeg natychmiast i sprząta niedokończony plik.
+- **Pamięć plik → ID (SQLite, per-sid)**: gdy klikniesz „Renderuj" z osią czasu ustawioną
+  po ID z kalkulatora, backend zapamiętuje parę (nazwa pliku, ID) w
+  `DATA_DIR/<sid>/file_ids.db`. Kolejny upload pliku o **tej samej nazwie** dostaje w
+  odpowiedzi `suggested_id` — frontend auto-przypisuje je i dociąga oś czasu bez klikania.
+  Zapis dopiero po renderze (same przymiarki się nie liczą), a przy pomyłce kolejny render
+  z innym ID **zastępuje** poprzedni wpis (klucz = nazwa pliku, tylko najnowsze ID).
 
 ## API (skrót)
 
 | Endpoint | Działanie |
 |---|---|
 | `GET /api/version` | `{version, repo}` — stopka frontendu |
-| `POST /api/jobs` | upload (body = plik, nagłówek `X-Filename`) → JSON zadania |
+| `POST /api/jobs` | upload (body = plik, nagłówek `X-Filename`) → JSON zadania + `suggested_id` |
 | `POST /api/jobs/{id}/session` | `{source:"id"\|"timeline", id?, timeline?}` |
 | `POST /api/jobs/{id}/analyze` | detekcja T0 + auto-przycięcie (`t0:null` gdy brak bzyczka) |
 | `GET /api/jobs/{id}/preview?t=&t0=&lang=&clock=&h=` | PNG klatki z nakładką |

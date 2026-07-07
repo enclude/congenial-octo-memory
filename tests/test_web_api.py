@@ -209,6 +209,48 @@ def test_full_render_cycle_no_overlay_with_session(client: TestClient, tiny_vide
     assert data["state"] == "done", data["error"]
 
 
+def test_file_ids_suggested_after_render(client: TestClient, tiny_video: Path,
+                                         monkeypatch: pytest.MonkeyPatch):
+    # Render z ID zapamiętuje dopasowanie nazwa pliku → ID; kolejny upload TEGO SAMEGO
+    # pliku dostaje podpowiedź. Sam fetch/analyze (bez kliknięcia „Renderuj") nie zapisuje.
+    from piro_overlay.models import Session, Shot
+    from piro_overlay import pipeline as pl
+    monkeypatch.setattr(pl.api, "fetch_session",
+                        lambda rid: Session(shots=[Shot(1, 0.5)]))
+    job_id = _upload(client, tiny_video, name="repeat.mp4").json()["id"]
+    client.post(f"/api/jobs/{job_id}/session", json={"source": "id", "id": 42})
+    r = client.post(f"/api/jobs/{job_id}/render",
+                    json={"no_overlay": True, "trim_start": 0.0, "trim_end": 2.0})
+    assert r.status_code == 202, r.text
+    _wait_state(client, job_id, {"done", "failed"})
+
+    again = _upload(client, tiny_video, name="repeat.mp4")
+    assert again.json()["suggested_id"] == 42
+    # Inna nazwa pliku — brak podpowiedzi.
+    other = _upload(client, tiny_video, name="other.mp4")
+    assert other.json()["suggested_id"] is None
+
+
+def test_file_ids_keeps_only_latest(client: TestClient, tiny_video: Path,
+                                    monkeypatch: pytest.MonkeyPatch):
+    from piro_overlay.models import Session, Shot
+    from piro_overlay import pipeline as pl
+    monkeypatch.setattr(pl.api, "fetch_session",
+                        lambda rid: Session(shots=[Shot(1, 0.5)]))
+
+    def render_with_id(result_id: int) -> None:
+        job_id = _upload(client, tiny_video, name="repeat.mp4").json()["id"]
+        client.post(f"/api/jobs/{job_id}/session",
+                    json={"source": "id", "id": result_id})
+        client.post(f"/api/jobs/{job_id}/render",
+                    json={"no_overlay": True, "trim_start": 0.0, "trim_end": 2.0})
+        _wait_state(client, job_id, {"done", "failed"})
+
+    render_with_id(1)
+    render_with_id(2)  # pomyłka poprawiona drugim renderem — ma wygrać najnowsze ID
+    assert _upload(client, tiny_video, name="repeat.mp4").json()["suggested_id"] == 2
+
+
 def test_render_no_overlay_rejects_non_mp4(client: TestClient, tiny_video: Path):
     job_id = _upload(client, tiny_video).json()["id"]
     r = client.post(f"/api/jobs/{job_id}/render",

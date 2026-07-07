@@ -72,9 +72,13 @@ class Job:
     dir: Path
     video_path: Path
     orig_stem: str
+    orig_filename: str
     duration: float | None = None
     video_size: tuple[int, int] | None = None
     session: Session | None = None
+    # ID API użyte w /session (source="id") — do zapamiętania dopasowania plik→ID
+    # w filedb, dopiero po kliknięciu „Renderuj" (patrz api.start_render).
+    session_source_id: int | None = None
     t0: float | None = None
     trim_start: float | None = None
     trim_end: float | None = None
