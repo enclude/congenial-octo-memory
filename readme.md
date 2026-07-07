@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.23.0
+> **Wersja:** 0.24.0
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
 **osi czasu strzałów** nakłada na film informacyjną grafikę (numer strzału, czas od startu,
@@ -348,7 +348,9 @@ GitHub Release. Można też odpalić ręcznie z zakładki **Actions → Build �
 
 Istnieje też **wersja webowa** (Docker na VPS, publiczna): upload wideo w przeglądarce →
 oś czasu (ID lub tekst) → auto-detekcja T0 → podgląd z korektą → render → pobranie.
-Reużywa te same moduły domenowe — `.exe` i web działają równolegle, z jednego repo.
+Reużywa te same moduły domenowe — `.exe` i web działają równolegle, z jednego repo. Dostępny
+jest też przełącznik **„Tylko przytnij"** — wykrywa T0 i przycina wideo bez żadnej nakładki
+(oś czasu strzałów jest wtedy niepotrzebna).
 
 **Pełna dokumentacja: [readme_web.md](readme_web.md)** (uruchomienie, Docker,
 konfiguracja `PIRO_WEB_*`, ustawienia reverse proxy, API).

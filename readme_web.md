@@ -10,13 +10,29 @@ web niczego nie zmienia w GUI/CLI ani w buildzie PyInstaller.
 
 1. **Wgraj wideo** — przeciągnij plik (MP4/MOV/MKV/AVI), pasek postępu uploadu.
 2. **Oś czasu strzałów** — ID wyniku z kalkulatora (pobranie z API) albo wklejony tekst
-   `"1: 2.81s | 2: 4.63s (+1.82s)"`.
+   `"1: 2.81s | 2: 4.63s (+1.82s)"`. Checkbox **„Tylko przytnij"** pomija ten krok
+   całkowicie — zobacz „Tylko przytnij (bez nakładki)" niżej.
 3. **Sygnał startu** — auto-detekcja bzyczka shot-timera (T0) + automatyczne przycięcie;
    gdy bzyczka nie słychać, T0 ustawia się ręcznie w kroku 4.
 4. **Podgląd i korekta** — klatka z nakładką dokładnie taką, jaka będzie w wyniku
    (WYSIWYG); suwak czasu, korekta T0/przycięcia, język PL/EN, płynący zegar od T0.
 5. **Render i pobranie** — MP4 (H.264) / WebM (VP9) / GIF, postęp na żywo (SSE),
    przycisk „Zatrzymaj", link do pobrania.
+
+## Tylko przytnij (bez nakładki)
+
+Checkbox **„Tylko przytnij"** w kroku 2 zmienia przepływ na samo wykrycie T0 i przycięcie
+źródła — bez żadnej informacji o strzałach na obrazie, więc oś czasu strzałów jest zbędna:
+
+- Krok 2 (oś czasu) i pola język/zegar w kroku 4 się chowają — nie mają zastosowania.
+- Pole „Przytnij do (s)" zastępowane jest polem **„Długość od T0 (s)"** — wygodniej podać
+  ile sekund materiału chcesz od sygnału startu, niż liczyć absolutny koniec przycięcia.
+  Bez osi strzałów detekcja i tak nie ma punktu odniesienia „ostatni strzał + margines",
+  więc domyślne okno to **75 s po T0** (jak w CLI bez `--timeline`/`--id`), edytowalne.
+- Render wspiera wyłącznie **MP4** (przycięcie koduje audio jako AAC — niekompatybilne
+  z kontenerami WebM/GIF).
+
+Odpowiednik w CLI: `piro-overlay --video in.mp4 --auto --auto-window 75 --no-overlay`.
 
 ## Uruchomienie
 
@@ -90,7 +106,7 @@ nie ma jeszcze cookie sesji.
 | `POST /api/jobs/{id}/session` | `{source:"id"\|"timeline", id?, timeline?}` |
 | `POST /api/jobs/{id}/analyze` | detekcja T0 + auto-przycięcie (`t0:null` gdy brak bzyczka) |
 | `GET /api/jobs/{id}/preview?t=&t0=&lang=&clock=&h=` | PNG klatki z nakładką |
-| `POST /api/jobs/{id}/render` | `{format, lang, clock, t0, trim_start, trim_end}` → 202 |
+| `POST /api/jobs/{id}/render` | `{format, lang, clock, t0, trim_start, trim_end, no_overlay}` → 202 |
 | `GET /api/jobs/{id}/events` | SSE: `state` / `progress` / `encoder` / `done` / `error` |
 | `POST /api/jobs/{id}/cancel` | przerwij render |
 | `GET /api/jobs/{id}/download` | pobierz wynik |
