@@ -294,8 +294,7 @@ $("render-btn").addEventListener("click", async () => {
     body: JSON.stringify(body),
   });
   if (!resp.ok) { toast(await apiError(resp)); return; }
-  $("render-btn").hidden = true;
-  $("cancel-btn").hidden = false;
+  setRenderActive(true);
   $("download-btn").hidden = true;
   $("render-progress").hidden = false;
   setProgress(0);
@@ -305,6 +304,14 @@ $("render-btn").addEventListener("click", async () => {
 
 $("cancel-btn").addEventListener("click", () =>
   fetch(`/api/jobs/${job.id}/cancel`, { method: "POST" }));
+
+// „Zatrzymaj" aktywny (widoczny + klikalny) wyłącznie w trakcie renderu (queued/rendering) —
+// poza tym oknem czasowym jest i schowany, i disabled (podwójna blokada, jak w GUI `setEnabled`).
+function setRenderActive(active) {
+  $("render-btn").hidden = active;
+  $("cancel-btn").hidden = !active;
+  $("cancel-btn").disabled = !active;
+}
 
 function setProgress(p) {
   const pct = Math.round(p * 100);
@@ -319,8 +326,7 @@ function setStatus(text, cls) {
 }
 
 function renderFinished() {
-  $("render-btn").hidden = false;
-  $("cancel-btn").hidden = true;
+  setRenderActive(false);
   if (es) { es.close(); es = null; }
 }
 
@@ -346,12 +352,18 @@ function watchEvents() {
   });
   es.addEventListener("error", (e) => {
     if (e.data) setStatus("Błąd renderu: " + JSON.parse(e.data).message, "err");
+    $("download-btn").hidden = true;  // błąd nie zostawia gotowego pliku do pobrania
     renderFinished();
   });
   es.addEventListener("state", (e) => {
     const data = JSON.parse(e.data);
+    if (data.state === "queued" || data.state === "rendering") {
+      // Reconnect / snapshot na wejście SSE — synchronizuje przyciski z realnym stanem.
+      setRenderActive(true);
+      if (data.state === "rendering") setStatus("Renderuję…");
+      return;
+    }
     if (data.state === "cancelled") { setStatus("Przerwano.", "err"); renderFinished(); }
-    if (data.state === "rendering") setStatus("Renderuję…");
     if (data.state === "done" && data.output_ready) {
       // Snapshot po odświeżeniu strony w trakcie/po renderze.
       setProgress(1);

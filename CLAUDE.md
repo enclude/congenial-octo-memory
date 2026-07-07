@@ -366,6 +366,15 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   (`from . import __version__`). Frontend (`app.js`, ładowane na starcie strony) uzupełnia
   `#app-version`/`#repo-link` w stopce; statyczny href w `index.html` jest fallbackiem,
   gdyby fetch padł (np. offline podgląd pliku).
+- **„Zatrzymaj" aktywny tylko w trakcie renderu (v0.24.1):** `setRenderActive(active)`
+  (`app.js`) łączy w jednym miejscu `hidden`+`disabled` przycisku (podwójna blokada, jak
+  `setEnabled` w GUI) — wcześniej sam `hidden` wystarczał do zablokowania kliknięcia, ale
+  handler `state` w SSE synchronizował przyciski tylko dla `cancelled`/`done`; snapshot na
+  wejście (np. po odświeżeniu karty w trakcie renderu) dla `queued`/`rendering` NIE ustawiał
+  `render-btn`/`cancel-btn` z powrotem — teraz oba stany też wołają `setRenderActive(true)`.
+  Przycisk „Pobierz gotowe wideo" (dawniej „Pobierz wynik") jest jawnie chowany też w
+  handlerze `error` SSE — błąd renderu nie może zostawić klikalnego linku do pliku, którego
+  nie ma (poprzedni render mógł go zostawić widocznym).
 
 ## Uwagi / pułapki
 
