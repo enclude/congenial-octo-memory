@@ -392,6 +392,17 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   pomocnicza, nie krytyczna ścieżka. WAŻNE: dopasowanie po nazwie pliku (nie hashu/treści)
   — inny plik o tej samej nazwie dostanie tę samą podpowiedź (akceptowalne, bo tylko
   auto-wypełnia pole, użytkownik i tak widzi/koryguje ID przed renderem).
+- **ETA przy postępie renderu (v0.26.0):** czysto frontendowe (`app.js`) — backend nie
+  liczy/nie wysyła ETA, tylko `p` (0–1) jak dotychczas. `updateEta(p)` liczy tempo postępu
+  względem punktu odniesienia `etaBase` (czas + `p` z poprzedniej próbki), NIE od zera przy
+  każdym evencie — jedna próbka byłaby zbyt szumiąca (FFmpeg nie postępuje liniowo, zwłaszcza
+  na starcie). `resetEta()` zeruje punkt odniesienia na nowy render (`render-btn` click) i po
+  zakończeniu (`renderFinished`); `updateEta` sam resetuje punkt, gdy `p` spadnie poniżej niego
+  (reconnect SSE na starszy stan zadania — inaczej `dp` byłoby ujemne). Wymaga ≥1 s i dodatniego
+  `dp` między próbkami, inaczej nic nie wypisuje (unika dzielenia przez ~0 i wyświetlania
+  absurdalnych wartości na starcie). Snapshot SSE (`state` przy `queued`/`rendering`, np. po
+  odświeżeniu karty w trakcie renderu) teraz też woła `setProgress`/`updateEta` z `data.progress`
+  — wcześniej ten branch nie odświeżał wcale paska postępu po reconnect.
 
 ## Uwagi / pułapki
 

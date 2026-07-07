@@ -17,8 +17,8 @@ web niczego nie zmienia w GUI/CLI ani w buildzie PyInstaller.
    gdy bzyczka nie słychać, T0 ustawia się ręcznie w kroku 4.
 4. **Podgląd i korekta** — klatka z nakładką dokładnie taką, jaka będzie w wyniku
    (WYSIWYG); suwak czasu, korekta T0/przycięcia, język PL/EN, płynący zegar od T0.
-5. **Render i pobranie** — MP4 (H.264) / WebM (VP9) / GIF, postęp na żywo (SSE),
-   przycisk „Zatrzymaj", link do pobrania.
+5. **Render i pobranie** — MP4 (H.264) / WebM (VP9) / GIF, postęp na żywo (SSE, z
+   szacowanym czasem do końca — ETA), przycisk „Zatrzymaj", link do pobrania.
 
 ## Bez nakładki — tylko przycięcie
 

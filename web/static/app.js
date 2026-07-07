@@ -307,6 +307,7 @@ $("render-btn").addEventListener("click", async () => {
   $("download-btn").hidden = true;
   $("render-progress").hidden = false;
   setProgress(0);
+  resetEta();
   setStatus("W kolejce…");
   watchEvents();
 });
@@ -328,6 +329,33 @@ function setProgress(p) {
   $("render-pct").textContent = pct + "%";
 }
 
+// ETA liczone z tempa postępu od ostatniego punktu odniesienia (`etaBase`), nie od
+// zera przy każdym evencie — jedna próbka byłaby zbyt szumiąca (progres FFmpeg nie jest
+// liniowy). Punkt odniesienia resetuje się na nowy render (resetEta) i gdy postęp się
+// obniży (reconnect na starszy stan) — inaczej dp byłoby ujemne.
+let etaBase = null;
+
+function resetEta() {
+  etaBase = null;
+  $("render-eta").textContent = "";
+}
+
+function updateEta(p) {
+  const now = Date.now();
+  if (etaBase == null || p < etaBase.p) { etaBase = { t: now, p }; return; }
+  const dt = (now - etaBase.t) / 1000;
+  const dp = p - etaBase.p;
+  if (dt < 1 || dp <= 0) return; // za mało danych na sensowną estymację tempa
+  const remaining = dt * (1 - p) / dp;
+  $("render-eta").textContent = `ETA ~${fmtEta(remaining)}`;
+}
+
+function fmtEta(s) {
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
 function setStatus(text, cls) {
   const el = $("render-status");
   el.textContent = text;
@@ -336,6 +364,7 @@ function setStatus(text, cls) {
 
 function renderFinished() {
   setRenderActive(false);
+  resetEta();
   if (es) { es.close(); es = null; }
 }
 
@@ -343,7 +372,9 @@ function watchEvents() {
   if (es) es.close();
   es = new EventSource(`/api/jobs/${job.id}/events`);
   es.addEventListener("progress", (e) => {
-    setProgress(JSON.parse(e.data).p);
+    const p = JSON.parse(e.data).p;
+    setProgress(p);
+    updateEta(p);
     setStatus("Renderuję…");
   });
   es.addEventListener("encoder", (e) => {
@@ -367,8 +398,10 @@ function watchEvents() {
   es.addEventListener("state", (e) => {
     const data = JSON.parse(e.data);
     if (data.state === "queued" || data.state === "rendering") {
-      // Reconnect / snapshot na wejście SSE — synchronizuje przyciski z realnym stanem.
+      // Reconnect / snapshot na wejście SSE — synchronizuje przyciski i postęp z realnym stanem.
       setRenderActive(true);
+      setProgress(data.progress);
+      updateEta(data.progress);
       if (data.state === "rendering") setStatus("Renderuję…");
       return;
     }
