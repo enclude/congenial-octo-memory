@@ -8,6 +8,8 @@
 
 FROM python:3.12-slim
 
+LABEL org.opencontainers.image.description="Piro Overlay Web — backend FastAPI do nakładania informacji o strzałach na wideo ze strzelania (dokumentacja: readme_web.md)"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg \
     && rm -rf /var/lib/apt/lists/*
