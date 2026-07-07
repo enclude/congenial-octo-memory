@@ -47,3 +47,20 @@ def test_base_time_falls_back_to_last_shot():
     session = session_from_payload(payload)
     assert session.czas_bazowy is None
     assert session.base_time == 2.5  # fallback na czas ostatniego strzału
+
+
+def test_start_delay_extracted_from_opis():
+    # Nowy format piro-kalkulatora: "opoznienie startu Xs" przed listą strzałów.
+    payload = {"ok": True, "data": {
+        "opis": "opoznienie startu 2.1s | 1: 2.28s | 2: 2.76s (+0.48s) | "
+                "3: 3.20s (+0.44s) | 4: 3.59s (+0.39s) | 5: 4.02s (+0.43s)"}}
+    session = session_from_payload(payload)
+    assert session.start_delay == 2.1
+    assert len(session.shots) == 5
+    assert session.shots[0].czas == 2.28
+    assert session.shots[0].split is None
+
+
+def test_start_delay_none_when_absent():
+    session = session_from_payload(PAYLOAD_OK)
+    assert session.start_delay is None

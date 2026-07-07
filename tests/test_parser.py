@@ -1,6 +1,6 @@
 import pytest
 
-from piro_overlay.parser import TimelineParseError, parse_timeline
+from piro_overlay.parser import TimelineParseError, extract_start_delay, parse_timeline
 
 SAMPLE_23 = (
     "1: 2.81s | 2: 4.63s (+1.82s) | 3: 6.28s (+1.65s) | 4: 7.81s (+1.53s) | "
@@ -53,3 +53,24 @@ def test_non_contiguous_numbering_raises():
 def test_decreasing_time_raises():
     with pytest.raises(TimelineParseError):
         parse_timeline("1: 5.0s | 2: 3.0s (+1.0s)")
+
+
+def test_extract_start_delay_strips_prefix():
+    rest, delay = extract_start_delay(
+        "opoznienie startu 2.1s | 1: 2.28s | 2: 2.76s (+0.48s)")
+    assert delay == 2.1
+    assert rest == "1: 2.28s | 2: 2.76s (+0.48s)"
+    assert parse_timeline(rest)[1].split == 0.48
+
+
+def test_extract_start_delay_no_prefix_returns_none():
+    text = "1: 1.0s | 2: 2.5s (+1.5s)"
+    rest, delay = extract_start_delay(text)
+    assert delay is None
+    assert rest == text
+
+
+def test_extract_start_delay_empty_text():
+    rest, delay = extract_start_delay("")
+    assert delay is None
+    assert rest == ""

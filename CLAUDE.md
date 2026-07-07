@@ -31,7 +31,9 @@ przyszły wariant WWW doda jedynie `web/` (backend + frontend) i zaimportuje ist
   podglądu (WYSIWYG). Odtwarza `gui._on_scrubber_frame_ready` — gui.py celowo NIE został
   przepięty (świadoma duplikacja, zero ryzyka regresji .exe).
 - `api.py` — `fetch_session(id)` + `session_from_payload(payload)`. Oś czasu czytana z
-  `data.opis`; metadane z `nazwa_toru`, `uczestnik`, `czasy.*`, `hit_factor`.
+  `data.opis`; metadane z `nazwa_toru`, `uczestnik`, `czasy.*`, `hit_factor`. Opcjonalny
+  prefiks `opis` ("opoznienie startu Xs") jest odcinany `parser.extract_start_delay`
+  PRZED `parse_timeline` — patrz `Session.start_delay` w sekcji „Funkcje po MVP".
 - `i18n.py` — `Translator` z fallbackiem (wybrany język → EN → `[klucz]`). Etykiety dla
   nakładki i GUI w jednym miejscu (`_STRINGS`).
 - `audio_sync.py` — `detect_onsets` / `detect_start` (RMS + próg adaptacyjny);
@@ -321,6 +323,21 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   MP4, weryfikuje go przez `probe` i zwraca `Path | None`. `gui._set_video` ustawia
   `self.lrf_path` i przekazuje go do `WaveformWorker` oraz `audio_sync.detect_start` —
   analiza audio chodzi na małym pliku, render zawsze na oryginalnym `video_path`.
+- **`Session.start_delay` — opóźnienie startu z API (v0.29.0):** piro-kalkulator dokłada
+  teraz opcjonalny prefiks w `data.opis`, PRZED listą strzałów: `"opoznienie startu 2.1s |
+  1: 2.28s | ..."` (opóźnienie od naciśnięcia „Start" na timerze do faktycznego początku
+  sesji — patrz też CLAUDE.md `www.timer.pifpaf.fun`, `SESSION_STARTED`/`startDelay`, skąd
+  ta wartość pochodzi). `parser.extract_start_delay(text)` odcina ten prefiks REGEXEM
+  (`^opoznienie startu Xs \|?`) i zwraca `(reszta, delay|None)` — reszta idzie bez zmian do
+  `parse_timeline` (BEZ tego prefiksu `parse_timeline` rzuciłby `TimelineParseError` na
+  pierwszym tokenie — realna regresja, nie tylko kosmetyka). `api.session_from_payload`
+  woła to PRZED `parse_timeline` i ustawia wynik na `Session.start_delay` (nowe pole,
+  wliczone w `to_dict`/`from_dict` — przetrwa zapis/odczyt kolejki renderów w AppData).
+  ŚWIADOMIE trzymane, ale NIEUŻYWANE jeszcze w żadnej logice (T0/przycięcie/render) — GUI
+  (`self.session.start_delay`) i web (`job.session.start_delay`, patrz `session_meta` w
+  sekcji webowej) mają do niego dostęp, ale nic nie zmienia się w zachowaniu. Manualne
+  wklejanie tekstu (bez prefiksu) działa jak dotychczas — `extract_start_delay` na tekście
+  bez prefiksu zwraca `(tekst_bez_zmian, None)`.
 
 ## Wersja webowa (`web/`) — v0.24.0
 

@@ -40,11 +40,13 @@ def test_session_dict_roundtrip():
     sess = Session(
         shots=[Shot(numer=1, czas=1.0, split=None),
                Shot(numer=2, czas=2.5, split=1.5)],
+        start_delay=2.1,
         nazwa_toru="Tor A", uczestnik="Jan", liczba_strzalow=2,
         czas_bazowy=2.5, suma_kar=0.0, czas_koncowy=2.5, hit_factor=4.2)
     restored = Session.from_dict(sess.to_dict())
     assert [(s.numer, s.czas, s.split) for s in restored.shots] == \
            [(1, 1.0, None), (2, 2.5, 1.5)]
+    assert restored.start_delay == 2.1
     assert restored.nazwa_toru == "Tor A"
     assert restored.uczestnik == "Jan"
     assert restored.hit_factor == 4.2
@@ -54,4 +56,5 @@ def test_session_dict_roundtrip_minimal():
     sess = Session(shots=[Shot(numer=1, czas=0.8)])
     restored = Session.from_dict(sess.to_dict())
     assert restored.shots[0].split is None
+    assert restored.start_delay is None
     assert restored.nazwa_toru is None

@@ -48,6 +48,7 @@ class Session:
     """Komplet danych sesji: oś czasu strzałów + opcjonalne metadane z kalkulatora."""
 
     shots: list[Shot]
+    start_delay: float | None = None
     nazwa_toru: str | None = None
     uczestnik: str | None = None
     liczba_strzalow: int | None = None
@@ -73,6 +74,7 @@ class Session:
         return {
             "shots": [{"numer": s.numer, "czas": s.czas, "split": s.split}
                       for s in self.shots],
+            "start_delay": self.start_delay,
             "nazwa_toru": self.nazwa_toru,
             "uczestnik": self.uczestnik,
             "liczba_strzalow": self.liczba_strzalow,
@@ -92,6 +94,7 @@ class Session:
         ]
         return Session(
             shots=shots,
+            start_delay=d.get("start_delay"),
             nazwa_toru=d.get("nazwa_toru"),
             uczestnik=d.get("uczestnik"),
             liczba_strzalow=d.get("liczba_strzalow"),

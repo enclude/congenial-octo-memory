@@ -31,6 +31,29 @@ class TimelineParseError(ValueError):
     """Błąd parsowania osi czasu strzałów."""
 
 
+# Piro-kalkulator dokłada opcjonalny prefiks przed listą strzałów, np.
+# "opoznienie startu 2.1s | 1: 2.28s | 2: 2.76s (+0.48s) | ...".
+_START_DELAY_RE = re.compile(
+    r"""^\s*opoznienie \s+ startu \s+
+    (?P<delay>\d+(?:\.\d+)?) \s* s \s* \|? \s*""",
+    re.VERBOSE,
+)
+
+
+def extract_start_delay(text: str) -> tuple[str, float | None]:
+    """Odcina opcjonalny prefiks „opoznienie startu Xs” z tekstu osi czasu.
+
+    Zwraca (reszta_tekstu, opóźnienie_w_s_albo_None) — reszta trafia bez
+    zmian do `parse_timeline`. Brak prefiksu → tekst niezmieniony, `None`.
+    """
+    if not text:
+        return text, None
+    m = _START_DELAY_RE.match(text)
+    if not m:
+        return text, None
+    return text[m.end():], float(m.group("delay"))
+
+
 def parse_timeline(text: str) -> list[Shot]:
     """Parsuje ciąg osi czasu na listę `Shot`.
 

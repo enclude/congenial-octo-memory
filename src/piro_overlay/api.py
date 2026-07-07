@@ -13,7 +13,7 @@ from typing import Any
 import requests
 
 from .models import Session
-from .parser import parse_timeline
+from .parser import extract_start_delay, parse_timeline
 
 API_BASE_URL = "https://piro-kalkulator.pifpaf.fun/api.php"
 DEFAULT_TIMEOUT = 15
@@ -56,6 +56,9 @@ def session_from_payload(payload: dict[str, Any]) -> Session:
 
     data = payload.get("data") or {}
     opis = data.get("opis") or ""
+    # Piro-kalkulator dokłada opcjonalnie "opoznienie startu Xs" przed listą
+    # strzałów — odcinamy je, resztę parsujemy bez zmian (patrz parser.py).
+    opis, start_delay = extract_start_delay(opis)
 
     try:
         shots = parse_timeline(opis)
@@ -65,6 +68,7 @@ def session_from_payload(payload: dict[str, Any]) -> Session:
     czasy = data.get("czasy") or {}
     return Session(
         shots=shots,
+        start_delay=start_delay,
         nazwa_toru=data.get("nazwa_toru") or None,
         uczestnik=data.get("uczestnik") or None,
         liczba_strzalow=data.get("liczba_strzalow"),
