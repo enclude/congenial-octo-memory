@@ -751,12 +751,41 @@ class BatchPrepWorker(QThread):
             self.failed.emit(self.row_id, str(exc))
 
 
+class BatchIdDetectWorker(QThread):
+    """Dekoduje ID sesji z sygnału tonowego JEDNEGO pliku w tle (FFT nie blokuje UI).
+
+    Analizuje zawsze oryginalny plik wideo — NIE proxy LRF (sygnał ID gra pod
+    koniec nagrania, poza oknem, na którym LRF jest używane do detekcji T0 —
+    patrz `MainWindow._detect_id_tone`). Brak sygnału to nie błąd: `done` niesie
+    wtedy None i wiersz wraca do „podaj ID". (Pułapki QThread jak w
+    `BatchPrepWorker`: worker trzymany do `finished`.)
+    """
+    done = Signal(str, object)   # (row_id, int | None)
+
+    def __init__(self, row_id: str, video_path: str):
+        super().__init__()
+        self.row_id = row_id
+        self.video_path = video_path
+
+    def run(self):
+        try:
+            detected = audio_sync.decode_id_tone(self.video_path)
+        except Exception:  # noqa: BLE001
+            detected = None
+        self.done.emit(self.row_id, detected)
+
+
 class BatchRowStatus(Enum):
     NEEDS_ID  = auto()   # brak/zerowe ID
+    DETECTING = auto()   # trwa wykrywanie ID z sygnału tonowego
     PENDING   = auto()   # gotowe do przygotowania
     PREPARING = auto()   # trwa fetch+detekcja
     READY     = auto()   # przygotowane (T0+przycięcie znane)
     FAILED    = auto()   # błąd przygotowania
+
+
+# wiersz „zajęty" = żywy QThread w tle; nie wolno go usuwać ani edytować jego ID
+_BATCH_BUSY = (BatchRowStatus.DETECTING, BatchRowStatus.PREPARING)
 
 
 @dataclass
@@ -778,6 +807,7 @@ class BatchRowWidget(QWidget):
 
     _STATUS_COLORS = {
         BatchRowStatus.NEEDS_ID:  "#aa7733",
+        BatchRowStatus.DETECTING: "#f0c040",
         BatchRowStatus.PENDING:   "#6688aa",
         BatchRowStatus.PREPARING: "#f0c040",
         BatchRowStatus.READY:     "#44cc88",
@@ -833,7 +863,7 @@ class BatchRowWidget(QWidget):
     def update_row(self, row: BatchRow) -> None:
         color = self._STATUS_COLORS.get(row.status, "#888888")
         self._status_icon.setStyleSheet(f"background:{color}; border-radius:7px;")
-        busy = row.status == BatchRowStatus.PREPARING
+        busy = row.status in _BATCH_BUSY
         self._id_spin.setEnabled(not busy)
         self._del_btn.setEnabled(not busy)
         if row.status == BatchRowStatus.READY and row.prep:
@@ -849,8 +879,12 @@ class BatchRowWidget(QWidget):
         elif row.status == BatchRowStatus.PREPARING:
             self._info.setText("przygotowuję…")
             self._info.setStyleSheet("color:#f0c040;")
+        elif row.status == BatchRowStatus.DETECTING:
+            self._info.setText("wykrywam ID z audio…")
+            self._info.setStyleSheet("color:#f0c040;")
         elif row.status == BatchRowStatus.NEEDS_ID:
-            self._info.setText("podaj ID")
+            # po nieudanej detekcji `row.error` niesie „nie wykryto ID — podaj ręcznie"
+            self._info.setText(row.error or "podaj ID")
             self._info.setStyleSheet("color:#aa7733;")
         else:
             self._info.setText("gotowe do przygotowania")
@@ -902,7 +936,7 @@ class BatchDialog(QWidget):
         self._base_style = base_style
         self._rows: dict[str, BatchRow] = {}
         self._row_widgets: dict[str, BatchRowWidget] = {}
-        self._workers: dict[str, BatchPrepWorker] = {}   # trzymane do finished
+        self._workers: dict[str, QThread] = {}   # prep/detect, trzymane do finished
 
         root = QVBoxLayout(self)
 
@@ -916,9 +950,17 @@ class BatchDialog(QWidget):
         import_btn = QPushButton("Import ze schowka")
         import_btn.setToolTip("Wkleja listę „<ścieżka>;<ID>” ze schowka")
         import_btn.clicked.connect(self._import_clipboard)
+        self._detect_id_btn = QPushButton("Wykryj ID z audio")
+        self._detect_id_btn.setToolTip(
+            "Dla plików bez ID szuka w nagraniu sygnału tonowego ID, który timer\n"
+            "odtwarza po zapisie sesji w bazie (marker 5000 Hz + 4 cyfry\n"
+            "5250–7500 Hz) i wpisuje wykryte ID do wiersza. Zawsze analizuje\n"
+            "oryginalny plik (nie proxy LRF). Sprawdź wynik przed przygotowaniem.")
+        self._detect_id_btn.clicked.connect(self._detect_ids)
         top.addWidget(add_btn)
         top.addWidget(export_btn)
         top.addWidget(import_btn)
+        top.addWidget(self._detect_id_btn)
         top.addStretch(1)
         self._count_label = QLabel("Brak plików.")
         top.addWidget(self._count_label)
@@ -980,7 +1022,9 @@ class BatchDialog(QWidget):
         note = QLabel(
             "Tryb auto + ID: oś czasu z API (po ID), T0 = wykryty bzyczek, przycięcie "
             "5 s przed T0 → ostatni strzał + 5 s. Wygląd nakładki wspólny — kopiowany "
-            "z głównego okna (zmień go tam przed otwarciem). Plansza START zawsze (auto).")
+            "z głównego okna (zmień go tam przed otwarciem). Plansza START zawsze (auto). "
+            "„Wykryj ID z audio” próbuje odczytać ID z sygnału tonowego timera dla "
+            "plików bez ID.")
         note.setStyleSheet("color:#aaaaaa;")
         note.setWordWrap(True)
         root.addWidget(note)
@@ -1094,7 +1138,7 @@ class BatchDialog(QWidget):
 
     def _remove_row(self, row_id: str) -> None:
         row = self._rows.get(row_id)
-        if row is None or row.status == BatchRowStatus.PREPARING:
+        if row is None or row.status in _BATCH_BUSY:
             return
         self._rows.pop(row_id, None)
         w = self._row_widgets.pop(row_id, None)
@@ -1108,11 +1152,11 @@ class BatchDialog(QWidget):
         przygotowania — nie wolno wyrwać żywego QThread)."""
         if not self._rows:
             return
-        busy = any(r.status == BatchRowStatus.PREPARING for r in self._rows.values())
+        busy = any(r.status in _BATCH_BUSY for r in self._rows.values())
         if busy:
             QMessageBox.information(
                 self, "Wyczyść wszystko",
-                "Trwa przygotowanie — poczekaj na jego zakończenie.")
+                "Trwa przygotowanie lub wykrywanie ID — poczekaj na zakończenie.")
             return
         if QMessageBox.question(
                 self, "Wyczyść wszystko",
@@ -1133,13 +1177,13 @@ class BatchDialog(QWidget):
 
     def _on_id_changed(self, row_id: str, value: int) -> None:
         row = self._rows.get(row_id)
-        if row is None or row.status == BatchRowStatus.PREPARING:
+        if row is None or row.status in _BATCH_BUSY:
             return
         row.session_id = value
-        # zmiana ID unieważnia poprzednie przygotowanie
+        # zmiana ID unieważnia poprzednie przygotowanie / komunikat detekcji
         if row.status in (BatchRowStatus.READY, BatchRowStatus.FAILED):
             row.prep = None
-            row.error = ""
+        row.error = ""
         row.status = BatchRowStatus.PENDING if value > 0 else BatchRowStatus.NEEDS_ID
         self._sync_row(row)
         self._refresh()
@@ -1152,6 +1196,49 @@ class BatchDialog(QWidget):
 
     def _on_overlay_toggled(self, on: bool) -> None:
         self._clock_chk.setEnabled(on)
+
+    # --- wykrywanie ID z sygnału tonowego ---
+    def _detect_ids(self) -> None:
+        """Dla wierszy bez ID odpala w tle dekodowanie sygnału tonowego (per plik).
+
+        Wynik trafia do spinboxa wiersza (`set_session_id` → `_on_id_changed` →
+        status PENDING) — bez automatycznego pobrania z API, użytkownik widzi
+        i może poprawić ID przed „Przygotuj wszystkie" (jak w głównym oknie).
+        """
+        todo = [r for r in self._rows.values()
+                if r.status == BatchRowStatus.NEEDS_ID]
+        if not todo:
+            QMessageBox.information(
+                self, "Przetwarzanie wsadowe",
+                "Brak plików bez ID — wszystkie wiersze mają już ID.")
+            return
+        for row in todo:
+            row.status = BatchRowStatus.DETECTING
+            row.error = ""
+            self._sync_row(row)
+            worker = BatchIdDetectWorker(row.id, row.video_path)
+            worker.done.connect(self._on_id_detected)
+            worker.finished.connect(lambda rid=row.id: self._workers.pop(rid, None))
+            self._workers[row.id] = worker
+            worker.start()
+        self._refresh()
+
+    def _on_id_detected(self, row_id: str, detected: object) -> None:
+        row = self._rows.get(row_id)
+        if row is None:
+            return
+        # najpierw wróć do NEEDS_ID, żeby _on_id_changed (guard _BATCH_BUSY)
+        # przyjął wartość ustawianą przez spinbox
+        row.status = BatchRowStatus.NEEDS_ID
+        if not detected:
+            row.error = "nie wykryto ID — podaj ręcznie"
+            self._sync_row(row)
+        elif w := self._row_widgets.get(row_id):
+            w.set_session_id(int(detected))   # → _on_id_changed → PENDING
+        else:
+            row.session_id = int(detected)
+            row.status = BatchRowStatus.PENDING
+        self._refresh()
 
     # --- przygotowanie (fetch + detekcja T0) ---
     def _prepare_all(self) -> None:
@@ -1263,15 +1350,18 @@ class BatchDialog(QWidget):
         ready = sum(1 for r in self._rows.values() if r.status == BatchRowStatus.READY)
         pending = sum(1 for r in self._rows.values()
                       if r.status == BatchRowStatus.PENDING and r.session_id > 0)
-        busy = any(r.status == BatchRowStatus.PREPARING for r in self._rows.values())
+        busy = any(r.status in _BATCH_BUSY for r in self._rows.values())
+        needs_id = sum(1 for r in self._rows.values()
+                       if r.status == BatchRowStatus.NEEDS_ID)
         self._count_label.setText(
             f"Plików: {n} · gotowych: {ready}" if n else "Brak plików.")
         self._prep_btn.setEnabled(pending > 0 and not busy)
         self._enqueue_btn.setEnabled(ready > 0 and not busy)
         self._clear_btn.setEnabled(n > 0 and not busy)
+        self._detect_id_btn.setEnabled(needs_id > 0 and not busy)
 
     def closeEvent(self, event):
-        if any(r.status == BatchRowStatus.PREPARING for r in self._rows.values()):
+        if any(r.status in _BATCH_BUSY for r in self._rows.values()):
             self.hide()
             event.ignore()
         else:

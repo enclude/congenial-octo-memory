@@ -238,6 +238,19 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   `QDesktopServices.openUrl` na pliku ŹRÓDŁOWYM. PUŁAPKI QThread (jak reszta): pola NIE
   `start`/`end`; workery trzymane w `_workers` do `finished`; `closeEvent` (główne+dialog)
   czeka na żywe workery. Zmiana ID unieważnia przygotowanie wiersza.
+  **Wykrywanie ID z audio we wsadzie (v0.31.0):** przycisk „Wykryj ID z audio" (górny
+  pasek, obok importu ze schowka) dla wierszy bez ID (`NEEDS_ID`) odpala
+  `BatchIdDetectWorker` (QThread/plik) z `audio_sync.decode_id_tone` na ORYGINALNYM
+  pliku (nie LRF — jak `_detect_id_tone` w głównym oknie; sygnał ID gra pod koniec
+  nagrania). Wynik wpisywany do spinboxa wiersza (`set_session_id` → `_on_id_changed`
+  → status PENDING) — BEZ auto-fetch: użytkownik weryfikuje ID przed „Przygotuj
+  wszystkie" (błędnie zdekodowane ID pobrałoby cudzą sesję z API). Brak sygnału to
+  nie błąd — wiersz wraca do `NEEDS_ID` z info „nie wykryto ID — podaj ręcznie"
+  (`row.error`, czyszczone przy ręcznej zmianie ID). Nowy status
+  `BatchRowStatus.DETECTING`; wszystkie guardy zajętości (usuwanie/czyszczenie/zmiana
+  ID/refresh/closeEvent) używają wspólnej krotki `_BATCH_BUSY` (DETECTING+PREPARING).
+  W `_on_id_detected` status wraca na `NEEDS_ID` PRZED `set_session_id` — inaczej
+  guard `_BATCH_BUSY` w `_on_id_changed` odrzuciłby wpisywaną wartość.
   **Eksport/import schowka:** „Eksport → schowek" zrzuca listę jako wiersze
   `<ścieżka>;<ID>` (`QApplication.clipboard().setText`); „Import ze schowka" parsuje to samo
   (`rpartition(';')` — ID zawsze po OSTATNIM średniku, ścieżka Windows bezpieczna). Istniejąca
