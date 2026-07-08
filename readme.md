@@ -316,7 +316,7 @@ Po samym **wczytaniu pliku** aplikacja również od razu wykrywa T0 i ustawia pr
 Przycisk **„Wykryj ID z audio"** (pod polem ID) odczytuje ID sesji prosto z nagrania —
 przydatne, gdy timer (np. [timer.pifpaf.fun](https://timer.pifpaf.fun)) po zapisaniu
 sesji w bazie kalkulatora odtworzył sygnał tonowy ID, a mikrofon kamery go nagrał.
-Rozpoznaje marker 5000 Hz + 4 cyfry (5250–7500 Hz), wpisuje wykryte ID do pola —
+Rozpoznaje marker 5000 Hz + 4 cyfry i cyfrę kontrolną (5200–7000 Hz), wpisuje wykryte ID do pola —
 kliknij potem „Pobierz" jak zwykle. Gdy nie znajdzie sygnału (timer go nie odtworzył
 albo mikrofon nie nagrał), pokazuje komunikat i nic nie zmienia — ID wpisujesz ręcznie.
 Analizuje zawsze oryginalny plik wideo (nie proxy `.LRF`).

@@ -143,21 +143,38 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   GUI: przycisk „Wykryj sygnał startu" (obok „Wykryj kotwicę") wymusza
   `AnchorMode.START_SIGNAL` i ustawia wynik jako T0; zwykłe „Wykryj kotwicę" używa
   `detect_start` (bez filtra, pierwszy onset).
-- **Dekodowanie ID sesji z sygnału tonowego (v0.27.0):** `audio_sync.decode_id_tone`
-  odczytuje 4-cyfrowe ID sesji z pary timer↔kamera — timer (www.timer.pifpaf.fun) po
-  zapisaniu sesji w bazie kalkulatora odtwarza kod przez głośnik telefonu: marker
-  5000 Hz („tu zaczyna się kod") + 4 cyfry, każda jako jeden z 10 tonów 5250–7500 Hz
-  (co 250 Hz), sekwencja powtórzona 2× dla odporności. Mikrofon kamery nagrywa to razem
-  z obrazem. Dekodowanie jest SLOT-owe (nie continuity-owe jak bzyczek): marker daje
-  kotwicę w czasie, więc każda cyfra jest odczytywana w z góry znanym oknie jako ton
-  o najwyższej koncentracji energii wśród 10 kandydatów — nie trzeba szukać ciągłości
-  per cyfra. Gdy sygnał wystąpił >1 raz, zwracany jest najczęstszy odczyt (best-effort).
-  Pasmo 5000–7500 Hz wybrano tak, by (1) NIE kolidować z pasmem bzyczka 2000–4500 Hz i
+- **Dekodowanie ID sesji z sygnału tonowego (v0.27.0, protokół v2 od v0.33.0):**
+  `audio_sync.decode_id_tone` odczytuje 4-cyfrowe ID sesji z pary timer↔kamera — timer
+  (www.timer.pifpaf.fun) i kalkulator (www.piro-kalkulator.pifpaf.fun, `id_tone.js`)
+  po zapisaniu sesji odtwarzają kod przez głośnik telefonu: marker 5000 Hz („tu zaczyna
+  się kod") + 4 cyfry + cyfra kontrolna (`_id_tone_checksum` = suma ważona pozycją 1–4
+  mod 10 — odczyt niezgodny z checksumą jest ODRZUCANY, żeby nie pobrać cudzej sesji),
+  każda jako jeden z 10 tonów 5200–7000 Hz (co 200 Hz), ton 300 ms + 50 ms ciszy,
+  sekwencja powtórzona 2× dla odporności. **Protokół v2 (v0.33.0) NIE jest kompatybilny
+  z v1 (5250–7500 Hz co 250 Hz, 200 ms, bez checksumy)** — nagrania sprzed zmiany nie
+  dekodują się nową wersją; wydawać RAZEM z aktualizacją timera i kalkulatora (stałe
+  `ID_TONE_*` + `idToneChecksum` muszą się zgadzać po obu stronach). Sufit pasma obniżony
+  z 7500 Hz, bo pomiar realnego nagrania DJI (odległy telefon) pokazał zanik tonów >7 kHz
+  w łańcuchu głośnik → mikrofon → AAC; dłuższy ton przeżywa zjadanie ogona przez AAC.
+  Mikrofon kamery nagrywa to razem z obrazem. Dekodowanie jest SLOT-owe (nie
+  continuity-owe jak bzyczek): marker daje kotwicę w czasie, więc każda cyfra jest
+  odczytywana w z góry znanym oknie jako ton o najwyższej koncentracji energii wśród
+  10 kandydatów — nie trzeba szukać ciągłości per cyfra. **Odporność na ciche nagrania (v0.32.0),** wynik analizy realnego pliku DJI,
+  gdzie telefon grał daleko od kamery i AAC ścinał ciche wysokie tony (7250/7500 Hz były
+  ~2× krótsze niż nominalne 200 ms → koncentracja ~0.36 < próg 0.55): (1) **dominacja
+  względna** — cyfra przechodzi też, gdy `conc ≥ 0.30` I `≥ 4×` drugi kandydat (słaby,
+  ale jednoznaczny ton; pozostałe pasma ~0, więc brak ryzyka pomyłki); (2) **głosowanie
+  per-slot** — każdy wykryty marker wnosi odczytane cyfry (ważone koncentracją) do
+  wspólnej puli per slot, NIE wymagamy kompletnego odczytu z jednego markera
+  (powtórzenia uzupełniają się nawzajem; wcześniej: najczęstszy PEŁNY odczyt).
+  Testy: `tests/test_id_tone.py` (dominacja = cicha cyfra + przydźwięk 300 Hz podbijający
+  energię okna; głosowanie = 2 powtórzenia, w każdym wycięty INNY slot; checksum =
+  celowo błędna/wyciszona cyfra kontrolna → None); `conftest.id_tone_expr` ma parametry
+  `skip_slots`/`slot_amps`/`checksum_offset` i sam dolicza cyfrę kontrolną.
+  Pasmo 5000–7000 Hz wybrano tak, by (1) NIE kolidować z pasmem bzyczka 2000–4500 Hz i
   (2) zmieścić się pod Nyquistem tej samej ekstrakcji audio 16 kHz (`_load_audio`, Nyquist
-  8000 Hz) — bez potrzeby osobnej ścieżki ekstrakcji o wyższym sample rate. Potwierdzone
-  pomiarem na realnym nagraniu DJI Osmo Nano (generator testowy + `analyze_tone_test.py`,
-  poza repo): żaden kandydat do 10 kHz nie miał odczuwalnego zaniku w tym łańcuchu
-  głośnik telefonu → mikrofon kamery → kompresja wideo — 5000–7500 Hz ma spory zapas.
+  8000 Hz) — bez potrzeby osobnej ścieżki ekstrakcji o wyższym sample rate; sufit 7000 Hz
+  (nie 7500 jak w v1) wynika z pomiaru realnego nagrania — patrz uzasadnienie v2 wyżej.
   GUI: przycisk „Wykryj ID z audio" (grupa źródła danych, pod polem ID) woła
   `decode_id_tone` NA `self.video_path` (świadomie NIE na proxy LRF — sygnał ID gra pod
   koniec nagrania, poza oknem na które LRF było dotąd używane) i wpisuje wynik do
@@ -454,7 +471,8 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   — wcześniej ten branch nie odświeżał wcale paska postępu po reconnect.
 - **Wykrywanie ID z sygnału tonowego (v0.28.0):** `POST /api/jobs/{id}/detect-id` woła
   `pipeline.detect_id_tone` (patrz sekcja o `audio_sync.decode_id_tone` wyżej — timer
-  odtwarza ID jako marker 5000 Hz + 4 cyfry 5250–7500 Hz po zapisie sesji w bazie kalkulatora)
+  odtwarza ID jako marker 5000 Hz + 4 cyfry + cyfrę kontrolną, tony 5200–7000 Hz,
+  po zapisie sesji w bazie kalkulatora; protokół v2 od v0.33.0)
   i zwraca `{id: int|None}` — brak sygnału to NIE błąd (jak `/analyze` dla T0), frontend
   prosi o ręczne ID. Guard identyczny jak `/analyze`: 409 gdy zadanie `QUEUED`/`RENDERING`.
   Frontend: przycisk „🔎 Wykryj z audio" w kroku 02 (`pane-id`, obok „Pobierz") woła endpoint,

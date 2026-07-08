@@ -953,8 +953,8 @@ class BatchDialog(QWidget):
         self._detect_id_btn = QPushButton("Wykryj ID z audio")
         self._detect_id_btn.setToolTip(
             "Dla plików bez ID szuka w nagraniu sygnału tonowego ID, który timer\n"
-            "odtwarza po zapisie sesji w bazie (marker 5000 Hz + 4 cyfry\n"
-            "5250–7500 Hz) i wpisuje wykryte ID do wiersza. Zawsze analizuje\n"
+            "odtwarza po zapisie sesji w bazie (marker 5000 Hz + 4 cyfry + cyfra\n"
+            "kontrolna, 5200–7000 Hz) i wpisuje wykryte ID do wiersza. Zawsze analizuje\n"
             "oryginalny plik (nie proxy LRF). Sprawdź wynik przed przygotowaniem.")
         self._detect_id_btn.clicked.connect(self._detect_ids)
         top.addWidget(add_btn)
@@ -1922,8 +1922,8 @@ class MainWindow(QMainWindow):
         detect_id_tone = QPushButton("Wykryj ID z audio")
         detect_id_tone.setToolTip(
             "Szuka w nagraniu sygnału tonowego ID, który timer odtwarza po zapisie\n"
-            "sesji w bazie (marker 5000 Hz + 4 cyfry 5250–7500 Hz) i wpisuje wykryte ID.\n"
-            "Zawsze analizuje oryginalny plik (nie proxy LRF).")
+            "sesji w bazie (marker 5000 Hz + 4 cyfry + cyfra kontrolna, 5200–7000 Hz)\n"
+            "i wpisuje wykryte ID. Zawsze analizuje oryginalny plik (nie proxy LRF).")
         detect_id_tone.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         detect_id_tone.clicked.connect(self._detect_id_tone)
         detect_row = QHBoxLayout(); detect_row.addWidget(detect_id_tone)
@@ -2542,7 +2542,7 @@ class MainWindow(QMainWindow):
         """Dekoduje ID sesji z sygnału tonowego (timer po zapisie w bazie).
 
         Zawsze analizuje `self.video_path` — NIE proxy LRF (proxy nie było
-        częścią pomiaru, którym dobrano pasmo 5000–7500 Hz, a sygnał ID gra
+        częścią pomiaru, którym dobrano pasmo 5000–7000 Hz, a sygnał ID gra
         pod koniec nagrania, poza oknem, na którym LRF jest zwykle używane
         do detekcji T0).
         """

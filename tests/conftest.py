@@ -28,29 +28,43 @@ from piro_overlay.audio_sync import (  # noqa: E402
     _ID_TONE_MARKER_FREQ,
     _ID_TONE_SLOT,
     _ID_TONE_TONE_DUR,
+    _id_tone_checksum,
 )
 
 ID_TONE_TEST_ID = 4821
 _ID_TONE_REPEAT_GAP = 0.3
 
 
-def id_tone_expr(session_id: int, repeats: int = 2, amp: float = 0.8) -> tuple[str, float]:
-    """Wyrażenie `aevalsrc` grające `session_id` protokołem decode_id_tone.
+def id_tone_expr(session_id: int, repeats: int = 2, amp: float = 0.8,
+                 skip_slots: tuple[tuple[int, int], ...] = (),
+                 slot_amps: dict[int, float] | None = None,
+                 checksum_offset: int = 0) -> tuple[str, float]:
+    """Wyrażenie `aevalsrc` grające `session_id` protokołem decode_id_tone (v2).
 
     Zwraca (wyrażenie, czas_trwania_s) — harmonogram MUSI się zgadzać ze
-    stałymi `_ID_TONE_*` w `audio_sync.py` (marker + N cyfr, ten sam slot).
+    stałymi `_ID_TONE_*` w `audio_sync.py` (marker + 4 cyfry + cyfra
+    kontrolna, ten sam slot). `skip_slots` — pary (nr_powtórzenia, nr_slotu)
+    do wyciszenia (test głosowania per-slot); `slot_amps` — nadpisanie
+    amplitudy cyfry w danym slocie we WSZYSTKICH powtórzeniach (test dominacji
+    względnej); `checksum_offset` — celowe zepsucie cyfry kontrolnej (mod 10)
+    do testu odrzucania błędnego odczytu.
     """
-    digits = f"{session_id:04d}"
+    data_digits = [int(ch) for ch in f"{session_id:04d}"]
+    checksum = (_id_tone_checksum(data_digits) + checksum_offset) % 10
+    digits = data_digits + [checksum]
     terms = []
     t0 = 0.0
-    for _ in range(repeats):
+    for rep in range(repeats):
         terms.append(f"if(between(t,{t0:.3f},{t0 + _ID_TONE_TONE_DUR:.3f}),"
                      f"{amp}*sin(2*PI*{_ID_TONE_MARKER_FREQ}*t),0)")
-        for slot, ch in enumerate(digits):
-            freq = _ID_TONE_DIGIT_FREQS[int(ch)]
+        for slot, d in enumerate(digits):
+            if (rep, slot) in skip_slots:
+                continue
+            freq = _ID_TONE_DIGIT_FREQS[d]
+            slot_amp = (slot_amps or {}).get(slot, amp)
             start = t0 + _ID_TONE_SLOT * (slot + 1)
             terms.append(f"if(between(t,{start:.3f},{start + _ID_TONE_TONE_DUR:.3f}),"
-                         f"{amp}*sin(2*PI*{freq}*t),0)")
+                         f"{slot_amp}*sin(2*PI*{freq}*t),0)")
         t0 += _ID_TONE_SLOT * (len(digits) + 1) + _ID_TONE_REPEAT_GAP
     return "+".join(terms), t0
 
