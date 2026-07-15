@@ -26,19 +26,21 @@ from piro_overlay import ffmpeg  # noqa: E402
 from piro_overlay.audio_sync import (  # noqa: E402
     _ID_TONE_DIGIT_FREQS,
     _ID_TONE_MARKER_FREQ,
+    _ID_TONE_REPEAT_GAP,
     _ID_TONE_SLOT,
     _ID_TONE_TONE_DUR,
     _id_tone_checksum,
 )
 
 ID_TONE_TEST_ID = 4821
-_ID_TONE_REPEAT_GAP = 0.3
 
 
 def id_tone_expr(session_id: int, repeats: int = 2, amp: float = 0.8,
                  skip_slots: tuple[tuple[int, int], ...] = (),
                  slot_amps: dict[int, float] | None = None,
-                 checksum_offset: int = 0) -> tuple[str, float]:
+                 checksum_offset: int = 0,
+                 skip_markers: tuple[int, ...] = (),
+                 t_start: float = 0.0) -> tuple[str, float]:
     """Wyrażenie `aevalsrc` grające `session_id` protokołem decode_id_tone (v2).
 
     Zwraca (wyrażenie, czas_trwania_s) — harmonogram MUSI się zgadzać ze
@@ -47,16 +49,20 @@ def id_tone_expr(session_id: int, repeats: int = 2, amp: float = 0.8,
     do wyciszenia (test głosowania per-slot); `slot_amps` — nadpisanie
     amplitudy cyfry w danym slocie we WSZYSTKICH powtórzeniach (test dominacji
     względnej); `checksum_offset` — celowe zepsucie cyfry kontrolnej (mod 10)
-    do testu odrzucania błędnego odczytu.
+    do testu odrzucania błędnego odczytu; `skip_markers` — numery powtórzeń
+    z wyciszonym markerem (test „duchów" powtórzeń); `t_start` — przesunięcie
+    całej sekwencji w czasie (nakładanie kilku sekwencji w jednym pliku).
+    Zwracany czas trwania jest absolutny (uwzględnia `t_start`).
     """
     data_digits = [int(ch) for ch in f"{session_id:04d}"]
     checksum = (_id_tone_checksum(data_digits) + checksum_offset) % 10
     digits = data_digits + [checksum]
     terms = []
-    t0 = 0.0
+    t0 = t_start
     for rep in range(repeats):
-        terms.append(f"if(between(t,{t0:.3f},{t0 + _ID_TONE_TONE_DUR:.3f}),"
-                     f"{amp}*sin(2*PI*{_ID_TONE_MARKER_FREQ}*t),0)")
+        if rep not in skip_markers:
+            terms.append(f"if(between(t,{t0:.3f},{t0 + _ID_TONE_TONE_DUR:.3f}),"
+                         f"{amp}*sin(2*PI*{_ID_TONE_MARKER_FREQ}*t),0)")
         for slot, d in enumerate(digits):
             if (rep, slot) in skip_slots:
                 continue

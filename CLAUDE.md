@@ -167,10 +167,36 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   per-slot** — każdy wykryty marker wnosi odczytane cyfry (ważone koncentracją) do
   wspólnej puli per slot, NIE wymagamy kompletnego odczytu z jednego markera
   (powtórzenia uzupełniają się nawzajem; wcześniej: najczęstszy PEŁNY odczyt).
-  Testy: `tests/test_id_tone.py` (dominacja = cicha cyfra + przydźwięk 300 Hz podbijający
-  energię okna; głosowanie = 2 powtórzenia, w każdym wycięty INNY slot; checksum =
-  celowo błędna/wyciszona cyfra kontrolna → None); `conftest.id_tone_expr` ma parametry
-  `skip_slots`/`slot_amps`/`checksum_offset` i sam dolicza cyfrę kontrolną.
+  **Dekoder „polowy" (v0.34.0)** — pakiet zmian po pierwszej sesji polowej v2
+  (35 nagrań DJI z 2026-07-15: 28/35 → po zmianach 33/35 = 100% plików, w których
+  sygnał fizycznie jest w audio; 2 pozostałe to brak sygnału, marker_max 0.09–0.16):
+  (1) metryka **„lokalny SNR"** = energia pasma kandydata / energia pasma protokołu
+  `_ID_TONE_RANGE` 4900–7100 Hz (NIE całego widma — strzały/wiatr/mowa poza pasmem
+  zaniżały starą koncentrację); (2) odczyt slotu = **najlepsze OKNO slotu (max)**, nie
+  średnia 3 okien wokół środka (ton z „dziurą" amplitudy w środku padał, choć brzegi
+  były czyste); (3) **duchy powtórzeń** — odstęp powtórzeń jest znany (2.4 s), więc
+  wykryty marker czyta też sloty sąsiedniego powtórzenia, którego marker nie zrobił
+  własnego runu; (4) **erasure recovery z checksumy** — dokładnie 1 nieczytelny slot
+  danych jest odzyskiwany (wagi 1/3 jednoznacznie; wagi 2/4 → 2 kandydatów, rozstrzyga
+  energia pasm, bez wyraźnego zwycięzcy → None); (5) **marker z edge-floor**
+  (`_ID_TONE_MARKER_EDGE`) — miękki próg mostkuje dziury w runie, ale onset = pierwsze
+  TWARDE okno (miękki onset z pre-echa przesuwał siatkę slotów → okno łapało ogon
+  POPRZEDNIEJ cyfry). GUARDY przeciw fałszywym ID (każdy z realnego przypadku!):
+  `_ID_TONE_ENERGY_FLOOR` (okna słabsze niż 1% mediany energii okien markera odpadają —
+  metryki względne kłamią w prawie-ciszy: pre-ringing resamplera dawał snr 0.19 na
+  energii 1e-9); `_ID_TONE_MARKER_ENERGY_FRAC` (run markera <2% energii najgłośniejszego
+  = pisk tła, nie powtórzenie — jego śmieciowe głosy 0.3–0.5 potrafiły przegłosować
+  dwa pełne odczyty); rescue wymaga odczytów pełnej jakości (≥`_ID_TONE_CONC_MIN`)
+  we wszystkich czytelnych slotach; **reguła „duchy uzupełniają, nie zastępują"** —
+  gdy żaden zwycięski slot nie ma głosu z REALNEGO markera → None (nagranie BEZ sygnału
+  złożyło raz ID 3111 przechodzące checksumę: pisk 5 kHz jako marker + obcy ton
+  w slotach ducha).
+  Testy: `tests/test_id_tone.py` (dominacja = cicha cyfra + ton zakłócający W pasmie
+  protokołu; szum poza pasmem ignorowany; dziura amplitudy w środku tonu; duchy;
+  odzysk z checksumy + odmowa przy dwuznaczności; cichy fałszywy marker odfiltrowany;
+  sekwencja tylko-z-duchów odrzucona; głosowanie per-slot; checksum błędna/wyciszona →
+  None); `conftest.id_tone_expr` ma parametry `skip_slots`/`slot_amps`/`checksum_offset`/
+  `skip_markers`/`t_start` i sam dolicza cyfrę kontrolną.
   Pasmo 5000–7000 Hz wybrano tak, by (1) NIE kolidować z pasmem bzyczka 2000–4500 Hz i
   (2) zmieścić się pod Nyquistem tej samej ekstrakcji audio 16 kHz (`_load_audio`, Nyquist
   8000 Hz) — bez potrzeby osobnej ścieżki ekstrakcji o wyższym sample rate; sufit 7000 Hz

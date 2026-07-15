@@ -286,8 +286,17 @@ _ID_TONE_DIGITS = 4               # "IDxxxx" — 0-9999, timer wysyła zero-padd
 _ID_TONE_SLOTS = _ID_TONE_DIGITS + 1  # + cyfra kontrolna na końcu
 _ID_TONE_CONC_MIN = 0.55          # próg koncentracji energii w paśmie tonu
 _ID_TONE_MARKER_MIN_RUN = 3       # ≥150 ms ciągłości markera (okna 50 ms)
-_ID_TONE_DOM_MIN = 0.30           # dominacja względna: min. koncentracja słabego tonu
+_ID_TONE_DOM_MIN = 0.30           # dominacja względna: min. poziom słabego tonu
 _ID_TONE_DOM_RATIO = 4.0          # …i wymagana przewaga nad drugim kandydatem
+_ID_TONE_RANGE = (4900.0, 7100.0)  # pasmo protokołu — mianownik metryki „lokalny SNR"
+_ID_TONE_MARKER_EDGE = 0.35       # miękki próg kontynuacji runu markera (edge floor)
+_ID_TONE_REPEAT_GAP = 0.3         # s — przerwa między powtórzeniami (jak w playerach JS)
+_ID_TONE_RESCUE_MIN = 0.10        # odzysk z checksumy: min energia zwycięskiego kandydata
+_ID_TONE_RESCUE_RATIO = 2.0       # …i wymagana przewaga nad drugim kandydatem
+_ID_TONE_ENERGY_FLOOR = 0.01      # min energia okna (ułamek mediany okien markera) —
+                                  # metryki względne nie mają sensu w niemal-ciszy
+_ID_TONE_MARKER_ENERGY_FRAC = 0.02  # run markera wielokrotnie cichszy od najgłośniejszego
+                                    # to nie powtórzenie, tylko pisk tła (fałszywy marker)
 
 
 def _id_tone_checksum(digits: list[int]) -> int:
@@ -314,25 +323,29 @@ def decode_id_tone(video_path: str | Path,
     realnym nagraniu DJI pokazał zanik cichych tonów >7 kHz w łańcuchu głośnik
     telefonu → mikrofon kamery → AAC.
 
-    Dekodowanie jest slot-owe: znajdujemy każdy marker (jak bzyczek — próg
-    koncentracji + ciągłość ≥150 ms), a każdą kolejną cyfrę odczytujemy w jej
-    z góry znanym oknie czasowym jako ton o najwyższej koncentracji energii
-    (nie trzeba szukać ciągłości per cyfra — pozycja w czasie jest znana).
-    Cyfra przechodzi, gdy przebije próg bezwzględny `_ID_TONE_CONC_MIN` ALBO
-    przez dominację względną: słaby, ale jednoznaczny ton (≥`_ID_TONE_DOM_MIN`
-    i ≥`_ID_TONE_DOM_RATIO`× drugi kandydat) — cichy/przycięty ton z dalekiego
-    telefonu (AAC tnie ciche wysokie częstotliwości) nie osiąga 0.55, ale skoro
-    pozostałe pasma mają ~0, odczyt nie jest niejednoznaczny.
+    Dekodowanie jest slot-owe: znajdujemy każdy marker (próg + ciągłość
+    ≥150 ms, z miękkim progiem kontynuacji `_ID_TONE_MARKER_EDGE` jak przy
+    bzyczku — jedno słabsze okno nie rozcina runu), a każdą cyfrę odczytujemy
+    w jej z góry znanym slocie czasowym. Metryka tonu to „lokalny SNR":
+    energia pasma kandydata / energia pasma protokołu `_ID_TONE_RANGE`
+    (NIE całego widma — szerokopasmowy hałas strzelnicy poza pasmem nie może
+    zaniżać oceny czystego tonu). Odczyt slotu = najlepsze OKNO slotu (max,
+    nie średnia — odporność na chwilowe zaniki amplitudy w środku tonu).
+    Okno przechodzi progiem bezwzględnym `_ID_TONE_CONC_MIN` ALBO dominacją
+    względną (≥`_ID_TONE_DOM_MIN` i ≥`_ID_TONE_DOM_RATIO`× drugi kandydat).
 
     Powtórzenia składamy głosowaniem per-slot: każdy marker wnosi odczytane
-    cyfry (ważone koncentracją) do wspólnej puli — powtórzenia uzupełniają się
-    nawzajem, więc NIE wymagamy ani jednego kompletnego odczytu z pojedynczego
-    markera (rep 1 może mieć czytelne inne sloty niż rep 2). Złożony wynik
-    przechodzi na koniec walidację cyfrą kontrolną — niezgodność = None
-    (lepiej nie podpowiedzieć ID wcale niż podpowiedzieć cudzy).
+    cyfry (ważone poziomem) do wspólnej puli. Odstęp powtórzeń jest znany,
+    więc wykryty marker dodaje też „ducha" sąsiedniego powtórzenia — jego
+    sloty są czytane nawet, gdy tamten marker nie zrobił własnego runu.
+    Złożony wynik przechodzi walidację cyfrą kontrolną — niezgodność = None
+    (lepiej nie podpowiedzieć ID wcale niż podpowiedzieć cudzy). Dokładnie
+    jeden nieczytelny slot DANYCH jest odzyskiwany z checksumy (erasure
+    recovery); przy dwuznaczności (wagi 2/4 mod 10) rozstrzyga energia pasm
+    kandydatów, a bez wyraźnego zwycięzcy odczyt jest odrzucany. Nieczytelna
+    sama checksuma = None (bez niej nie ma jak zweryfikować odczytu).
 
-    Zwraca dekodowane ID albo None, gdy nie znaleziono żadnego markera,
-    któryś slot nie ma ani jednego odczytu albo nie zgadza się suma kontrolna.
+    Zwraca dekodowane ID albo None.
     """
     samples, sr = _load_audio(video_path)
 
@@ -351,58 +364,159 @@ def decode_id_tone(video_path: str | Path,
     seg = chunk[:n_windows * win].reshape(n_windows, win)
     spec = np.abs(np.fft.rfft(seg * np.hanning(win), axis=1)) ** 2
     freqs = np.fft.rfftfreq(win, 1.0 / sr)
-    total = spec.sum(axis=1) + 1e-12
+    range_mask = (freqs >= _ID_TONE_RANGE[0]) & (freqs <= _ID_TONE_RANGE[1])
+    in_range = spec[:, range_mask].sum(axis=1) + 1e-12
 
-    def band_conc(center: float) -> np.ndarray:
+    def band_snr(center: float) -> np.ndarray:
         band = (freqs >= center - _ID_TONE_BAND_HALFWIDTH) & (freqs <= center + _ID_TONE_BAND_HALFWIDTH)
-        return spec[:, band].sum(axis=1) / total
+        return spec[:, band].sum(axis=1) / in_range
 
-    marker_conc = band_conc(_ID_TONE_MARKER_FREQ)
-    cand = marker_conc >= _ID_TONE_CONC_MIN
-    marker_starts = []
+    marker_snr = band_snr(_ID_TONE_MARKER_FREQ)
+    soft = marker_snr >= _ID_TONE_MARKER_EDGE
+    runs: list[tuple[int, int, float]] = []  # (okno_startu_twardego, koniec, mediana energii)
     i = 0
     while i < n_windows:
-        if cand[i]:
+        if soft[i]:
             j = i
-            while j + 1 < n_windows and cand[j + 1]:
+            while j + 1 < n_windows and soft[j + 1]:
                 j += 1
-            if (j - i + 1) >= _ID_TONE_MARKER_MIN_RUN:
-                marker_starts.append(offset_s + i * win / sr)
+            hard = [k for k in range(i, j + 1) if marker_snr[k] >= _ID_TONE_CONC_MIN]
+            if (j - i + 1) >= _ID_TONE_MARKER_MIN_RUN and hard:
+                # Onset = pierwsze TWARDE okno: miękki próg służy mostkowaniu
+                # dziur w środku runu, ale nie może przesuwać startu (pre-echo/
+                # pogłos przed markerem przesuwał siatkę slotów o okno-dwa,
+                # przez co okno slotu łapało ogon poprzedniej cyfry).
+                runs.append((hard[0], j, float(np.median(in_range[i:j + 1]))))
             i = j + 1
         else:
             i += 1
-
-    digit_conc = [band_conc(f) for f in _ID_TONE_DIGIT_FREQS]
-    win_s = win / sr
-
-    def read_digit(t_center: float) -> tuple[int, float] | None:
-        idx = int((t_center - offset_s) / win_s)
-        lo_i, hi_i = max(0, idx - 1), min(n_windows, idx + 2)
-        if lo_i >= hi_i:
-            return None
-        levels = [float(digit_conc[d][lo_i:hi_i].mean()) for d in range(10)]
-        order = np.argsort(levels)
-        best = int(order[-1])
-        lvl = levels[best]
-        if lvl >= _ID_TONE_CONC_MIN:
-            return best, lvl
-        if lvl >= _ID_TONE_DOM_MIN and lvl >= _ID_TONE_DOM_RATIO * levels[int(order[-2])]:
-            return best, lvl
+    if not runs:
         return None
 
-    slot_votes: list[dict[int, float]] = [{} for _ in range(_ID_TONE_SLOTS)]
+    # Fałszywe markery: cichy pisk ~5 kHz w tle potrafi mieć wysoki LOKALNY
+    # SNR (w prawie-ciszy), zrobić run i wnosić śmieciowe głosy przez swoje
+    # sloty i duchy. Realne powtórzenia grają na zbliżonym poziomie — run
+    # wielokrotnie cichszy od najgłośniejszego odpada.
+    e_max = max(r[2] for r in runs)
+    runs = [r for r in runs if r[2] >= _ID_TONE_MARKER_ENERGY_FRAC * e_max]
+    marker_starts = [offset_s + r[0] * win / sr for r in runs]
+    marker_windows = [k for r in runs for k in range(r[0], r[1] + 1)]
+
+    # Metryki względne (udział pasma) nie rozróżniają realnego tonu od śladów
+    # w niemal-ciszy (kwantyzacja, pre-ringing resamplera) — okna słabsze niż
+    # ułamek energii okien markera (= poziomu sygnału TEJ sekwencji) odpadają.
+    energy_floor = _ID_TONE_ENERGY_FLOOR * float(np.median(in_range[marker_windows]))
+
+    # „Duchy" powtórzeń: odstęp powtórzeń jest znany, więc każdy wykryty marker
+    # wskazuje też pozycję sąsiedniego powtórzenia — czytamy jego sloty nawet,
+    # gdy TAMTEN marker nie zrobił własnego runu (głosowanie i checksum bronią
+    # przed śmieciowymi głosami z pustych miejsc).
+    period = _ID_TONE_SLOT * (_ID_TONE_SLOTS + 1) + _ID_TONE_REPEAT_GAP
+    starts = sorted(marker_starts)
     for t_marker in marker_starts:
+        for ghost in (t_marker - period, t_marker + period):
+            if all(abs(ghost - s) > _ID_TONE_SLOT / 2 for s in starts):
+                starts.append(ghost)
+
+    digit_snr = [band_snr(f) for f in _ID_TONE_DIGIT_FREQS]
+    win_s = win / sr
+
+    def slot_window_range(t_start: float) -> tuple[int, int]:
+        i0 = int((t_start - offset_s) / win_s)
+        i1 = int((t_start + _ID_TONE_TONE_DUR - offset_s) / win_s) + 1
+        return max(0, i0), min(n_windows, i1)
+
+    def read_slot(t_start: float) -> tuple[int, float] | None:
+        """Najlepsze OKNO slotu (max, nie średnia) — odporne na dziury amplitudy."""
+        lo_i, hi_i = slot_window_range(t_start)
+        best: tuple[int, float] | None = None
+        for i in range(lo_i, hi_i):
+            if in_range[i] < energy_floor:
+                continue
+            levels = [float(digit_snr[d][i]) for d in range(10)]
+            order = np.argsort(levels)
+            d, lvl = int(order[-1]), levels[int(order[-1])]
+            passes = lvl >= _ID_TONE_CONC_MIN or (
+                lvl >= _ID_TONE_DOM_MIN
+                and lvl >= _ID_TONE_DOM_RATIO * levels[int(order[-2])])
+            if passes and (best is None or lvl > best[1]):
+                best = (d, lvl)
+        return best
+
+    def slot_start(t_marker: float, slot: int) -> float:
+        return t_marker + _ID_TONE_SLOT * (slot + 1)
+
+    slot_votes: list[dict[int, float]] = [{} for _ in range(_ID_TONE_SLOTS)]
+    slot_peak: list[dict[int, float]] = [{} for _ in range(_ID_TONE_SLOTS)]
+    slot_real: list[set[int]] = [set() for _ in range(_ID_TONE_SLOTS)]
+    real_starts = set(marker_starts)
+    for t_marker in starts:
         for slot in range(_ID_TONE_SLOTS):
-            t_center = t_marker + _ID_TONE_SLOT * (slot + 1) + _ID_TONE_TONE_DUR / 2
-            reading = read_digit(t_center)
+            reading = read_slot(slot_start(t_marker, slot))
             if reading is not None:
                 d, lvl = reading
                 slot_votes[slot][d] = slot_votes[slot].get(d, 0.0) + lvl
-    if any(not votes for votes in slot_votes):
+                slot_peak[slot][d] = max(slot_peak[slot].get(d, 0.0), lvl)
+                if t_marker in real_starts:
+                    slot_real[slot].add(d)
+
+    empty = [s for s in range(_ID_TONE_SLOTS) if not slot_votes[s]]
+    decoded = [max(votes, key=votes.get) if votes else -1 for votes in slot_votes]
+
+    # Duchy mogą UZUPEŁNIAĆ odczyt, ale nie zastępować go w całości: gdy żaden
+    # zwycięski slot nie ma głosu z REALNEGO markera, "sekwencję" złożyły
+    # przypadkowe dźwięki tła wokół fałszywych markerów (realny przypadek:
+    # nagranie bez sygnału ID, pisk 5 kHz jako marker + obcy ton w slotach
+    # ducha → ID przechodzące checksumę). Prawdziwy sygnał zawsze niesie
+    # własne cyfry przy własnym markerze.
+    if not any(decoded[s] in slot_real[s] for s in range(_ID_TONE_SLOTS) if s not in empty):
         return None
-    decoded = [max(votes, key=votes.get) for votes in slot_votes]
-    if _id_tone_checksum(decoded[:_ID_TONE_DIGITS]) != decoded[_ID_TONE_DIGITS]:
+
+    if not empty:
+        if _id_tone_checksum(decoded[:_ID_TONE_DIGITS]) != decoded[_ID_TONE_DIGITS]:
+            return None
+        return int("".join(str(d) for d in decoded[:_ID_TONE_DIGITS]))
+
+    # Odzysk z checksumy (erasure recovery): dokładnie JEDEN nieczytelny slot
+    # DANYCH da się odtworzyć z sumy kontrolnej. Wagi 1 i 3 są odwracalne
+    # mod 10 (jednoznaczna cyfra); wagi 2 i 4 zostawiają dwóch kandydatów
+    # (d oraz d+5) — rozstrzyga energia pasm kandydatów w oknach tego slotu,
+    # ale tylko przy wyraźnym zwycięzcy (inaczej zgadywanie dałoby ID
+    # przechodzące checksumę mimo braku dowodu w audio). Nieczytelna sama
+    # checksuma = None (bez niej nie ma jak zweryfikować pozostałych cyfr).
+    if len(empty) != 1 or empty[0] >= _ID_TONE_DIGITS:
         return None
+    # Rescue tylko na mocnych podstawach: każdy ODCZYTANY slot musi mieć co
+    # najmniej jeden odczyt pełnej jakości. Bez tego fałszywe markery + szum
+    # tła potrafią złożyć 4 słabe sloty, a odzyskana cyfra przechodzi
+    # checksumę Z KONSTRUKCJI — czyli rescue produkowałby wiarygodnie
+    # wyglądające, błędne ID (realny przypadek z nagrania bez sygnału).
+    if any(slot_peak[s][decoded[s]] < _ID_TONE_CONC_MIN
+           for s in range(_ID_TONE_SLOTS) if s not in empty):
+        return None
+    gap_slot = empty[0]
+    weight = gap_slot + 1
+    known = sum((i + 1) * decoded[i] for i in range(_ID_TONE_DIGITS) if i != gap_slot)
+    residual = (decoded[_ID_TONE_DIGITS] - known) % 10
+    candidates = [d for d in range(10) if (weight * d) % 10 == residual]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        decoded[gap_slot] = candidates[0]
+    else:
+        strength = {d: 0.0 for d in candidates}
+        for t_marker in starts:
+            lo_i, hi_i = slot_window_range(slot_start(t_marker, gap_slot))
+            for i in range(lo_i, hi_i):
+                if in_range[i] < energy_floor:
+                    continue
+                for d in candidates:
+                    strength[d] = max(strength[d], float(digit_snr[d][i]))
+        ranked = sorted(candidates, key=lambda d: strength[d], reverse=True)
+        if (strength[ranked[0]] < _ID_TONE_RESCUE_MIN
+                or strength[ranked[0]] < _ID_TONE_RESCUE_RATIO * strength[ranked[1]]):
+            return None
+        decoded[gap_slot] = ranked[0]
     return int("".join(str(d) for d in decoded[:_ID_TONE_DIGITS]))
 
 
