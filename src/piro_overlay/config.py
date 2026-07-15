@@ -98,6 +98,47 @@ def load_last_dir(key: str) -> str | None:
         return None
 
 
+# --- ustawienia UI (drobne, globalne — np. współbieżność kolejki renderów) ---
+_QUEUE_PARALLEL_DEFAULT = 2   # patrz CLAUDE.md: NVENC ~45% przy 1 zadaniu → 2 równolegle
+_QUEUE_PARALLEL_MAX = 4
+
+
+def _ui_settings_path() -> Path:
+    return config_dir() / "ui_settings.json"
+
+
+def save_queue_parallel(n: int) -> None:
+    """Zapisuje limit równoległych renderów kolejki."""
+    try:
+        import json
+        p = _ui_settings_path()
+        data: dict = {}
+        if p.exists():
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                pass
+        data["queue_parallel"] = int(n)
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        _log_error("save_queue_parallel", exc)
+
+
+def load_queue_parallel() -> int:
+    """Limit równoległych renderów kolejki (przycięty do 1..4)."""
+    try:
+        import json
+        p = _ui_settings_path()
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
+            val = data.get("queue_parallel")
+            if val is not None:
+                return max(1, min(_QUEUE_PARALLEL_MAX, int(val)))
+    except Exception as exc:  # noqa: BLE001
+        _log_error("load_queue_parallel", exc)
+    return _QUEUE_PARALLEL_DEFAULT
+
+
 # --- ustawienia per-plik (zapamiętane przy renderze / dodaniu do kolejki) ---
 _MAX_FILE_ENTRIES = 100  # limit wpisów — najstarsze usuwane przy przekroczeniu
 

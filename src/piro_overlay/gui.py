@@ -327,17 +327,28 @@ class RenderQueueRunner(QObject):
     queue_finished      = Signal()
     queue_stopped       = Signal()                # zatrzymano (pauza, nie koniec)
 
-    def __init__(self, get_busy, set_busy, parent=None):
+    def __init__(self, get_busy, set_busy, parent=None, parallel: int = 1):
         super().__init__(parent)
         self._jobs: list[RenderJob] = []
-        self._active_worker: RenderWorker | None = None
+        self._active: dict[str, RenderWorker] = {}   # job_id → żywy worker
         self._get_busy = get_busy
         self._set_busy = set_busy
         self._running = False
-        self._stopping = False   # żądanie zatrzymania kolejki (po bieżącym)
+        self._stopping = False   # żądanie zatrzymania kolejki (po bieżących)
+        self._parallel = max(1, parallel)
+
+    def set_parallel(self, n: int) -> None:
+        """Limit równoległych renderów. Zmiana w trakcie działa od następnego
+        wolnego slotu (biegnących zadań nie przerywa ani nie dokłada od razu)."""
+        self._parallel = max(1, n)
+
+    def active_workers(self) -> list[RenderWorker]:
+        return list(self._active.values())
 
     def add_job(self, job: RenderJob) -> None:
         self._jobs.append(job)
+        if self._running:
+            self._fill_slots()   # wolny slot? — zadanie startuje od razu
 
     def remove_job(self, job_id: str) -> bool:
         for i, j in enumerate(self._jobs):
@@ -367,83 +378,82 @@ class RenderQueueRunner(QObject):
             return False
         self._running = True
         self._stopping = False
-        self._run_next()
+        self._fill_slots()
         return True
 
     def stop(self) -> None:
-        """Zatrzymuje kolejkę: przerywa BIEŻĄCE zadanie (wróci do PENDING) i NIE
-        uruchamia kolejnych. Pozostałe zostają jako PENDING — `start_queue` wznawia."""
+        """Zatrzymuje kolejkę: przerywa WSZYSTKIE biegnące zadania (wrócą do
+        PENDING) i NIE uruchamia kolejnych. `start_queue` wznawia."""
         if not self._running:
             return
         self._stopping = True
-        if self._active_worker is not None:
-            self._active_worker.cancel()
-            # dalej obsłuży _on_job_cancelled → _run_next (zobaczy _stopping)
+        if self._active:
+            for w in list(self._active.values()):
+                w.cancel()
+            # finalizacja w _fill_slots, gdy ostatni worker zgłosi cancelled
         else:
-            # Brak aktywnego workera (np. między zadaniami) — zatrzymaj OD RAZU,
+            # Brak aktywnych workerów (np. między zadaniami) — zatrzymaj OD RAZU,
             # inaczej `_running` zostałby True i „Start kolejki" by nie wznowił.
             self._stopping = False
             self._running = False
             self._set_busy(False)
             self.queue_stopped.emit()
 
-    def _run_next(self) -> None:
-        if self._stopping:
-            self._stopping = False
-            self._running = False
-            self._set_busy(False)
-            self.queue_stopped.emit()
+    def _fill_slots(self) -> None:
+        """Dosypuje zadania do wolnych slotów (do limitu `_parallel`), a gdy nic
+        już nie biegnie — kończy kolejkę (albo pauzuje, jeśli zatrzymywano)."""
+        if not self._stopping:
+            pending = [j for j in self._jobs if j.status == JobStatus.PENDING]
+            for job in pending[:max(0, self._parallel - len(self._active))]:
+                self._start_job(job)
+        if self._active:
             return
-        pending = [j for j in self._jobs if j.status == JobStatus.PENDING]
-        if not pending:
-            self._running = False
-            self._set_busy(False)
-            self.queue_finished.emit()
-            return
-        job = pending[0]
+        was_stopping = self._stopping
+        self._stopping = False
+        self._running = False
+        self._set_busy(False)
+        (self.queue_stopped if was_stopping else self.queue_finished).emit()
+
+    def _start_job(self, job: RenderJob) -> None:
         job.status = JobStatus.RUNNING
         self._set_busy(True)
         self.job_status_changed.emit(job.id, JobStatus.RUNNING)
         w = RenderWorker(job.kwargs)
-        self._active_worker = w
+        self._active[job.id] = w
         w.progress.connect(lambda p, jid=job.id: self.job_progress.emit(jid, p))
         w.finished_ok.connect(lambda _, jid=job.id: self._on_job_done(jid))
         w.failed.connect(lambda msg, jid=job.id: self._on_job_failed(jid, msg))
         w.cancelled.connect(lambda jid=job.id: self._on_job_cancelled(jid))
         w.start()
 
-    def _finish_active(self) -> None:
-        """Zamyka bieżący worker BEZPIECZNIE: czeka aż wątek REALNIE się zakończy,
+    def _finish_worker(self, job_id: str) -> None:
+        """Zamyka worker zadania BEZPIECZNIE: czeka aż wątek REALNIE się zakończy,
         dopiero potem zwalnia referencję.
 
         KRYTYCZNE (patrz CLAUDE.md): `finished_ok`/`failed`/`cancelled` lecą z
         OSTATNIEJ linii `run()` — wątek QThread jeszcze się NIE zakończył. Gdyby
-        tu od razu zrobić `self._active_worker = None`, GC zniszczyłby QThread „w
-        trakcie pracy" → twardy crash (QThread: Destroyed while thread is still
-        running). `wait()` wraca natychmiast (run() już oddaje sterowanie)."""
-        w = self._active_worker
+        tu od razu zwolnić referencję, GC zniszczyłby QThread „w trakcie pracy"
+        → twardy crash (QThread: Destroyed while thread is still running).
+        `wait()` wraca natychmiast (run() już oddaje sterowanie)."""
+        w = self._active.pop(job_id, None)
         if w is not None:
             w.wait()
-            self._active_worker = None
 
     def _on_job_done(self, job_id: str) -> None:
         self._mark(job_id, JobStatus.DONE)
-        self._finish_active()
-        self._set_busy(False)
-        self._run_next()
+        self._finish_worker(job_id)
+        self._fill_slots()
 
     def _on_job_failed(self, job_id: str, _msg: str) -> None:
         self._mark(job_id, JobStatus.FAILED)
-        self._finish_active()
-        self._set_busy(False)
-        self._run_next()
+        self._finish_worker(job_id)
+        self._fill_slots()
 
     def _on_job_cancelled(self, job_id: str) -> None:
         # Przerwane zadanie wraca do PENDING (do ponowienia); kolejka pauzuje.
         self._mark(job_id, JobStatus.PENDING)
-        self._finish_active()
-        self._set_busy(False)
-        self._run_next()   # zobaczy _stopping → emituje queue_stopped
+        self._finish_worker(job_id)
+        self._fill_slots()   # zobaczy _stopping → po ostatnim emituje queue_stopped
 
     def _mark(self, job_id: str, status: JobStatus) -> None:
         for j in self._jobs:
@@ -522,6 +532,7 @@ class RenderQueueWindow(QWidget):
         self.setMinimumWidth(560)
         self._runner = runner
         self._rows: dict[str, JobRowWidget] = {}
+        self._progress: dict[str, float] = {}   # job_id → ostatni postęp (0–1)
 
         root = QVBoxLayout(self)
 
@@ -541,11 +552,11 @@ class RenderQueueWindow(QWidget):
 
         btn_row = QHBoxLayout()
         self._start_btn = QPushButton("Start kolejki")
-        self._start_btn.setToolTip("Renderuje oczekujące zadania po kolei "
-                                   "(nieudane ponawia automatycznie)")
+        self._start_btn.setToolTip("Renderuje oczekujące zadania (tyle naraz, ile "
+                                   "ustawiono w „Równoległe”; nieudane ponawia automatycznie)")
         self._start_btn.clicked.connect(self._on_start)
         self._stop_btn = QPushButton("Zatrzymaj")
-        self._stop_btn.setToolTip("Przerywa bieżący render i pauzuje kolejkę "
+        self._stop_btn.setToolTip("Przerywa biegnące rendery i pauzuje kolejkę "
                                   "(zadania zostają jako oczekujące — „Start kolejki” wznawia)")
         self._stop_btn.setEnabled(False)
         self._stop_btn.clicked.connect(self._on_stop)
@@ -564,6 +575,19 @@ class RenderQueueWindow(QWidget):
         btn_row.addWidget(self._save_btn)
         btn_row.addWidget(self._load_btn)
         btn_row.addStretch(1)
+        btn_row.addWidget(QLabel("Równoległe:"))
+        self._parallel_spin = QSpinBox()
+        self._parallel_spin.setRange(1, config._QUEUE_PARALLEL_MAX)
+        self._parallel_spin.setValue(config.load_queue_parallel())
+        self._parallel_spin.setToolTip(
+            "Ile plików renderować jednocześnie. Przy NVENC pojedynczy render\n"
+            "wykorzystuje GPU w ~50% (kompozycja nakładki idzie na CPU) — dwa\n"
+            "równoległe niemal podwajają przepustowość partii. Zmniejsz do 1,\n"
+            "gdy laptop się przegrzewa albo render idzie na CPU (x264).\n"
+            "Zmiana w trakcie działa od następnego wolnego slotu.")
+        self._parallel_spin.valueChanged.connect(self._on_parallel_changed)
+        runner.set_parallel(self._parallel_spin.value())
+        btn_row.addWidget(self._parallel_spin)
         root.addLayout(btn_row)
 
         runner.job_progress.connect(self._on_job_progress)
@@ -604,7 +628,7 @@ class RenderQueueWindow(QWidget):
     def _on_stop(self) -> None:
         self._runner.stop()
         self._stop_btn.setEnabled(False)
-        self._status_label.setText("Zatrzymywanie kolejki (kończę bieżącą klatkę)…")
+        self._status_label.setText("Zatrzymywanie kolejki (przerywam biegnące rendery)…")
 
     def _on_clear_finished(self) -> None:
         for job_id, row in list(self._rows.items()):
@@ -622,28 +646,40 @@ class RenderQueueWindow(QWidget):
                 self._list_layout.removeWidget(row)
                 row.deleteLater()
 
+    def _on_parallel_changed(self, n: int) -> None:
+        self._runner.set_parallel(n)
+        config.save_queue_parallel(n)
+
     def _on_job_progress(self, job_id: str, p: float) -> None:
         if row := self._rows.get(job_id):
             row.update_progress(p)
-        self._update_overall(p)
+        self._progress[job_id] = p
+        self._update_overall()
 
-    def _update_overall(self, current_p: float) -> None:
-        """Pokazuje łączny postęp kolejki + % bieżącego pliku w pasku stanu."""
+    def _update_overall(self) -> None:
+        """Pokazuje łączny postęp kolejki w pasku stanu (suma po wszystkich
+        biegnących zadaniach — przy współbieżności >1 biegnie kilka naraz)."""
         jobs = self._runner.jobs()
         total = len(jobs)
         if not total:
             return
         done = sum(1 for j in jobs if j.status == JobStatus.DONE)
-        overall = (done + current_p) / total
-        running = next((j for j in jobs if j.status == JobStatus.RUNNING), None)
-        name = Path(str(running.kwargs.get("video_path", ""))).name if running else ""
+        running = [j for j in jobs if j.status == JobStatus.RUNNING]
+        overall = (done + sum(self._progress.get(j.id, 0.0) for j in running)) / total
+        if len(running) == 1:
+            name = Path(str(running[0].kwargs.get("video_path", ""))).name
+            cur = self._progress.get(running[0].id, 0.0)
+            detail = f"{name} · bieżący {cur * 100:.0f}%"
+        else:
+            detail = f"{len(running)} plików równolegle"
         self._status_label.setText(
-            f"Render {min(done + 1, total)}/{total} · {name} · "
-            f"bieżący {current_p * 100:.0f}% · łącznie {overall * 100:.0f}%")
+            f"Ukończone {done}/{total} · {detail} · łącznie {overall * 100:.0f}%")
 
     def _on_job_status_changed(self, job_id: str, status) -> None:
         if row := self._rows.get(job_id):
             row.update_status(status)
+        if status != JobStatus.RUNNING:
+            self._progress.pop(job_id, None)   # świeży % po wznowieniu/ponowieniu
         self._refresh_start_btn()
         self._autosave_queue()   # DONE wypada z zapisu, FAILED zostaje (do ponowienia)
 
@@ -3199,6 +3235,7 @@ class MainWindow(QMainWindow):
             runner = RenderQueueRunner(
                 get_busy=lambda: self._render_busy,
                 set_busy=lambda v: setattr(self, "_render_busy", v),
+                parallel=config.load_queue_parallel(),
             )
             self._queue_runner = runner
             runner.queue_finished.connect(
@@ -3217,9 +3254,8 @@ class MainWindow(QMainWindow):
             self.worker.cancel()
             self.worker.wait(_THREAD_JOIN_MS)
         if self._queue_runner is not None and self._queue_runner._running:
-            self._queue_runner.stop()  # pauzuje kolejkę + ubija bieżący render
-            w = self._queue_runner._active_worker
-            if w is not None:
+            self._queue_runner.stop()  # pauzuje kolejkę + ubija biegnące rendery
+            for w in self._queue_runner.active_workers():
                 w.wait(_THREAD_JOIN_MS)
         # Poczekaj na workery przygotowania wsadu (QThread niszczony w trakcie = crash).
         if self._batch_window is not None:

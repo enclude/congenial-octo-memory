@@ -298,6 +298,21 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   `<ścieżka>;<ID>` (`QApplication.clipboard().setText`); „Import ze schowka" parsuje to samo
   (`rpartition(';')` — ID zawsze po OSTATNIM średniku, ścieżka Windows bezpieczna). Istniejąca
   ścieżka → aktualizacja ID (`BatchRowWidget.set_session_id` przez spinbox), nowa → `_add_row`.
+- **Kolejka renderów — współbieżność (v0.35.0):** `RenderQueueRunner` renderuje do
+  `_parallel` zadań NARAZ (`_fill_slots` dosypuje do wolnych slotów, też przy `add_job`
+  w trakcie); spinner „Równoległe" w oknie kolejki (1–4, `config.save/load_queue_parallel`,
+  `ui_settings.json` w AppData, domyślnie 2). POWÓD (pomiar Task Managera przy renderze
+  4K NVENC): Video Encode ~45%, Decode 12%, CPU 44% — nic nie jest wysycone, bo łańcuch
+  `overlay` w FFmpeg jest częściowo jednowątkowy i wszystko czeka na wszystko; dwa
+  równoległe pliki ≈ 2× przepustowość partii (NVENC ma 5–8 sesji na współczesnych
+  sterownikach). „Zatrzymaj" anuluje WSZYSTKIE biegnące workery (każdy wraca do PENDING);
+  finalizacja (queue_stopped/finished) dopiero gdy OSTATNI worker realnie skończy —
+  `_finish_worker(job_id)` robi `wait()` przed zwolnieniem referencji (ta sama pułapka
+  QThread co niżej, przy wielu workerach podwójnie krytyczna). Busy-flaga główna zdejmowana
+  dopiero, gdy pula pusta. Łączny % w pasku stanu = suma postępów wszystkich biegnących
+  (`RenderQueueWindow._progress` per job). Dalszy potencjał (świadomie NIE zrobione):
+  pełny potok GPU `overlay_cuda` + `-hwaccel_output_format cuda` — wymaga weryfikacji
+  obsługi `enable`/alfy na docelowej binarce FFmpeg, patrz dyskusja przy v0.34.0.
 - **Kolejka renderów — zapis/odczyt + % postępu:** `RenderQueueWindow` ma „Zapisz/Wczytaj
   kolejkę" (plik `render_queue.json` w AppData; `config.save_queue`/`load_queue`). Zapis (też
   AUTO przy każdej zmianie statusu i `add_job` — odzysk po awarii) pomija zadania `DONE`
