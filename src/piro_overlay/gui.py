@@ -2902,12 +2902,31 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Brak wideo", "Wybierz plik wideo."); return None
         if not self.out_edit.text():
             QMessageBox.warning(self, "Brak wyjścia", "Podaj plik wyjściowy."); return None
-        try:
-            session = self._build_session()
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Błąd danych", str(exc)); return None
+        no_overlay = self.no_overlay_chk.isChecked()
+        if no_overlay and self.format_combo.currentData() != "mp4":
+            # Jak w wersji WWW: trim_video koduje H.264+AAC (faststart) —
+            # w kontenerze WebM/GIF dałoby to uszkodzony plik.
+            QMessageBox.warning(
+                self, "Bez nakładki",
+                "Tryb „bez nakładki” (samo przycięcie) obsługuje tylko format MP4 — "
+                "zmień format wyjściowy.")
+            return None
+        if no_overlay:
+            # „Bez nakładki" = samo przycięcie: oś czasu strzałów jest zbędna.
+            # Nie wołamy _build_session() (pusty tekst rzuca TimelineParseError,
+            # a źródło ID robiłoby zbędny strzał do API) — bierzemy sesję już
+            # pobraną wcześniej, jeśli jest (trafia tylko do zapisu kolejki).
+            session = self.session
+        else:
+            try:
+                session = self._build_session()
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.critical(self, "Błąd danych", str(exc)); return None
         mode = self._anchor_mode()
-        t0 = audio_sync.resolve_t0(self.t0_spin.value(), mode, session.shots[0].czas)
+        if session is not None and session.shots:
+            t0 = audio_sync.resolve_t0(self.t0_spin.value(), mode, session.shots[0].czas)
+        else:
+            t0 = self.t0_spin.value()
         ts = self.trim_start_spin.value()
         te = self.trim_end_spin.value()
         return dict(
@@ -2916,7 +2935,7 @@ class MainWindow(QMainWindow):
             trim_start=ts if ts > 0 else None,
             trim_end=te if te > 0 else None,
             encoder="auto" if self.gpu_chk.isChecked() else "cpu",
-            no_overlay=self.no_overlay_chk.isChecked(),
+            no_overlay=no_overlay,
             output_format=self.format_combo.currentData(),
         )
 
