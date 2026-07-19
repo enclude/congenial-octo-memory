@@ -178,7 +178,9 @@ def detect_start(video_path: str | Path,
     return onsets[0] if onsets else None
 
 
-_BUZZER_BAND = (2000.0, 4500.0)   # pasmo typowego buzzera shot-timera
+_BUZZER_BAND = (2000.0, 4800.0)   # pasmo buzzerów shot-timerów: ~2.7 kHz (typowy)
+                                  # do 4.6 kHz (timer z sesji 2026-07-19); sufit 4800
+                                  # zostawia odstęp od protokołu ID (≥4900 Hz)
 _BUZZER_CONC_MIN = 0.7            # min. udział energii w paśmie (tonalność)
 _BUZZER_MIN_RUN = 3              # min. liczba okien 50 ms (≥150 ms ciągłego tonu)
 _BUZZER_FLOOR_FRAC = 0.02        # próg głośności względem najgłośniejszego okna
@@ -190,7 +192,7 @@ def detect_dji_start(video_path: str | Path,
                      end: float | None = None) -> float | None:
     """Detekcja bzyczka sygnału startu (shot-timer) — odporna na strzały.
 
-    Bzyczek to **czysty, ciągły ton** w paśmie 2000–4500 Hz: niemal cała jego
+    Bzyczek to **czysty, ciągły ton** w paśmie 2000–4800 Hz: niemal cała jego
     energia leży w tym paśmie (wysoka „koncentracja") i utrzymuje się przez
     setki ms. Strzał to przeciwnie — szerokopasmowy impuls (energia rozłożona
     od basu po wysokie, trwa <100 ms). Dlatego NIE wystarczy szukać
@@ -318,7 +320,7 @@ def decode_id_tone(video_path: str | Path,
     zaczyna się kod") + 4 cyfry + cyfra kontrolna (`_id_tone_checksum`), każda
     jako jeden z 10 tonów 5200–7000 Hz (co 200 Hz), ton 300 ms + 50 ms ciszy,
     sekwencja powtórzona dwukrotnie. Pasmo leży bezpiecznie powyżej bzyczka
-    startu (2000–4500 Hz, `detect_dji_start`) i poniżej Nyquista tej ekstrakcji
+    startu (2000–4800 Hz, `detect_dji_start`) i poniżej Nyquista tej ekstrakcji
     audio (16 kHz → 8 kHz); górna granica obniżona z 7500 Hz (v1), bo pomiar na
     realnym nagraniu DJI pokazał zanik cichych tonów >7 kHz w łańcuchu głośnik
     telefonu → mikrofon kamery → AAC.

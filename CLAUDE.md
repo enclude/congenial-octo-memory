@@ -130,8 +130,11 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   uchwyty=trim, znaczniki=onsety). Ctrl+klik = podgląd klatki z nakładką (scrubber).
 - **Wykrywanie sygnału startu (bzyczek):** `audio_sync.detect_dji_start` rozpoznaje buzzer
   shot-timera po DWÓCH cechach (okna 50 ms, FFT): (1) **koncentracji** energii w paśmie
-  2000–4500 Hz = `energia_w_paśmie/energia_całkowita ≥ 0.7` (bzyczek to czysty ton ~2.7 kHz,
-  niemal cała energia w paśmie) oraz (2) **ciągłości** ≥150 ms (3 okna). Wybiera
+  2000–4800 Hz = `energia_w_paśmie/energia_całkowita ≥ 0.7` (bzyczek to czysty ton —
+  niemal cała energia w paśmie; typowy timer gra ~2.7 kHz, ale timer z sesji
+  2026-07-19 grał 4.6 kHz i sufit 4500 go odrzucał — stąd 4800, z odstępem od
+  protokołu ID ≥4900 Hz; guard: `test_detect_dji_start_ignores_id_tones`)
+  oraz (2) **ciągłości** ≥150 ms (3 okna). Wybiera
   NAJWCZEŚNIEJSZY taki przebieg (start poprzedza strzelanie), zwraca narastające zbocze.
   WAŻNE — czego NIE robić: samo „najgłośniejsze okno w paśmie" zawodzi, bo donośny strzał
   (szerokopasmowy) potrafi mieć w paśmie więcej energii niż buzzer; rozróżnia je dopiero
@@ -197,7 +200,7 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   sekwencja tylko-z-duchów odrzucona; głosowanie per-slot; checksum błędna/wyciszona →
   None); `conftest.id_tone_expr` ma parametry `skip_slots`/`slot_amps`/`checksum_offset`/
   `skip_markers`/`t_start` i sam dolicza cyfrę kontrolną.
-  Pasmo 5000–7000 Hz wybrano tak, by (1) NIE kolidować z pasmem bzyczka 2000–4500 Hz i
+  Pasmo 5000–7000 Hz wybrano tak, by (1) NIE kolidować z pasmem bzyczka 2000–4800 Hz i
   (2) zmieścić się pod Nyquistem tej samej ekstrakcji audio 16 kHz (`_load_audio`, Nyquist
   8000 Hz) — bez potrzeby osobnej ścieżki ekstrakcji o wyższym sample rate; sufit 7000 Hz
   (nie 7500 jak w v1) wynika z pomiaru realnego nagrania — patrz uzasadnienie v2 wyżej.

@@ -75,11 +75,10 @@ def id_tone_expr(session_id: int, repeats: int = 2, amp: float = 0.8,
     return "+".join(terms), t0
 
 
-@pytest.fixture(scope="session")
-def tiny_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    out = tmp_path_factory.mktemp("video") / "tiny.mp4"
+def _make_buzzer_video(out: Path, freq: int) -> Path:
+    """Buduje 3-sekundowy MP4 z tonem `freq` Hz w oknie 0.5–0.9 s (bzyczek)."""
     # Apostrofy chronią przecinki wyrażenia przed parserem filtergraphu.
-    tone = "aevalsrc='if(between(t,0.5,0.9),0.8*sin(2*PI*2700*t),0)':s=44100:d=3"
+    tone = f"aevalsrc='if(between(t,0.5,0.9),0.8*sin(2*PI*{freq}*t),0)':s=44100:d=3"
     cmd = [
         ffmpeg.ffmpeg_exe(), "-y",
         "-f", "lavfi", "-i", "testsrc=duration=3:size=320x240:rate=30",
@@ -91,6 +90,18 @@ def tiny_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
     if res.returncode != 0:
         pytest.skip(f"FFmpeg nie zbudował pliku testowego: {res.stderr[-500:]}")
     return out
+
+
+@pytest.fixture(scope="session")
+def tiny_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _make_buzzer_video(tmp_path_factory.mktemp("video") / "tiny.mp4", 2700)
+
+
+@pytest.fixture(scope="session")
+def tiny_video_4600hz(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Buzzer 4.6 kHz — timer z sesji polowej 2026-07-19 (nie Shooters Global);
+    grał 100 Hz ponad dawnym sufitem pasma 4500 Hz i był niewykrywalny."""
+    return _make_buzzer_video(tmp_path_factory.mktemp("video") / "tiny4600.mp4", 4600)
 
 
 @pytest.fixture(scope="session")
