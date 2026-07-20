@@ -129,7 +129,12 @@ def render_shot_panel(session: Session, idx: int, style: OverlayStyle,
     """Panel dla strzału o indeksie `idx` (0-based) z listy `session.shots`.
 
     `fixed_size` — wymuszony rozmiar tła/obramowania (zwykle `shot_panel_max_size`),
-    by panel nie zmieniał szerokości/wysokości między kolejnymi strzałami."""
+    by panel nie zmieniał szerokości/wysokości między kolejnymi strzałami.
+    Przy `style.panel_mode == "list"` zwraca panel-listę ostatnich strzałów
+    (rozmiar stały z konstrukcji — `fixed_size` jest wtedy ignorowany); dispatch
+    tutaj sprawia, że render/preview/gui nie muszą znać trybu panelu."""
+    if style.panel_mode == "list":
+        return render_shot_list_panel(session, idx, style, video_size)
     base = _base_font_size(video_size[1], style)
     return _render_panel(_shot_lines(session, idx, style, base), style, base, fixed_size)
 
@@ -140,11 +145,188 @@ def shot_panel_max_size(session: Session, style: OverlayStyle,
 
     Render.py renderuje każdy panel strzału z tym rozmiarem → stałe tło/obramowanie."""
     base = _base_font_size(video_size[1], style)
+    if style.panel_mode == "list":
+        return _list_metrics(session, style, base).panel_size
     w = h = 0
     for idx in range(len(session.shots)):
         pw, ph = _panel_size(_shot_lines(session, idx, style, base), style, base)
         w, h = max(w, pw), max(h, ph)
     return w, h
+
+
+# --- Panel „lista strzałów" (panel_mode="list") ---------------------------------
+# Pigułki per wiersz: numer | czas | split; najnowszy strzał na dole (większy,
+# pełna nieprzezroczystość), starsze przesunięte wyżej i stopniowo wygaszane.
+# Rozmiar panelu jest STAŁY z konstrukcji: wysokość = `list_max_rows` slotów
+# (wiersze dosunięte do dołu, puste sloty przezroczyste — najnowszy strzał zawsze
+# w tym samym miejscu ekranu), szerokości kolumn liczone po WSZYSTKICH strzałach.
+
+_LIST_PAD_X = 0.55   # padding poziomy pigułki (× base)
+_LIST_PAD_Y = 0.32   # padding pionowy pigułki (× base)
+_LIST_ROW_GAP = 0.22  # odstęp między pigułkami (× base)
+_LIST_COL_GAP = 0.55  # odstęp między kolumnami (× base)
+_LIST_ALPHA_NEW = 235          # bazowa alfa najnowszego wiersza
+_LIST_ALPHA_OLD = (155, 120, 90, 90)  # alfa starszych wg wieku (age-1)
+
+
+@dataclass
+class _ListMetrics:
+    f_num: ImageFont.FreeTypeFont
+    f_time: ImageFont.FreeTypeFont
+    f_split: ImageFont.FreeTypeFont
+    f_num_new: ImageFont.FreeTypeFont
+    f_time_new: ImageFont.FreeTypeFont
+    f_split_new: ImageFont.FreeTypeFont
+    pad_x: int
+    pad_y: int
+    row_gap: int
+    col_gap: int
+    w_num: int
+    w_time: int
+    w_split: int
+    row_h_old: int
+    row_h_new: int
+    panel_size: tuple[int, int]
+
+
+def _list_num_label(session: Session, shot_numer: int, style: OverlayStyle,
+                    newest: bool) -> str:
+    if newest and style.list_show_progress:
+        return f"{shot_numer}/{session.total_shots}"
+    return str(shot_numer)
+
+
+def _list_fmt_time(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def _list_fmt_split(value: float | None) -> str:
+    return "—" if value is None else f"+{value:.2f}"
+
+
+def _list_metrics(session: Session, style: OverlayStyle, base: int) -> _ListMetrics:
+    f_num = _font(int(base * 0.85), bold=True)
+    f_time = _font(base)
+    f_split = _font(base, bold=True)
+    f_num_new = _font(base, bold=True)
+    f_time_new = _font(int(base * 1.25), bold=True)
+    f_split_new = _font(int(base * 1.25), bold=True)
+
+    pad_x = int(base * _LIST_PAD_X)
+    pad_y = int(base * _LIST_PAD_Y)
+    row_gap = int(base * _LIST_ROW_GAP)
+    col_gap = int(base * _LIST_COL_GAP)
+
+    shots = session.shots
+    w_num = max((_text_size(f_num_new, _list_num_label(session, s.numer, style, True))[0]
+                 for s in shots), default=0)
+    w_time = max((_text_size(f_time_new, _list_fmt_time(s.czas))[0] for s in shots),
+                 default=0)
+    w_split = max((_text_size(f_split_new, _list_fmt_split(s.split))[0] for s in shots),
+                  default=0)
+
+    # Wysokość wiersza z cyfr (bez dolnych wydłużeń) — stała dla wszystkich wierszy.
+    row_h_old = _text_size(f_time, "0.00")[1] + 2 * pad_y
+    row_h_new = _text_size(f_time_new, "0.00")[1] + 2 * pad_y
+    rows = max(1, style.list_max_rows)
+    panel_w = 2 * pad_x + w_num + col_gap + w_time + col_gap + w_split
+    panel_h = (rows - 1) * (row_h_old + row_gap) + row_h_new
+
+    return _ListMetrics(f_num, f_time, f_split, f_num_new, f_time_new, f_split_new,
+                        pad_x, pad_y, row_gap, col_gap, w_num, w_time, w_split,
+                        row_h_old, row_h_new, (panel_w, panel_h))
+
+
+def _list_row_alpha(newest: bool, age: int) -> int:
+    if newest:
+        return _LIST_ALPHA_NEW
+    return _LIST_ALPHA_OLD[min(age - 1, len(_LIST_ALPHA_OLD) - 1)]
+
+
+def render_shot_list_panel(session: Session, idx: int, style: OverlayStyle,
+                           video_size: tuple[int, int]) -> Image.Image:
+    """Panel-lista: ostatnie ≤`list_max_rows` strzałów do `idx` włącznie."""
+    base = _base_font_size(video_size[1], style)
+    m = _list_metrics(session, style, base)
+    panel_w, panel_h = m.panel_size
+
+    lo = max(0, idx - (max(1, style.list_max_rows) - 1))
+    rows = session.shots[lo:idx + 1]
+    n = len(rows)
+
+    img = Image.new("RGBA", (panel_w, panel_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    bg, text, accent = style.bg_color, style.text_color, style.accent_color
+    y = panel_h
+    for k in range(n - 1, -1, -1):
+        shot = rows[k]
+        newest = (k == n - 1)
+        alpha = _list_row_alpha(newest, (n - 1) - k)
+        rh = m.row_h_new if newest else m.row_h_old
+        y -= rh
+        fn, ft, fs = ((m.f_num_new, m.f_time_new, m.f_split_new) if newest
+                      else (m.f_num, m.f_time, m.f_split))
+
+        draw.rounded_rectangle(
+            [(0, y), (panel_w - 1, y + rh - 1)],
+            radius=int(rh * 0.28),
+            fill=(*bg[:3], int(bg[3] * alpha / _LIST_ALPHA_NEW)),
+        )
+        # Kotwica "lm" = pionowy środek metryk fontu → kolumny o różnych rozmiarach
+        # fontu (numer 0.85× vs czas 1.0×) siedzą na wspólnej osi wiersza.
+        ty = y + rh // 2
+        num_alpha = alpha if newest else int(alpha * 0.6)
+        draw.text((m.pad_x, ty), _list_num_label(session, shot.numer, style, newest),
+                  font=fn, fill=(*text[:3], int(text[3] * num_alpha / 255)), anchor="lm")
+        x = m.pad_x + m.w_num + m.col_gap
+        draw.text((x, ty), _list_fmt_time(shot.czas), font=ft,
+                  fill=(*text[:3], int(text[3] * alpha / 255)), anchor="lm")
+        x += m.w_time + m.col_gap
+        draw.text((x, ty), _list_fmt_split(shot.split), font=fs,
+                  fill=(*accent[:3], int(accent[3] * alpha / 255)), anchor="lm")
+        y -= m.row_gap
+    return img
+
+
+def render_meta_panel(session: Session, style: OverlayStyle,
+                      video_size: tuple[int, int]) -> Image.Image | None:
+    """Nakładka metadanych (jedno tło): nazwa toru + „uczestnik — x strzałów".
+
+    Zwraca None, gdy sesja nie ma żadnych metadanych do pokazania."""
+    tr = get_translator(style.lang)
+    base = _base_font_size(video_size[1], style)
+    f_top = _font(base, bold=True)
+    f_bot = _font(int(base * 0.85))
+
+    lines: list[_Line] = []
+    if session.nazwa_toru:
+        lines.append(_Line(session.nazwa_toru, f_top, style.accent_color))
+    if session.uczestnik:
+        lines.append(_Line(f"{session.uczestnik} — {session.total_shots} "
+                           f"{tr('shots_label')}", f_bot, style.text_color))
+    if not lines:
+        return None
+
+    pad_x = int(base * _LIST_PAD_X)
+    pad_y = int(base * _LIST_PAD_Y)
+    line_gap = int(base * _LINE_GAP)
+
+    # Wysokość linii z "Ag" (stała, niezależna od treści) — panel nie zmienia
+    # wysokości między sesjami o różnych znakach diakrytycznych.
+    heights = [_text_size(ln.font, "Ag")[1] for ln in lines]
+    panel_w = max(_text_size(ln.font, ln.text)[0] for ln in lines) + 2 * pad_x
+    panel_h = 2 * pad_y + sum(heights) + line_gap * (len(lines) - 1)
+
+    img = Image.new("RGBA", (panel_w, panel_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([(0, 0), (panel_w - 1, panel_h - 1)],
+                           radius=int(panel_h * 0.18), fill=style.bg_color)
+    y = pad_y
+    for ln, h in zip(lines, heights):
+        draw.text((pad_x, y + h // 2), ln.text, font=ln.font, fill=ln.color, anchor="lm")
+        y += h + line_gap
+    return img
 
 
 def render_summary_panel(session: Session, style: OverlayStyle,
@@ -217,11 +399,18 @@ def render_start_banner(style: OverlayStyle, video_size: tuple[int, int]) -> Ima
 def panel_origin(panel_size: tuple[int, int], video_size: tuple[int, int],
                  style: OverlayStyle) -> tuple[int, int]:
     """Oblicza lewy-górny róg panelu na klatce wg pozycji i offsetu ze stylu."""
+    return panel_origin_at(panel_size, video_size, style.position,
+                           style.offset_x, style.offset_y)
+
+
+def panel_origin_at(panel_size: tuple[int, int], video_size: tuple[int, int],
+                    position: str, offset_x: int, offset_y: int) -> tuple[int, int]:
+    """Jak `panel_origin`, ale dla dowolnej pozycji/offsetu (np. nakładka metadanych)."""
     pw, ph = panel_size
     vw, vh = video_size
-    ox, oy = style.offset_x, style.offset_y
+    ox, oy = offset_x, offset_y
 
-    vert, _, horiz = style.position.partition("-")
+    vert, _, horiz = position.partition("-")
     if horiz == "left":
         x = ox
     elif horiz == "right":

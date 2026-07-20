@@ -208,6 +208,30 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   `decode_id_tone` NA `self.video_path` (świadomie NIE na proxy LRF — sygnał ID gra pod
   koniec nagrania, poza oknem na które LRF było dotąd używane) i wpisuje wynik do
   `id_spin`; nie robi auto-fetch — użytkownik klika „Pobierz" sam, jak przy T0.
+- **Panel „lista strzałów" + nakładka metadanych (v0.37.0):** `OverlayStyle.panel_mode`
+  (`"classic"`/`"list"`). Tryb listy: ostatnie ≤`list_max_rows` (domyślnie 5) strzałów jako
+  pigułki (numer | czas | split), najnowszy na dole (większy font, pełna alfa), starsze
+  przesunięte wyżej i wygaszane (`_LIST_ALPHA_*`); aktywny wiersz może pokazywać numer jako
+  „x/yy" (`list_show_progress`, domyślnie ON). Panel ma STAŁY rozmiar z konstrukcji
+  (wysokość = `list_max_rows` slotów dosuniętych do DOŁU — najnowszy strzał zawsze w tym
+  samym miejscu ekranu; szerokości kolumn liczone po WSZYSTKICH strzałach), więc
+  `fixed_size` jest w tym trybie zbędny/ignorowany. DISPATCH jest w
+  `overlay.render_shot_panel`/`shot_panel_max_size` (po `style.panel_mode`) — dzięki temu
+  `render.build_events`, `preview.compose_preview` i scrubber GUI nie znają trybu panelu
+  (zero zmian w ich logice okien czasowych; jeden panel na przedział między strzałami jak
+  dotąd). Teksty pionowo kotwiczone `anchor="lm"` (wspólna oś kolumn o różnych fontach —
+  bez tego numer siedział wyżej niż czas/split, realny bug report z prototypu). Osobna
+  **nakładka metadanych** `render_meta_panel` (jedno tło: nazwa toru + „uczestnik — x
+  strzałów", i18n `shots_label`; None gdy sesja bez metadanych): `show_meta_panel` +
+  `meta_position`/`meta_offset_x/y`, w `build_events` jako zdarzenie z `xy=`
+  (`panel_origin_at`) grające od T0 do końca RÓWNOLEGLE z panelami strzałów — dlatego
+  pętle podglądu (preview.py, gui scrubber) NIE robią już `break` po pierwszym aktywnym
+  zdarzeniu i honorują `ev.xy`. GUI: combo „Styl panelu", spin „Wiersze listy", checkboxy
+  progresu i metadanych, pozycja+offsety metadanych; przeciąganie w podglądzie obsługuje
+  trzeci prostokąt `_preview_rects["meta"]` (priorytet trafień: zegar → meta → panel).
+  W trybie listy nazwa toru/uczestnik/licznik NIE są w panelu strzału — od tego jest
+  nakładka metadanych i panel podsumowania (bez zmian). Snapshoty:
+  `shot_list_panel_pl.png`, `meta_panel_pl.png`.
 - **Płynący zegar od T0:** `OverlayStyle.show_running_clock` (checkbox „Płynący czas od T0").
   Nad nakładką ze strzałami tyka „T+x.xs" liczone od sygnału startu, widoczne od STARTU
   (t ≥ T0). `render.prepare_clock(style)` zwraca bool: `_clock_drawtext_seg` (filtr `drawtext`,

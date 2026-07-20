@@ -136,6 +136,20 @@ class OverlayStyle:
     offset_x: int = 32
     offset_y: int = 32
 
+    # Styl panelu strzału: "classic" = pojedynczy panel z metadanymi,
+    # "list" = przewijana lista ostatnich strzałów (pigułki, najnowszy na dole).
+    panel_mode: str = "classic"
+    list_max_rows: int = 5
+    # W trybie listy aktywny wiersz pokazuje numer jako "x/yy" (postęp przebiegu).
+    list_show_progress: bool = True
+
+    # Osobna nakładka metadanych (nazwa toru / uczestnik — x strzałów),
+    # pozycjonowana niezależnie od panelu strzału.
+    show_meta_panel: bool = False
+    meta_position: str = "top-left"
+    meta_offset_x: int = 32
+    meta_offset_y: int = 32
+
     # Tło panelu (RGBA — ostatni kanał to przezroczystość)
     bg_color: tuple[int, int, int, int] = (0, 0, 0, 170)
     corner_radius: int = 18
@@ -182,6 +196,15 @@ class OverlayStyle:
                 f"clock_position musi być 'auto' lub jednym z {ANCHOR_POSITIONS}, "
                 f"otrzymano {self.clock_position!r}"
             )
+        if self.panel_mode not in ("classic", "list"):
+            raise ValueError(
+                f"panel_mode musi być 'classic' lub 'list', otrzymano {self.panel_mode!r}"
+            )
+        if self.meta_position not in ANCHOR_POSITIONS:
+            raise ValueError(
+                f"meta_position musi być jednym z {ANCHOR_POSITIONS}, "
+                f"otrzymano {self.meta_position!r}"
+            )
 
     def to_dict(self) -> dict:
         """Serializuje styl do słownika gotowego do zapisu JSON."""
@@ -193,6 +216,13 @@ class OverlayStyle:
             "position": self.position,
             "offset_x": self.offset_x,
             "offset_y": self.offset_y,
+            "panel_mode": self.panel_mode,
+            "list_max_rows": self.list_max_rows,
+            "list_show_progress": self.list_show_progress,
+            "show_meta_panel": self.show_meta_panel,
+            "meta_position": self.meta_position,
+            "meta_offset_x": self.meta_offset_x,
+            "meta_offset_y": self.meta_offset_y,
             "bg_color": c(self.bg_color),
             "corner_radius": self.corner_radius,
             "border_enabled": self.border_enabled,
@@ -231,6 +261,13 @@ class OverlayStyle:
             position=d.get("position", "bottom-left"),
             offset_x=int(d.get("offset_x", 32)),
             offset_y=int(d.get("offset_y", 32)),
+            panel_mode=d.get("panel_mode", "classic"),
+            list_max_rows=int(d.get("list_max_rows", 5)),
+            list_show_progress=bool(d.get("list_show_progress", True)),
+            show_meta_panel=bool(d.get("show_meta_panel", False)),
+            meta_position=d.get("meta_position", "top-left"),
+            meta_offset_x=int(d.get("meta_offset_x", 32)),
+            meta_offset_y=int(d.get("meta_offset_y", 32)),
             bg_color=color("bg_color", (0, 0, 0, 170)),
             corner_radius=int(d.get("corner_radius", 18)),
             border_enabled=bool(d.get("border_enabled", True)),

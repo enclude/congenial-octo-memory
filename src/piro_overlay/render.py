@@ -56,7 +56,10 @@ class _Event:
 
 def build_events(session: Session, t0: float, style: OverlayStyle,
                  video_size: tuple[int, int], duration: float) -> list[_Event]:
-    """Tworzy listę zdarzeń nakładki z rozłącznymi oknami czasowymi."""
+    """Tworzy listę zdarzeń nakładki.
+
+    Plansza START / panele strzałów / podsumowanie mają rozłączne okna czasowe;
+    nakładka metadanych (jeśli włączona) gra RÓWNOLEGLE z nimi na własnej pozycji."""
     shots = session.shots
     events: list[_Event] = []
     if not shots:
@@ -98,6 +101,19 @@ def build_events(session: Session, t0: float, style: OverlayStyle,
             overlay.render_summary_panel(session, style, video_size),
             start=summary_start, end=duration,
         ))
+
+    # Nakładka metadanych (tor/uczestnik) — od T0 do końca, własna pozycja (xy),
+    # równolegle z panelami strzałów (okna zdarzeń NIE są już wtedy rozłączne —
+    # to osobny overlay w łańcuchu, więc filtergraph pozostaje poprawny).
+    if style.show_meta_panel:
+        meta = overlay.render_meta_panel(session, style, video_size)
+        meta_start = max(t0, 0.0)
+        if meta is not None and duration > meta_start:
+            events.append(_Event(
+                meta, start=meta_start, end=duration,
+                xy=overlay.panel_origin_at(meta.size, video_size, style.meta_position,
+                                           style.meta_offset_x, style.meta_offset_y),
+            ))
 
     return events
 

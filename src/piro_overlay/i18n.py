@@ -24,6 +24,8 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "final_time": {Lang.PL: "Czas końcowy", Lang.EN: "Final time"},
     "hit_factor": {Lang.PL: "Hit Factor", Lang.EN: "Hit Factor"},
     "summary": {Lang.PL: "Podsumowanie", Lang.EN: "Summary"},
+    # dopełniacz po liczbie w nakładce metadanych ("9 strzałów" / "9 shots")
+    "shots_label": {Lang.PL: "strzałów", Lang.EN: "shots"},
     # --- GUI ---
     "app_title": {Lang.PL: "Piro Overlay", Lang.EN: "Piro Overlay"},
     "choose_video": {Lang.PL: "Wybierz wideo", Lang.EN: "Choose video"},

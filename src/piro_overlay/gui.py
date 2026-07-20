@@ -2059,6 +2059,51 @@ class MainWindow(QMainWindow):
         orow = QHBoxLayout(); orow.addWidget(self.off_x); orow.addWidget(self.off_y)
         form.addRow("Offset X / Y", _wrap(orow))
 
+        self.panel_mode_combo = QComboBox()
+        self.panel_mode_combo.addItem("Klasyczny (jeden strzał)", "classic")
+        self.panel_mode_combo.addItem("Lista ostatnich strzałów", "list")
+        self.panel_mode_combo.setToolTip(
+            "Klasyczny: pojedynczy panel „Strzał x z yy” z metadanymi.\n"
+            "Lista: ostatnie strzały jako wiersze (numer | czas | split) — nowy strzał\n"
+            "pojawia się na dole i przesuwa starsze w górę (starsze są wygaszane).")
+        self.panel_mode_combo.currentIndexChanged.connect(self._update_preview)
+        form.addRow("Styl panelu", self.panel_mode_combo)
+
+        self.list_rows_spin = _ispin(2, 10, 5)
+        self.list_rows_spin.setToolTip("Ile ostatnich strzałów pokazuje lista (tryb „Lista”).")
+        self.list_rows_spin.valueChanged.connect(self._update_preview)
+        form.addRow("Wiersze listy", self.list_rows_spin)
+
+        self.list_progress_chk = QCheckBox("Numer aktywnego wiersza jako „x/yy”")
+        self.list_progress_chk.setChecked(True)
+        self.list_progress_chk.setToolTip(
+            "W trybie „Lista” najnowszy wiersz pokazuje numer jako postęp przebiegu\n"
+            "(np. „6/9” = szósty strzał z dziewięciu).")
+        self.list_progress_chk.stateChanged.connect(self._update_preview)
+        form.addRow(self.list_progress_chk)
+
+        self.meta_chk = QCheckBox("Nakładka toru/uczestnika")
+        self.meta_chk.setToolTip(
+            "Osobna nakładka z nazwą toru i uczestnikiem („Jaro — 9 strzałów”),\n"
+            "widoczna od T0 do końca filmu; pozycjonowana niezależnie (róg + offset\n"
+            "poniżej), można ją też przeciągać w trybie edycji pozycji.")
+        self.meta_chk.stateChanged.connect(self._update_preview)
+        form.addRow(self.meta_chk)
+
+        self.meta_pos_combo = QComboBox()
+        for p in ANCHOR_POSITIONS:
+            self.meta_pos_combo.addItem(p, p)
+        self.meta_pos_combo.setCurrentText("top-left")
+        self.meta_pos_combo.currentIndexChanged.connect(self._update_preview)
+        form.addRow("Pozycja metadanych", self.meta_pos_combo)
+
+        self.meta_off_x = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
+        self.meta_off_y = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
+        self.meta_off_x.valueChanged.connect(self._update_preview)
+        self.meta_off_y.valueChanged.connect(self._update_preview)
+        mrow = QHBoxLayout(); mrow.addWidget(self.meta_off_x); mrow.addWidget(self.meta_off_y)
+        form.addRow("Offset metadanych X / Y", _wrap(mrow))
+
         self.bg_btn = ColorButton((0, 0, 0, 170))
         self.text_btn = ColorButton((255, 255, 255, 255))
         self.accent_btn = ColorButton((255, 196, 0, 255))
@@ -2148,6 +2193,8 @@ class MainWindow(QMainWindow):
         widgets = [
             self.lang_combo, self.scale_spin, self.pos_combo,
             self.off_x, self.off_y, self.bg_btn, self.text_btn,
+            self.panel_mode_combo, self.list_rows_spin, self.list_progress_chk,
+            self.meta_chk, self.meta_pos_combo, self.meta_off_x, self.meta_off_y,
             self.accent_btn, self.border_btn, self.border_chk, self.border_w,
             self.clock_chk, self.clock_pos_combo, self.clock_off_x, self.clock_off_y,
             self.banner_spin, self.banner_scale_spin, self.banner_bg_btn,
@@ -2164,6 +2211,17 @@ class MainWindow(QMainWindow):
         self.pos_combo.setCurrentText(style.position)
         self.off_x.setValue(style.offset_x)
         self.off_y.setValue(style.offset_y)
+        pidx = self.panel_mode_combo.findData(style.panel_mode)
+        if pidx >= 0:
+            self.panel_mode_combo.setCurrentIndex(pidx)
+        self.list_rows_spin.setValue(style.list_max_rows)
+        self.list_progress_chk.setChecked(style.list_show_progress)
+        self.meta_chk.setChecked(style.show_meta_panel)
+        midx = self.meta_pos_combo.findData(style.meta_position)
+        if midx >= 0:
+            self.meta_pos_combo.setCurrentIndex(midx)
+        self.meta_off_x.setValue(style.meta_offset_x)
+        self.meta_off_y.setValue(style.meta_offset_y)
         self.bg_btn._rgba = style.bg_color;     self.bg_btn._refresh()
         self.text_btn._rgba = style.text_color; self.text_btn._refresh()
         self.accent_btn._rgba = style.accent_color; self.accent_btn._refresh()
@@ -2309,6 +2367,13 @@ class MainWindow(QMainWindow):
             scale=self.scale_spin.value(),
             position=self.pos_combo.currentText(),
             offset_x=self.off_x.value(), offset_y=self.off_y.value(),
+            panel_mode=self.panel_mode_combo.currentData(),
+            list_max_rows=self.list_rows_spin.value(),
+            list_show_progress=self.list_progress_chk.isChecked(),
+            show_meta_panel=self.meta_chk.isChecked(),
+            meta_position=self.meta_pos_combo.currentData(),
+            meta_offset_x=self.meta_off_x.value(),
+            meta_offset_y=self.meta_off_y.value(),
             bg_color=self.bg_btn.rgba(), text_color=self.text_btn.rgba(),
             accent_color=self.accent_btn.rgba(), border_color=self.border_btn.rgba(),
             border_enabled=self.border_chk.isChecked(), border_width=self.border_w.value(),
@@ -2675,16 +2740,18 @@ class MainWindow(QMainWindow):
             duration = self.waveform.duration or (t + 10)
             events = render.build_events(session, t0, pstyle, frame.size, duration)
             composite = frame.copy()
+            # Bez `break` — nakładka metadanych gra RÓWNOLEGLE z panelem strzału.
             for ev in events:
                 if ev.start <= t < ev.end:
                     panel = ev.image
-                    if ev.centered:
+                    if ev.xy is not None:
+                        x, y = ev.xy
+                    elif ev.centered:
                         x = (frame.size[0] - panel.size[0]) // 2
                         y = (frame.size[1] - panel.size[1]) // 2
                     else:
                         x, y = overlay.panel_origin(panel.size, frame.size, pstyle)
                     composite.alpha_composite(panel, (x, y))
-                    break
             if style.show_running_clock and t >= t0 - 1e-6:
                 self._composite_clock(composite, pstyle, session, t - t0)
             self._show_image(composite)
@@ -2761,6 +2828,14 @@ class MainWindow(QMainWindow):
                 x, y = overlay.panel_origin(panel.size, frame.size, pstyle)
                 self._preview_rects["panel"] = (x, y, panel.size[0], panel.size[1])
             frame.alpha_composite(panel, (x, y))
+            if style.show_meta_panel:
+                meta = overlay.render_meta_panel(session, pstyle, frame.size)
+                if meta is not None:
+                    mx, my = overlay.panel_origin_at(
+                        meta.size, frame.size, pstyle.meta_position,
+                        pstyle.meta_offset_x, pstyle.meta_offset_y)
+                    frame.alpha_composite(meta, (mx, my))
+                    self._preview_rects["meta"] = (mx, my, meta.size[0], meta.size[1])
             if style.show_running_clock:
                 elapsed = (session.shots[0].czas
                            if (mode != AnchorMode.START_SIGNAL or edit) else 0.0)
@@ -2789,6 +2864,8 @@ class MainWindow(QMainWindow):
             offset_y=int(round(style.offset_y * s)),
             clock_offset_x=int(round(style.clock_offset_x * s)),
             clock_offset_y=int(round(style.clock_offset_y * s)),
+            meta_offset_x=int(round(style.meta_offset_x * s)),
+            meta_offset_y=int(round(style.meta_offset_y * s)),
         )
 
     def _composite_clock(self, frame, style, session, elapsed: float) -> None:
@@ -2815,7 +2892,8 @@ class MainWindow(QMainWindow):
         self._grab = None
         if on:
             self.statusBar().showMessage(
-                "Tryb edycji pozycji: przeciągnij panel strzału lub zegar w podglądzie.", 6000)
+                "Tryb edycji pozycji: przeciągnij panel strzału, metadane lub zegar "
+                "w podglądzie.", 6000)
         self._update_preview()
 
     @staticmethod
@@ -2836,8 +2914,8 @@ class MainWindow(QMainWindow):
         return ox, oy, horiz
 
     def _on_preview_grab(self, fx: float, fy: float) -> None:
-        # Zegar rysowany na wierzchu → ma priorytet w trafieniu.
-        for key in ("clock", "panel"):
+        # Zegar rysowany na wierzchu → ma priorytet w trafieniu; potem metadane.
+        for key in ("clock", "meta", "panel"):
             r = self._preview_rects.get(key)
             if r and r[0] <= fx <= r[0] + r[2] and r[1] <= fy <= r[1] + r[3]:
                 self._grab = {"key": key, "fx": fx, "fy": fy,
@@ -2860,6 +2938,12 @@ class MainWindow(QMainWindow):
             if ox is not None:
                 self.off_x.setValue(int(round(ox / scale)))
             self.off_y.setValue(int(round(oy / scale)))
+        elif g["key"] == "meta":
+            pos = self.meta_pos_combo.currentData()
+            ox, oy, _ = self._invert_offset(pos, (nx, ny), (g["w"], g["h"]), (fw, fh))
+            if ox is not None:
+                self.meta_off_x.setValue(int(round(ox / scale)))
+            self.meta_off_y.setValue(int(round(oy / scale)))
         else:  # zegar
             cp = self.clock_pos_combo.currentData()
             if cp == "auto":

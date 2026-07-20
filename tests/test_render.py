@@ -90,6 +90,25 @@ def test_clock_position_auto_above_panel():
     assert y == 360 - 30 - 32 - 120 - 6   # h - clock_h - offset_y - panel_h - gap
 
 
+def test_build_events_meta_panel():
+    sess = Session(shots=[Shot(1, 1.0), Shot(2, 2.5, 1.5)],
+                   nazwa_toru="Tor 1", uczestnik="Jaro")
+    style = OverlayStyle(show_meta_panel=True, meta_position="top-left")
+    events = render.build_events(sess, 0.5, style, (640, 360), 8.0)
+    meta = [ev for ev in events if ev.xy is not None]
+    assert len(meta) == 1
+    # Od T0 do końca, równolegle z panelami strzałów; pozycja własna (xy).
+    assert meta[0].start == 0.5 and meta[0].end == 8.0
+    assert meta[0].xy == (style.meta_offset_x, style.meta_offset_y)
+
+
+def test_build_events_meta_panel_skipped_without_metadata():
+    sess = Session(shots=[Shot(1, 1.0)])
+    style = OverlayStyle(show_meta_panel=True)
+    events = render.build_events(sess, 0.5, style, (640, 360), 8.0)
+    assert all(ev.xy is None for ev in events)
+
+
 def test_auto_trim_basic():
     # T0=10.0, ostatni strzał 55.68s, margines 5s, lead-in domyślny 5s
     start, end = auto_trim_window(10.0, 55.68, tail=5.0)

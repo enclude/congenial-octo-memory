@@ -32,6 +32,8 @@ def scaled_style(style: OverlayStyle, video_h: int, frame_h: int) -> OverlayStyl
         offset_y=int(round(style.offset_y * s)),
         clock_offset_x=int(round(style.clock_offset_x * s)),
         clock_offset_y=int(round(style.clock_offset_y * s)),
+        meta_offset_x=int(round(style.meta_offset_x * s)),
+        meta_offset_y=int(round(style.meta_offset_y * s)),
     )
 
 
@@ -66,16 +68,19 @@ def compose_preview(frame: Image.Image, session: Session | None, t: float,
         return composite
     pstyle = scaled_style(style, video_h or frame.size[1], frame.size[1])
     events = render.build_events(session, t0, pstyle, composite.size, duration)
+    # Bez `break` — nakładka metadanych gra RÓWNOLEGLE z panelem strzału
+    # (dwa aktywne zdarzenia naraz), jak w łańcuchu overlay w renderze.
     for ev in events:
         if ev.start <= t < ev.end:
             panel = ev.image
-            if ev.centered:
+            if ev.xy is not None:
+                x, y = ev.xy
+            elif ev.centered:
                 x = (composite.size[0] - panel.size[0]) // 2
                 y = (composite.size[1] - panel.size[1]) // 2
             else:
                 x, y = overlay.panel_origin(panel.size, composite.size, pstyle)
             composite.alpha_composite(panel, (x, y))
-            break
     if pstyle.show_running_clock and t >= t0 - 1e-6:
         # Render zamraża zegar na ostatnim strzale — podgląd tak samo.
         elapsed = min(t - t0, session.shots[-1].czas)
