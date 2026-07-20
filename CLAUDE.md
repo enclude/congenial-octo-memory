@@ -109,6 +109,18 @@ Jeśli po uruchomieniu `.exe` pojawi się błąd o braku FFmpeg, sprawdź czy bi
 trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmienną
 `IMAGEIO_FFMPEG_EXE` na ścieżkę do binarki obok `.exe`.
 
+**PUŁAPKA — „No module named 'piro_overlay.gui'" w runtime .exe (v0.38.1):** PyInstaller
+przy analizie POMIJA PO CICHU moduł, którego nie umie skompilować („invalid module" tylko
+w `build/…/warn-*.txt`) — exe buduje się „bez błędu" i pada dopiero przy starcie. Realny
+przypadek: ASCII `"` zamiast typograficznego `”` w tooltipie gui.py = SyntaxError; testy
+tego nie łapały, bo środowisko testowe (WSL) nie ma PySide6 i nic nie importuje gui.py.
+Strażnik: `tests/test_syntax.py` kompiluje (`py_compile`) każdy moduł pakietu + `app.py`
+bez importowania — łapie błąd składni niezależnie od zależności. Spec od tej wersji jest
+też odporny na PEP 660: `pathex` bezwzględny (`SPECPATH/src`), `sys.path.insert(src)` +
+`hiddenimports=collect_submodules("piro_overlay")` — pakiet zbierany JAWNIE ze źródeł,
+bez polegania na editable install w venv (nowe pip robią editable przez finder
+`__editable___…`, którego analiza PyInstallera nie śledzi).
+
 ## Funkcje wprowadzone po MVP
 
 - **Punkt wejścia .exe:** `app.py` (importuje `piro_overlay.gui`) — NIE pakuj `gui.py` jako

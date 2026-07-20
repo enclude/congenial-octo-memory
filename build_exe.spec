@@ -11,6 +11,8 @@
 # `assets/fonts`, skąd czyta je `resources.py` przez `sys._MEIPASS`.
 
 import os
+import sys
+
 import imageio_ffmpeg
 
 block_cipher = None
@@ -19,6 +21,17 @@ block_cipher = None
 # Używamy ścieżek bezwzględnych — PyInstaller po cichu ignoruje ścieżki względne,
 # których nie może znaleźć, co powoduje brak ikony lub zasobów w paczce.
 _root = SPECPATH
+
+# Pakiet bierzemy JAWNIE ze źródeł (src/), nie z instalacji w venv. Nowsze pip
+# instalują `pip install -e .` przez finder PEP 660 (__editable___…_finder),
+# którego analiza PyInstallera nie umie prześledzić — objaw: exe buduje się bez
+# błędu, a w runtime pada „No module named 'piro_overlay.gui'" (pakiet-rodzic
+# trafia do paczki, submoduły nie). sys.path dla collect_submodules poniżej,
+# pathex (bezwzględny!) dla analizy importów z app.py.
+_src = os.path.join(_root, "src")
+sys.path.insert(0, _src)
+
+from PyInstaller.utils.hooks import collect_submodules
 
 ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
 
@@ -40,10 +53,12 @@ if os.path.exists(_full_ffmpeg):
 
 a = Analysis(
     ["app.py"],
-    pathex=["src"],
+    pathex=[_src],
     binaries=binaries,
     datas=datas,
-    hiddenimports=["imageio_ffmpeg"],
+    # Wszystkie submoduły pakietu jawnie — importy w app.py są wewnątrz funkcji
+    # (leniwe rozgałęzienie GUI/CLI), więc nie polegamy na samej analizie bytecode'u.
+    hiddenimports=["imageio_ffmpeg", *collect_submodules("piro_overlay")],
     hookspath=[],
     runtime_hooks=[],
     excludes=["soundfile", "_soundfile"],

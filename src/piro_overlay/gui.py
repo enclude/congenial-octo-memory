@@ -1960,7 +1960,7 @@ class MainWindow(QMainWindow):
             "Szuka w nagraniu sygnału tonowego ID, który timer odtwarza po zapisie\n"
             "sesji w bazie (marker 5000 Hz + 4 cyfry + cyfra kontrolna, 5200–7000 Hz),\n"
             "wpisuje wykryte ID i OD RAZU pobiera dane z API oraz przycina film\n"
-            "(jak „Pobierz i przytnij"). Zawsze analizuje oryginalny plik (nie proxy LRF).")
+            "(jak „Pobierz i przytnij”). Zawsze analizuje oryginalny plik (nie proxy LRF).")
         detect_id_tone.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         detect_id_tone.clicked.connect(self._detect_id_tone)
         detect_row = QHBoxLayout(); detect_row.addWidget(detect_id_tone)
