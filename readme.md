@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.24.0
+> **Wersja:** 0.37.0
 > **Dokumentacja wersji web (Docker/deploy):** [readme_web.md](readme_web.md)
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
@@ -30,6 +30,15 @@ Panel strzału (numer, czas od startu, split, „x z yy") oraz opcjonalny zegar 
 liczony od sygnału startu.
 
 ![Widok nakładki z płynącym czasem](pictures/01%20widok%20nakładki%20z%20czasem.png)
+
+### Nakładka „lista strzałów" + metadane (od v0.37.0)
+
+Alternatywny styl panelu: ostatnie strzały jako lista (numer | czas | split) — nowy strzał
+pojawia się na dole (wyróżniony, z postępem „x/yy"), starsze przesuwają się w górę
+i stopniowo gasną. Do tego osobna, niezależnie pozycjonowana nakładka z nazwą toru
+i uczestnikiem. Obie nakładki można przeciągać myszą w podglądzie (tryb edycji pozycji).
+
+![Widok nakładki „lista strzałów" z metadanymi toru i uczestnika](pictures/04%20widok%20nakładki%20lista%20strzałów.png)
 
 ### Przetwarzanie wsadowe
 
@@ -184,11 +193,20 @@ przezroczystość), obramowanie (kolor/grubość/wł.-wył.), kolor napisów (te
 czas trwania planszy „START" oraz język (PL/EN). Podgląd aktualizuje się na żywo, a
 **Ctrl+klik na waveformie** pokazuje klatkę wideo z nałożonym podglądem nakładki.
 
+- **Styl panelu (od v0.37.0):** *Klasyczny* (pojedynczy panel „Strzał x z yy" z metadanymi)
+  albo *Lista ostatnich strzałów* — ostatnie strzały jako wiersze (numer | czas | split),
+  nowy strzał pojawia się na dole (wyróżniony), starsze przesuwają się w górę i gasną.
+  Liczba wierszy do wyboru (2–10, domyślnie 5); aktywny wiersz może pokazywać numer jako
+  postęp **„x/yy"** (np. „6/9"). Panel listy ma stały rozmiar i stałą pozycję aktywnego
+  wiersza — nic nie skacze między strzałami.
+- **Nakładka toru/uczestnika (od v0.37.0):** osobna nakładka z nazwą toru i uczestnikiem
+  („Jaro — 9 strzałów"), widoczna od T0 do końca filmu, z własną pozycją (róg + offset).
+  Przydatna zwłaszcza w trybie listy, który nie pokazuje metadanych w panelu strzału.
 - **Przeciąganie pozycji w podglądzie:** włącz „✥ Edytuj pozycje (przeciąganie)" nad
-  podglądem i przeciągnij **panel strzału** lub **zegar** myszą, by ustawić ich pozycję
-  (aktualizuje offsety na żywo). W tym trybie podgląd pokazuje panel strzału także przy
-  kotwicy „Sygnał startu". Offsety przeliczane są na rozdzielczość wyjściową, więc podgląd
-  odpowiada renderowi.
+  podglądem i przeciągnij **panel strzału**, **nakładkę metadanych** lub **zegar** myszą,
+  by ustawić ich pozycję (aktualizuje offsety na żywo). W tym trybie podgląd pokazuje
+  panel strzału także przy kotwicy „Sygnał startu". Offsety przeliczane są na
+  rozdzielczość wyjściową, więc podgląd odpowiada renderowi.
 
 - **Płynący czas od T0:** opcjonalny zegar **„T+x.xs"** liczony od sygnału startu i widoczny
   już od STARTU (jeszcze przed pierwszym strzałem). Włącz checkboxem w sekcji wyglądu.
