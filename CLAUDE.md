@@ -206,8 +206,12 @@ trafiła do bundla (`imageio_ffmpeg/binaries/`). Alternatywa awaryjna: ustaw zmi
   (nie 7500 jak w v1) wynika z pomiaru realnego nagrania — patrz uzasadnienie v2 wyżej.
   GUI: przycisk „Wykryj ID z audio" (grupa źródła danych, pod polem ID) woła
   `decode_id_tone` NA `self.video_path` (świadomie NIE na proxy LRF — sygnał ID gra pod
-  koniec nagrania, poza oknem na które LRF było dotąd używane) i wpisuje wynik do
-  `id_spin`; nie robi auto-fetch — użytkownik klika „Pobierz" sam, jak przy T0.
+  koniec nagrania, poza oknem na które LRF było dotąd używane), wpisuje wynik do
+  `id_spin`, przełącza źródło na ID (`rb_id`) i OD RAZU woła `_fetch_id_and_trim()`
+  (pobranie z API + T0 + przycięcie) — od v0.38.0; wcześniej celowo bez auto-fetch,
+  ale wykryte ID przechodzi checksumę protokołu, więc ręczne „Pobierz" było zbędnym
+  krokiem (feedback z użycia). Wsad (`BatchIdDetectWorker`) ZOSTAJE bez auto-fetch —
+  tam użytkownik weryfikuje ID hurtowo przed „Przygotuj wszystkie".
 - **Panel „lista strzałów" + nakładka metadanych (v0.37.0):** `OverlayStyle.panel_mode`
   (`"classic"`/`"list"`). Tryb listy: ostatnie ≤`list_max_rows` (domyślnie 5) strzałów jako
   pigułki (numer | czas | split), najnowszy na dole (większy font, pełna alfa), starsze

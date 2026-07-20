@@ -2,7 +2,7 @@
 
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.37.0
+> **Wersja:** 0.38.0
 > **Dokumentacja wersji web (Docker/deploy):** [readme_web.md](readme_web.md)
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
@@ -334,9 +334,11 @@ Po samym **wczytaniu pliku** aplikacja również od razu wykrywa T0 i ustawia pr
 Przycisk **„Wykryj ID z audio"** (pod polem ID) odczytuje ID sesji prosto z nagrania —
 przydatne, gdy timer (np. [timer.pifpaf.fun](https://timer.pifpaf.fun)) po zapisaniu
 sesji w bazie kalkulatora odtworzył sygnał tonowy ID, a mikrofon kamery go nagrał.
-Rozpoznaje marker 5000 Hz + 4 cyfry i cyfrę kontrolną (5200–7000 Hz), wpisuje wykryte ID do pola —
-kliknij potem „Pobierz" jak zwykle. Gdy nie znajdzie sygnału (timer go nie odtworzył
-albo mikrofon nie nagrał), pokazuje komunikat i nic nie zmienia — ID wpisujesz ręcznie.
+Rozpoznaje marker 5000 Hz + 4 cyfry i cyfrę kontrolną (5200–7000 Hz), wpisuje wykryte ID
+do pola i **od razu pobiera dane z API oraz przycina film** (jak „Pobierz i przytnij" —
+wykryte ID przeszło checksumę, więc dodatkowe kliknięcie było zbędne; od v0.38.0).
+Gdy nie znajdzie sygnału (timer go nie odtworzył albo mikrofon nie nagrał), pokazuje
+komunikat i nic nie zmienia — ID wpisujesz ręcznie.
 Analizuje zawsze oryginalny plik wideo (nie proxy `.LRF`).
 
 ## Testy

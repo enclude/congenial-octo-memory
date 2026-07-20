@@ -1958,8 +1958,9 @@ class MainWindow(QMainWindow):
         detect_id_tone = QPushButton("Wykryj ID z audio")
         detect_id_tone.setToolTip(
             "Szuka w nagraniu sygnału tonowego ID, który timer odtwarza po zapisie\n"
-            "sesji w bazie (marker 5000 Hz + 4 cyfry + cyfra kontrolna, 5200–7000 Hz)\n"
-            "i wpisuje wykryte ID. Zawsze analizuje oryginalny plik (nie proxy LRF).")
+            "sesji w bazie (marker 5000 Hz + 4 cyfry + cyfra kontrolna, 5200–7000 Hz),\n"
+            "wpisuje wykryte ID i OD RAZU pobiera dane z API oraz przycina film\n"
+            "(jak „Pobierz i przytnij"). Zawsze analizuje oryginalny plik (nie proxy LRF).")
         detect_id_tone.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         detect_id_tone.clicked.connect(self._detect_id_tone)
         detect_row = QHBoxLayout(); detect_row.addWidget(detect_id_tone)
@@ -2640,7 +2641,10 @@ class MainWindow(QMainWindow):
         self.t0_spin.setValue(detected)  # wywoła _on_t0_spin → waveform + podgląd
 
     def _detect_id_tone(self):
-        """Dekoduje ID sesji z sygnału tonowego (timer po zapisie w bazie).
+        """Dekoduje ID sesji z sygnału tonowego (timer po zapisie w bazie),
+        po czym od razu pobiera dane z API i przycina film (jak „Pobierz
+        i przytnij") — wykryte ID przeszło checksumę, więc dodatkowe kliknięcie
+        „Pobierz" było tylko zbędnym krokiem.
 
         Zawsze analizuje `self.video_path` — NIE proxy LRF (proxy nie było
         częścią pomiaru, którym dobrano pasmo 5000–7000 Hz, a sygnał ID gra
@@ -2661,7 +2665,9 @@ class MainWindow(QMainWindow):
                 "Nie znaleziono sygnału ID w audio — wpisz ID ręcznie.")
             return
         self.id_spin.setValue(detected)
+        self.rb_id.setChecked(True)  # render ma użyć sesji z API, nie pola tekstowego
         self.statusBar().showMessage(f"Wykryto ID z audio: {detected}", 8000)
+        self._fetch_id_and_trim()
 
     def _next_candidate(self):
         """Proponuje kolejny wykryty onset (po aktualnej kotwicy) jako kotwicę."""
