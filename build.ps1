@@ -19,7 +19,7 @@
 param(
     [switch]$Clean,
     [switch]$WithFfmpeg,
-    [switch]$ts,            # dopisz biezacy timestamp do nazwy .exe
+    [switch]$ts,            # copy .exe as PiroOverlay_v<version>_<timestamp>.exe
     [string]$VenvDir = ".venv-win"
 )
 
@@ -129,9 +129,15 @@ if (-not (Test-Path $exe)) {
 }
 
 if ($ts) {
-    # Nazwa z biezacym timestampem, np. PiroOverlay_20260626_153012.exe
+    # Name with app version + current timestamp, e.g.
+    # PiroOverlay_v0.39.0_20260626_153012.exe. Version is read from the single
+    # source of truth (src/piro_overlay/__init__.py) so the file name always
+    # says exactly which build it is (see also: render diagnostics in metadata).
+    $verMatch = Select-String -Path "src\piro_overlay\__init__.py" `
+        -Pattern '__version__\s*=\s*"([^"]+)"'
+    $version = if ($verMatch) { $verMatch.Matches[0].Groups[1].Value } else { "unknown" }
     $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-    $stampedExe = Join-Path "dist" ("PiroOverlay_{0}.exe" -f $stamp)
+    $stampedExe = Join-Path "dist" ("PiroOverlay_v{0}_{1}.exe" -f $version, $stamp)
     Copy-Item $exe $stampedExe -Force
     Write-Host "`nDone: $((Resolve-Path $stampedExe).Path)" -ForegroundColor Green
 } else {
