@@ -381,19 +381,36 @@ def clock_panel_max_size(style: OverlayStyle, video_size: tuple[int, int],
 
 
 def render_start_banner(style: OverlayStyle, video_size: tuple[int, int]) -> Image.Image:
-    """Duża plansza „START" (wyśrodkowywana przez render.py)."""
+    """Duża plansza „START" (wyśrodkowywana przez render.py).
+
+    Stylistyka jak pigułki listy/metadanych (v0.39.0): mocno zaokrąglone tło,
+    bez obramowania domyślnie, napis kotwiczony w ŚRODKU (`anchor="mm"`) —
+    stary `_render_panel` rysował od górnej krawędzi tight-bboxa, przez co
+    wersaliki „START" siadały optycznie za nisko."""
     tr = get_translator(style.lang)
-    banner_style = replace(
-        style,
-        scale=style.scale * style.start_banner_scale,
-        bg_color=style.start_banner_bg_color,
-        border_enabled=style.start_banner_border_enabled,
-        border_color=style.start_banner_border_color,
-        border_width=style.start_banner_border_width,
-    )
+    banner_style = replace(style, scale=style.scale * style.start_banner_scale)
     base = _base_font_size(video_size[1], banner_style)
     f_start = _font(int(base * 3.0), bold=True)
-    return _render_panel([_Line(tr("start"), f_start, style.start_banner_text_color)], banner_style, base)
+    text = tr("start")
+
+    pad = int(base * _PAD)
+    tw, th = _text_size(f_start, text)
+    panel_w, panel_h = tw + 2 * pad, th + 2 * pad
+
+    img = Image.new("RGBA", (panel_w, panel_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle(
+        [(0, 0), (panel_w - 1, panel_h - 1)],
+        radius=int(panel_h * 0.18),
+        fill=style.start_banner_bg_color,
+        outline=(style.start_banner_border_color
+                 if style.start_banner_border_enabled else None),
+        width=(max(1, int(style.start_banner_border_width * banner_style.scale))
+               if style.start_banner_border_enabled else 1),
+    )
+    draw.text((panel_w // 2, panel_h // 2), text, font=f_start,
+              fill=style.start_banner_text_color, anchor="mm")
+    return img
 
 
 def panel_origin(panel_size: tuple[int, int], video_size: tuple[int, int],

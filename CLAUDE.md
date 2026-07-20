@@ -248,6 +248,24 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   W trybie listy nazwa toru/uczestnik/licznik NIE są w panelu strzału — od tego jest
   nakładka metadanych i panel podsumowania (bez zmian). Snapshoty:
   `shot_list_panel_pl.png`, `meta_panel_pl.png`.
+- **Diagnostyka renderu w metadanych pliku (v0.39.0):** `render._diag_metadata_args`
+  dokłada `-metadata comment=<JSON>` do render_video (per próba enkodera — po fallbacku
+  w pliku jest FAKTYCZNY enkoder), render_webm i trim_video (GIF nie ma metadanych
+  kontenera — pomijany). Payload: wersja aplikacji, kind (overlay/trim), rendered_at,
+  trim, t0, anchor, encoder, liczba strzałów/ostatni strzał/tor/uczestnik oraz PEŁNY
+  `style.to_dict()`. Odczyt: `ffprobe -show_format plik.mp4` albo `ffmpeg -i` (UWAGA:
+  `ffmpeg -i` UCINA wyświetlaną wartość ~256 znaków — pełny JSON jest w pliku; asercje
+  testów celują w pola z początku payloadu). Powód: diagnoza „czemu render tak wygląda"
+  (np. stary styl z pamięci per-plik / zapisanej kolejki) bez zgadywania — plik sam mówi,
+  czym i z jakimi parametrami powstał. Testy: `test_diag_metadata_args_payload`,
+  `test_render_video_embeds_diag_metadata` (e2e na tiny_video).
+- **Plansza START w stylistyce pigułek (v0.39.0):** `render_start_banner` rysuje własne
+  tło (rounded, radius `panel_h*0.18`) i kotwiczy napis `anchor="mm"` w środku — stary
+  `_render_panel` rysował tekst od górnej krawędzi tight-bboxa, więc wersaliki „START"
+  siadały optycznie za nisko. Nowe domyślne: `start_banner_bg_color=(0,0,0,150)`
+  (bardziej przezroczysta), `start_banner_border_enabled=False`; pola stylu bez zmian
+  (obramowanie nadal dostępne, tylko domyślnie wyłączone). Snapshot `start_banner_pl`
+  zregenerowany.
 - **Płynący zegar od T0:** `OverlayStyle.show_running_clock` (checkbox „Płynący czas od T0").
   Nad nakładką ze strzałami tyka „T+x.xs" liczone od sygnału startu, widoczne od STARTU
   (t ≥ T0). `render.prepare_clock(style)` zwraca bool: `_clock_drawtext_seg` (filtr `drawtext`,

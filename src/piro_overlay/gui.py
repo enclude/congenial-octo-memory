@@ -2156,7 +2156,7 @@ class MainWindow(QMainWindow):
         self.banner_scale_spin.valueChanged.connect(self._update_preview)
         form.addRow("Rozmiar planszy START (skala)", self.banner_scale_spin)
 
-        self.banner_bg_btn = ColorButton((0, 0, 0, 200))
+        self.banner_bg_btn = ColorButton((0, 0, 0, 150))
         self.banner_bg_btn.changed.connect(self._update_preview)
         form.addRow("Tło / przezroczystość START", self.banner_bg_btn)
 
@@ -2169,7 +2169,7 @@ class MainWindow(QMainWindow):
         form.addRow("Obramowanie START", self.banner_border_btn)
 
         self.banner_border_chk = QCheckBox("Włącz obramowanie START")
-        self.banner_border_chk.setChecked(True)
+        self.banner_border_chk.setChecked(False)
         self.banner_border_chk.stateChanged.connect(self._update_preview)
         form.addRow(self.banner_border_chk)
 

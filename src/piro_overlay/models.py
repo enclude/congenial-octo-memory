@@ -174,9 +174,9 @@ class OverlayStyle:
     # Plansza START
     start_banner_duration: float = 1.0
     start_banner_scale: float = 1.0
-    start_banner_bg_color: tuple[int, int, int, int] = (0, 0, 0, 200)
+    start_banner_bg_color: tuple[int, int, int, int] = (0, 0, 0, 150)
     start_banner_text_color: tuple[int, int, int, int] = (255, 196, 0, 255)
-    start_banner_border_enabled: bool = True
+    start_banner_border_enabled: bool = False
     start_banner_border_color: tuple[int, int, int, int] = (255, 196, 0, 220)
     start_banner_border_width: int = 3
 
@@ -281,9 +281,9 @@ class OverlayStyle:
             clock_offset_y=int(d.get("clock_offset_y", 32)),
             start_banner_duration=float(d.get("start_banner_duration", 1.0)),
             start_banner_scale=float(d.get("start_banner_scale", 1.0)),
-            start_banner_bg_color=color("start_banner_bg_color", (0, 0, 0, 200)),
+            start_banner_bg_color=color("start_banner_bg_color", (0, 0, 0, 150)),
             start_banner_text_color=color("start_banner_text_color", (255, 196, 0, 255)),
-            start_banner_border_enabled=bool(d.get("start_banner_border_enabled", True)),
+            start_banner_border_enabled=bool(d.get("start_banner_border_enabled", False)),
             start_banner_border_color=color("start_banner_border_color", (255, 196, 0, 220)),
             start_banner_border_width=int(d.get("start_banner_border_width", 3)),
         )

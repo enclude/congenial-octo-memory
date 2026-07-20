@@ -8,10 +8,12 @@ filtrów `overlay=...:enable='between(t,a,b)'`. Audio i obraz źródłowy są za
 from __future__ import annotations
 
 import functools
+import json
 import re
 import subprocess
 import tempfile
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -39,6 +41,47 @@ def _log_render(msg: str) -> None:
         pass
 
 _LAST_SHOT_HOLD = 2.0  # ile sekund trzymać panel ostatniego strzału przed podsumowaniem
+
+
+def _diag_metadata_args(kind: str, trim: tuple[float, float],
+                        session: Session | None = None,
+                        t0: float | None = None,
+                        style: OverlayStyle | None = None,
+                        mode: AnchorMode | None = None,
+                        encoder: str | None = None) -> list[str]:
+    """Diagnostyka renderu wpisywana w metadane kontenera (pole `comment`).
+
+    Niewidoczna na obrazie; do odczytu np. `ffprobe -show_format plik.mp4`
+    albo we właściwościach pliku. Zawiera wersję aplikacji i KOMPLET parametrów
+    (styl, T0, przycięcie, enkoder) — odpowiada na „czym i jak to wyrenderowano"
+    bez zgadywania (realny przypadek: render „starym" stylem, bo pamięć per-plik
+    /zapisana kolejka przywróciły poprzednie ustawienia). GIF nie ma metadanych
+    kontenera — tam pomijamy."""
+    from . import __version__
+    payload: dict = {
+        "app": f"PiroOverlay {__version__}",
+        "kind": kind,
+        "rendered_at": datetime.now().isoformat(timespec="seconds"),
+        "trim": [round(trim[0], 3), round(trim[1], 3)],
+    }
+    if t0 is not None:
+        payload["t0"] = round(t0, 3)
+    if mode is not None:
+        payload["anchor"] = mode.value
+    if encoder:
+        payload["encoder"] = encoder
+    if session is not None:
+        payload["shots"] = len(session.shots)
+        if session.shots:
+            payload["last_shot"] = session.shots[-1].czas
+        if session.nazwa_toru:
+            payload["nazwa_toru"] = session.nazwa_toru
+        if session.uczestnik:
+            payload["uczestnik"] = session.uczestnik
+    if style is not None:
+        payload["style"] = style.to_dict()
+    comment = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return ["-metadata", f"comment={comment}"]
 
 
 class RenderCancelled(Exception):
@@ -548,6 +591,9 @@ def render_video(video_path: str | Path, session: Session, t0: float,
                 "-map", f"[{cur}]", "-map", "0:a?",
                 *_video_encoder_args(enc),
                 "-c:a", "aac", "-movflags", "+faststart",
+                # enc per próba — po fallbacku metadane niosą FAKTYCZNY enkoder
+                *_diag_metadata_args("overlay", (src_start, src_end), session,
+                                     t0, style, mode, enc),
                 str(out_path),
             ]
 
@@ -643,6 +689,8 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
             "-map", f"[{cur}]", "-map", "0:a?",
             "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0", "-pix_fmt", "yuv420p",
             "-c:a", "libopus", "-b:a", "96k",
+            *_diag_metadata_args("overlay", (src_start, src_end), session,
+                                 t0, style, mode, "libvpx-vp9"),
             str(out_path),
         ]
         _run_with_progress(cmd, out_duration, progress_cb, cancel_check, on_process)
@@ -787,6 +835,7 @@ def trim_video(video_path: str | Path, out_path: str | Path,
             "-map", "0:v:0", "-map", "0:a?",   # tylko 1. wideo (pomiń miniaturę MJPEG DJI)
             *_video_encoder_args(enc),
             "-c:a", "aac", "-movflags", "+faststart",
+            *_diag_metadata_args("trim", (src_start, src_end), encoder=enc),
             str(out_path),
         ]
 

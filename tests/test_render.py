@@ -90,6 +90,40 @@ def test_clock_position_auto_above_panel():
     assert y == 360 - 30 - 32 - 120 - 6   # h - clock_h - offset_y - panel_h - gap
 
 
+def test_diag_metadata_args_payload():
+    import json
+    sess = Session(shots=[Shot(1, 1.0), Shot(2, 2.5, 1.5)],
+                   nazwa_toru="Tor 1", uczestnik="Jaro")
+    style = OverlayStyle(panel_mode="list")
+    args = render._diag_metadata_args("overlay", (3.0, 40.6), sess, 24.5, style,
+                                      AnchorMode.START_SIGNAL, "libx264")
+    assert args[0] == "-metadata" and args[1].startswith("comment=")
+    payload = json.loads(args[1].removeprefix("comment="))
+    assert payload["app"].startswith("PiroOverlay ")
+    assert payload["kind"] == "overlay"
+    assert payload["t0"] == 24.5 and payload["trim"] == [3.0, 40.6]
+    assert payload["encoder"] == "libx264" and payload["anchor"] == "start_signal"
+    assert payload["shots"] == 2 and payload["uczestnik"] == "Jaro"
+    assert payload["style"]["panel_mode"] == "list"
+
+
+def test_render_video_embeds_diag_metadata(tiny_video, tmp_path):
+    """E2E: metadane diagnostyczne trafiają do kontenera MP4 (pole comment)."""
+    import subprocess
+    from piro_overlay.ffmpeg import UNTRUSTED_INPUT_ARGS, ffmpeg_exe
+    sess = Session(shots=[Shot(1, 1.0), Shot(2, 2.0, 1.0)], nazwa_toru="Tor 1")
+    out = tmp_path / "diag.mp4"
+    render.render_video(tiny_video, sess, 0.5, OverlayStyle(panel_mode="list"),
+                        AnchorMode.START_SIGNAL, out, encoder="cpu")
+    stderr = subprocess.run(
+        [ffmpeg_exe(), *UNTRUSTED_INPUT_ARGS, "-i", str(out)],
+        capture_output=True, text=True).stderr
+    # UWAGA: `ffmpeg -i` UCINA wyświetlaną wartość comment (~256 znaków) — pełny
+    # JSON jest w pliku, ale asercje muszą celować w pola z POCZĄTKU payloadu.
+    assert '"app":"PiroOverlay ' in stderr
+    assert '"kind":"overlay"' in stderr and '"anchor":"start_signal"' in stderr
+
+
 def test_build_events_meta_panel():
     sess = Session(shots=[Shot(1, 1.0), Shot(2, 2.5, 1.5)],
                    nazwa_toru="Tor 1", uczestnik="Jaro")
