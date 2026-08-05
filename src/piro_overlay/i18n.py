@@ -19,6 +19,7 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "split": {Lang.PL: "Split", Lang.EN: "Split"},
     "of": {Lang.PL: "z", Lang.EN: "of"},
     "start": {Lang.PL: "START", Lang.EN: "START"},
+    "first_shot": {Lang.PL: "Pierwszy strzał", Lang.EN: "First shot"},
     "base_time": {Lang.PL: "Czas bazowy", Lang.EN: "Base time"},
     "penalties": {Lang.PL: "Suma kar", Lang.EN: "Penalties"},
     "final_time": {Lang.PL: "Czas końcowy", Lang.EN: "Final time"},

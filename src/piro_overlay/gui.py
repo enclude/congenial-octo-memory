@@ -2083,6 +2083,15 @@ class MainWindow(QMainWindow):
         self.list_progress_chk.stateChanged.connect(self._update_preview)
         form.addRow(self.list_progress_chk)
 
+        self.list_pin_chk = QCheckBox("Przypnij pierwszy strzał na górze listy")
+        self.list_pin_chk.setChecked(True)
+        self.list_pin_chk.setToolTip(
+            "W trybie „Lista” strzał nr 1 zostaje w górnym slocie (z odstępem od\n"
+            "reszty), gdy wypadłby z okna ostatnich strzałów — czas pierwszego\n"
+            "strzału jest widoczny przez cały przebieg.")
+        self.list_pin_chk.stateChanged.connect(self._update_preview)
+        form.addRow(self.list_pin_chk)
+
         self.meta_chk = QCheckBox("Nakładka toru/uczestnika")
         self.meta_chk.setToolTip(
             "Osobna nakładka z nazwą toru i uczestnikiem („Jaro — 9 strzałów”),\n"
@@ -2195,6 +2204,7 @@ class MainWindow(QMainWindow):
             self.lang_combo, self.scale_spin, self.pos_combo,
             self.off_x, self.off_y, self.bg_btn, self.text_btn,
             self.panel_mode_combo, self.list_rows_spin, self.list_progress_chk,
+            self.list_pin_chk,
             self.meta_chk, self.meta_pos_combo, self.meta_off_x, self.meta_off_y,
             self.accent_btn, self.border_btn, self.border_chk, self.border_w,
             self.clock_chk, self.clock_pos_combo, self.clock_off_x, self.clock_off_y,
@@ -2217,6 +2227,7 @@ class MainWindow(QMainWindow):
             self.panel_mode_combo.setCurrentIndex(pidx)
         self.list_rows_spin.setValue(style.list_max_rows)
         self.list_progress_chk.setChecked(style.list_show_progress)
+        self.list_pin_chk.setChecked(style.list_pin_first_shot)
         self.meta_chk.setChecked(style.show_meta_panel)
         midx = self.meta_pos_combo.findData(style.meta_position)
         if midx >= 0:
@@ -2371,6 +2382,7 @@ class MainWindow(QMainWindow):
             panel_mode=self.panel_mode_combo.currentData(),
             list_max_rows=self.list_rows_spin.value(),
             list_show_progress=self.list_progress_chk.isChecked(),
+            list_pin_first_shot=self.list_pin_chk.isChecked(),
             show_meta_panel=self.meta_chk.isChecked(),
             meta_position=self.meta_pos_combo.currentData(),
             meta_offset_x=self.meta_off_x.value(),

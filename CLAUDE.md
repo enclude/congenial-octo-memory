@@ -248,6 +248,23 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   W trybie listy nazwa toru/uczestnik/licznik NIE są w panelu strzału — od tego jest
   nakładka metadanych i panel podsumowania (bez zmian). Snapshoty:
   `shot_list_panel_pl.png`, `meta_panel_pl.png`.
+- **Przypięty pierwszy strzał + czas pierwszego strzału w podsumowaniu (v0.40.0),**
+  feedback z Bill drilla (ID 300/305: 6 strzałów w ~3.25 s, splity ~0.3 s — czas
+  strzału 1 znikał z listy po <2 s i wracał dopiero nigdy): `OverlayStyle.
+  list_pin_first_shot` (domyślnie ON; checkbox w GUI obok progresu listy — wsad
+  dziedziczy przez kopię `current_style()`). Gdy strzał 1 wypada z naturalnego okna
+  (`idx >= list_max_rows`), zostaje PRZYPIĘTY w górnym slocie: stała czytelna alfa
+  `_LIST_ALPHA_PINNED=155` (celowo NIE wygaszany jak najstarszy — to sedno feedbacku)
+  + dodatkowy odstęp `_LIST_PIN_EXTRA_GAP` od reszty listy; środek pokazuje wtedy
+  `list_max_rows−2` poprzednich strzałów. Odstęp jest DOLICZONY do `panel_size` w
+  `_list_metrics` tylko gdy przypięcie kiedykolwiek się uaktywni dla tej sesji
+  (`_list_pin_enabled`: pin ON + rows≥2 + strzałów > rows — zależy tylko od
+  sesji+stylu, więc gwarancja „stały rozmiar z konstrukcji" zostaje; pozycje pigułek
+  dolnych bez zmian, pin rysowany w y=0). Sesje ≤ rows wyglądają identycznie jak bez
+  funkcji (test `test_list_panel_pin_noop_for_short_session`). Tryb classic celowo
+  BEZ zmian. `render_summary_panel` dostał linię `first_shot` (i18n) po nagłówku —
+  tylko gdy strzałów >1 (przy jednym dublowałaby czas bazowy). Snapshoty
+  `shot_list_panel_pl`/`summary_panel_pl` zregenerowane.
 - **Diagnostyka renderu w metadanych pliku (v0.39.0):** `render._diag_metadata_args`
   dokłada `-metadata comment=<JSON>` do render_video (per próba enkodera — po fallbacku
   w pliku jest FAKTYCZNY enkoder), render_webm i trim_video (GIF nie ma metadanych

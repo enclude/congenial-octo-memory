@@ -167,6 +167,8 @@ _LIST_ROW_GAP = 0.22  # odstęp między pigułkami (× base)
 _LIST_COL_GAP = 0.55  # odstęp między kolumnami (× base)
 _LIST_ALPHA_NEW = 235          # bazowa alfa najnowszego wiersza
 _LIST_ALPHA_OLD = (155, 120, 90, 90)  # alfa starszych wg wieku (age-1)
+_LIST_ALPHA_PINNED = 155       # stała alfa przypiętego strzału nr 1 (bez wygaszania)
+_LIST_PIN_EXTRA_GAP = 0.30     # dodatkowy odstęp pod przypiętym wierszem (× base)
 
 
 @dataclass
@@ -204,6 +206,16 @@ def _list_fmt_split(value: float | None) -> str:
     return "—" if value is None else f"+{value:.2f}"
 
 
+def _list_pin_enabled(session: Session, style: OverlayStyle) -> bool:
+    """Czy dla tej sesji przypięcie strzału nr 1 KIEDYKOLWIEK się uaktywni.
+
+    Wymaga ≥2 slotów (przy 1 wierszu nie ma miejsca na przypięcie) i sesji
+    dłuższej niż okno listy (inaczej strzał 1 nigdy z niej nie wypada).
+    Zależy tylko od sesji+stylu → rozmiar panelu pozostaje stały z konstrukcji."""
+    return (style.list_pin_first_shot and max(1, style.list_max_rows) >= 2
+            and len(session.shots) > max(1, style.list_max_rows))
+
+
 def _list_metrics(session: Session, style: OverlayStyle, base: int) -> _ListMetrics:
     f_num = _font(int(base * 0.85), bold=True)
     f_time = _font(base)
@@ -231,6 +243,9 @@ def _list_metrics(session: Session, style: OverlayStyle, base: int) -> _ListMetr
     rows = max(1, style.list_max_rows)
     panel_w = 2 * pad_x + w_num + col_gap + w_time + col_gap + w_split
     panel_h = (rows - 1) * (row_h_old + row_gap) + row_h_new
+    if _list_pin_enabled(session, style):
+        # Miejsce na dodatkowy odstęp między przypiętym strzałem 1 a resztą listy.
+        panel_h += int(base * _LIST_PIN_EXTRA_GAP)
 
     return _ListMetrics(f_num, f_time, f_split, f_num_new, f_time_new, f_split_new,
                         pad_x, pad_y, row_gap, col_gap, w_num, w_time, w_split,
@@ -243,49 +258,71 @@ def _list_row_alpha(newest: bool, age: int) -> int:
     return _LIST_ALPHA_OLD[min(age - 1, len(_LIST_ALPHA_OLD) - 1)]
 
 
+def _draw_list_row(draw: ImageDraw.ImageDraw, m: _ListMetrics, session: Session,
+                   style: OverlayStyle, shot, y: int, newest: bool, alpha: int,
+                   panel_w: int) -> None:
+    """Rysuje jedną pigułkę listy (numer | czas | split) z górną krawędzią w `y`."""
+    bg, text, accent = style.bg_color, style.text_color, style.accent_color
+    rh = m.row_h_new if newest else m.row_h_old
+    fn, ft, fs = ((m.f_num_new, m.f_time_new, m.f_split_new) if newest
+                  else (m.f_num, m.f_time, m.f_split))
+
+    draw.rounded_rectangle(
+        [(0, y), (panel_w - 1, y + rh - 1)],
+        radius=int(rh * 0.28),
+        fill=(*bg[:3], int(bg[3] * alpha / _LIST_ALPHA_NEW)),
+    )
+    # Kotwica "lm" = pionowy środek metryk fontu → kolumny o różnych rozmiarach
+    # fontu (numer 0.85× vs czas 1.0×) siedzą na wspólnej osi wiersza.
+    ty = y + rh // 2
+    num_alpha = alpha if newest else int(alpha * 0.6)
+    draw.text((m.pad_x, ty), _list_num_label(session, shot.numer, style, newest),
+              font=fn, fill=(*text[:3], int(text[3] * num_alpha / 255)), anchor="lm")
+    x = m.pad_x + m.w_num + m.col_gap
+    draw.text((x, ty), _list_fmt_time(shot.czas), font=ft,
+              fill=(*text[:3], int(text[3] * alpha / 255)), anchor="lm")
+    x += m.w_time + m.col_gap
+    draw.text((x, ty), _list_fmt_split(shot.split), font=fs,
+              fill=(*accent[:3], int(accent[3] * alpha / 255)), anchor="lm")
+
+
 def render_shot_list_panel(session: Session, idx: int, style: OverlayStyle,
                            video_size: tuple[int, int]) -> Image.Image:
-    """Panel-lista: ostatnie ≤`list_max_rows` strzałów do `idx` włącznie."""
+    """Panel-lista: ostatnie ≤`list_max_rows` strzałów do `idx` włącznie.
+
+    Gdy `style.list_pin_first_shot` i strzał nr 1 wypadł z okna ostatnich
+    strzałów, zostaje PRZYPIĘTY w górnym slocie (stała czytelna alfa, bez
+    wygaszania) z odstępem od reszty listy — czas pierwszego strzału jest
+    widoczny przez cały przebieg (feedback: Bill drill na małym ekranie)."""
     base = _base_font_size(video_size[1], style)
     m = _list_metrics(session, style, base)
     panel_w, panel_h = m.panel_size
 
-    lo = max(0, idx - (max(1, style.list_max_rows) - 1))
+    max_rows = max(1, style.list_max_rows)
+    # Przypięcie aktywne, gdy strzał 1 nie mieści się już w naturalnym oknie.
+    pinned = _list_pin_enabled(session, style) and idx >= max_rows
+    visible = max_rows - 1 if pinned else max_rows
+    lo = max(0, idx - (visible - 1))
     rows = session.shots[lo:idx + 1]
     n = len(rows)
 
     img = Image.new("RGBA", (panel_w, panel_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    bg, text, accent = style.bg_color, style.text_color, style.accent_color
     y = panel_h
     for k in range(n - 1, -1, -1):
-        shot = rows[k]
         newest = (k == n - 1)
-        alpha = _list_row_alpha(newest, (n - 1) - k)
         rh = m.row_h_new if newest else m.row_h_old
         y -= rh
-        fn, ft, fs = ((m.f_num_new, m.f_time_new, m.f_split_new) if newest
-                      else (m.f_num, m.f_time, m.f_split))
-
-        draw.rounded_rectangle(
-            [(0, y), (panel_w - 1, y + rh - 1)],
-            radius=int(rh * 0.28),
-            fill=(*bg[:3], int(bg[3] * alpha / _LIST_ALPHA_NEW)),
-        )
-        # Kotwica "lm" = pionowy środek metryk fontu → kolumny o różnych rozmiarach
-        # fontu (numer 0.85× vs czas 1.0×) siedzą na wspólnej osi wiersza.
-        ty = y + rh // 2
-        num_alpha = alpha if newest else int(alpha * 0.6)
-        draw.text((m.pad_x, ty), _list_num_label(session, shot.numer, style, newest),
-                  font=fn, fill=(*text[:3], int(text[3] * num_alpha / 255)), anchor="lm")
-        x = m.pad_x + m.w_num + m.col_gap
-        draw.text((x, ty), _list_fmt_time(shot.czas), font=ft,
-                  fill=(*text[:3], int(text[3] * alpha / 255)), anchor="lm")
-        x += m.w_time + m.col_gap
-        draw.text((x, ty), _list_fmt_split(shot.split), font=fs,
-                  fill=(*accent[:3], int(accent[3] * alpha / 255)), anchor="lm")
+        _draw_list_row(draw, m, session, style, rows[k], y, newest,
+                       _list_row_alpha(newest, (n - 1) - k), panel_w)
         y -= m.row_gap
+    if pinned:
+        # Strzał nr 1 w samym górnym slocie (y=0); rozmiar panelu ma już
+        # doliczony _LIST_PIN_EXTRA_GAP, więc odstęp od reszty listy wynika
+        # z konstrukcji, a pozycje pigułek poniżej się nie zmieniają.
+        _draw_list_row(draw, m, session, style, session.shots[0], 0, False,
+                       _LIST_ALPHA_PINNED, panel_w)
     return img
 
 
@@ -339,6 +376,12 @@ def render_summary_panel(session: Session, style: OverlayStyle,
     f_body = _font(base)
 
     lines: list[_Line] = [_Line(tr("summary"), f_head, style.accent_color)]
+
+    # Czas pierwszego strzału (dobycie) — tylko gdy >1 strzał; przy pojedynczym
+    # strzale dublowałby czas bazowy (feedback: Bill drill, łatwo go przegapić).
+    if len(session.shots) > 1:
+        lines.append(_Line(f"{tr('first_shot')}: {_fmt_time(session.shots[0].czas)}",
+                           f_body, style.text_color))
 
     base_time = session.base_time
     if base_time is not None:

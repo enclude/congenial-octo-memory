@@ -142,6 +142,9 @@ class OverlayStyle:
     list_max_rows: int = 5
     # W trybie listy aktywny wiersz pokazuje numer jako "x/yy" (postęp przebiegu).
     list_show_progress: bool = True
+    # W trybie listy strzał nr 1 zostaje przypięty w górnym slocie, gdy wypadłby
+    # z okna ostatnich strzałów (czas pierwszego strzału zawsze widoczny).
+    list_pin_first_shot: bool = True
 
     # Osobna nakładka metadanych (nazwa toru / uczestnik — x strzałów),
     # pozycjonowana niezależnie od panelu strzału.
@@ -219,6 +222,7 @@ class OverlayStyle:
             "panel_mode": self.panel_mode,
             "list_max_rows": self.list_max_rows,
             "list_show_progress": self.list_show_progress,
+            "list_pin_first_shot": self.list_pin_first_shot,
             "show_meta_panel": self.show_meta_panel,
             "meta_position": self.meta_position,
             "meta_offset_x": self.meta_offset_x,
@@ -264,6 +268,7 @@ class OverlayStyle:
             panel_mode=d.get("panel_mode", "classic"),
             list_max_rows=int(d.get("list_max_rows", 5)),
             list_show_progress=bool(d.get("list_show_progress", True)),
+            list_pin_first_shot=bool(d.get("list_pin_first_shot", True)),
             show_meta_panel=bool(d.get("show_meta_panel", False)),
             meta_position=d.get("meta_position", "top-left"),
             meta_offset_x=int(d.get("meta_offset_x", 32)),

@@ -175,6 +175,79 @@ def test_list_panel_max_rows_changes_height(long_session):
     assert h5 > h3
 
 
+def _with_first_shot_time(sess: Session, czas: float) -> Session:
+    import dataclasses
+    first = dataclasses.replace(sess.shots[0], czas=czas)
+    return dataclasses.replace(sess, shots=[first, *sess.shots[1:]])
+
+
+def test_list_panel_pins_first_shot(long_session):
+    # Przy strzale 9 (idx=8, rows=5) strzał 1 wypadł z okna — z przypięciem jego
+    # czas nadal jest na panelu (zmiana czasu strzału 1 zmienia render),
+    # bez przypięcia nie ma po nim śladu (identyczne PNG).
+    other = _with_first_shot_time(long_session, 99.99)
+    pin = OverlayStyle(panel_mode="list", list_pin_first_shot=True)
+    no_pin = OverlayStyle(panel_mode="list", list_pin_first_shot=False)
+    assert (_png_bytes(overlay.render_shot_panel(long_session, 8, pin, VIDEO_SIZE))
+            != _png_bytes(overlay.render_shot_panel(other, 8, pin, VIDEO_SIZE)))
+    assert (_png_bytes(overlay.render_shot_panel(long_session, 8, no_pin, VIDEO_SIZE))
+            == _png_bytes(overlay.render_shot_panel(other, 8, no_pin, VIDEO_SIZE)))
+
+
+def test_list_panel_pin_adds_gap_height(long_session):
+    # Sesja dłuższa niż okno: panel z przypięciem ma doliczony odstęp (wyższy),
+    # szerokość bez zmian.
+    pin = overlay.render_shot_panel(
+        long_session, 8, OverlayStyle(panel_mode="list", list_pin_first_shot=True),
+        VIDEO_SIZE)
+    no_pin = overlay.render_shot_panel(
+        long_session, 8, OverlayStyle(panel_mode="list", list_pin_first_shot=False),
+        VIDEO_SIZE)
+    assert pin.size[1] > no_pin.size[1]
+    assert pin.size[0] == no_pin.size[0]
+
+
+def test_list_panel_pin_constant_size(long_session):
+    # Rozmiar panelu z przypięciem nadal STAŁY dla każdego strzału sesji
+    # (gwarancja „stały rozmiar z konstrukcji" zostaje).
+    style = OverlayStyle(panel_mode="list", list_pin_first_shot=True)
+    sizes = {overlay.render_shot_panel(long_session, i, style, VIDEO_SIZE).size
+             for i in range(len(long_session.shots))}
+    assert sizes == {overlay.shot_panel_max_size(long_session, style, VIDEO_SIZE)}
+
+
+def test_list_panel_pin_noop_for_short_session():
+    # Sesja mieszcząca się w oknie (≤ rows): strzał 1 nigdy nie wypada,
+    # przypięcie nie zmienia NIC (ani rozmiaru, ani treści).
+    from piro_overlay.models import Shot
+    shots = [Shot(i, round(0.5 * i + 1, 2), (None if i == 1 else 0.5))
+             for i in range(1, 5)]
+    sess = Session(shots=shots, liczba_strzalow=4)
+    pin = OverlayStyle(panel_mode="list", list_pin_first_shot=True)
+    no_pin = OverlayStyle(panel_mode="list", list_pin_first_shot=False)
+    for i in range(4):
+        assert (_png_bytes(overlay.render_shot_panel(sess, i, pin, VIDEO_SIZE))
+                == _png_bytes(overlay.render_shot_panel(sess, i, no_pin, VIDEO_SIZE)))
+
+
+def test_summary_panel_shows_first_shot_time(session):
+    # Zmiana czasu strzału 1 zmienia podsumowanie (linia „Pierwszy strzał").
+    other = _with_first_shot_time(session, 1.11)
+    a = overlay.render_summary_panel(session, OverlayStyle(), VIDEO_SIZE)
+    b = overlay.render_summary_panel(other, OverlayStyle(), VIDEO_SIZE)
+    assert _png_bytes(a) != _png_bytes(b)
+
+
+def test_summary_panel_no_first_shot_line_for_single_shot():
+    # Przy pojedynczym strzale linia dublowałaby czas bazowy — nie pokazujemy jej:
+    # czas strzału 1 nie wpływa na render (czas_bazowy podany jawnie).
+    from piro_overlay.models import Shot
+    a = Session(shots=[Shot(1, 2.0)], czas_bazowy=6.0)
+    b = Session(shots=[Shot(1, 3.0)], czas_bazowy=6.0)
+    assert (_png_bytes(overlay.render_summary_panel(a, OverlayStyle(), VIDEO_SIZE))
+            == _png_bytes(overlay.render_summary_panel(b, OverlayStyle(), VIDEO_SIZE)))
+
+
 def test_classic_mode_unchanged_by_default(session):
     # Domyślny styl to "classic" — dispatch nie może zmienić dotychczasowego renderu.
     default = overlay.render_shot_panel(session, 1, OverlayStyle(), VIDEO_SIZE)
