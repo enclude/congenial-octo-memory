@@ -185,6 +185,28 @@ _BUZZER_CONC_MIN = 0.7            # min. udział energii w paśmie (tonalność)
 _BUZZER_MIN_RUN = 3              # min. liczba okien 50 ms (≥150 ms ciągłego tonu)
 _BUZZER_FLOOR_FRAC = 0.02        # próg głośności względem najgłośniejszego okna
 _BUZZER_FREQ_TOL = 150.0         # tolerancja stałości częstotliwości tonu (Hz)
+_BUZZER_IMPACT_RATIO = 5.0       # szczyt runu ≥5× drugiego okna = wybrzmiewający impuls
+_BUZZER_MARGINAL_LEN = _BUZZER_MIN_RUN + 1  # run „marginalny": ≤200 ms (+1 okno na
+                                            # rozmycie AAC przy tonach ~150 ms)…
+_BUZZER_MARGINAL_CONC = 0.85     # …i koncentracja poniżej tego progu
+_BUZZER_SOLID_LEN = 2 * _BUZZER_MIN_RUN     # run „solidny": ≥300 ms…
+_BUZZER_SOLID_CONC = 0.9         # …i koncentracja co najmniej taka
+
+
+def _impact_ring(inband_run: np.ndarray) -> bool:
+    """True, gdy przebieg energii to wybrzmiewający impuls, a nie ciągły ton.
+
+    Metaliczny „kling" (zrzut zamka pistoletu, trafienie w stal) bywa tonalny
+    i potrafi wybrzmiewać >150 ms w paśmie buzzera — koncentracja i ciągłość
+    go nie odrzucą (realny przypadek: sesja 2026-08-12, kling 4.1 kHz na 6 s
+    przed bzyczkiem, spadek energii 12× między oknami). Odróżnia go obwiednia:
+    uderzenie ma szczyt w momencie impaktu i gaśnie wykładniczo, buzzer gra
+    na w miarę stałym poziomie (wahania ~3× na realnych nagraniach).
+    """
+    if inband_run.size < 2:
+        return False
+    peak, second = np.partition(inband_run, -2)[-2:][::-1]
+    return peak >= second * _BUZZER_IMPACT_RATIO
 
 
 def detect_dji_start(video_path: str | Path,
@@ -202,8 +224,17 @@ def detect_dji_start(video_path: str | Path,
     1. koncentracji = energia_w_paśmie / energia_całkowita okna (≥ 0.7),
     2. ciągłości — kandydat musi trwać ≥150 ms (3 okna po 50 ms).
 
-    Spośród kwalifikujących się przebiegów wybieramy NAJWCZEŚNIEJSZY — sygnał
-    startu poprzedza strzelanie.
+    Koncentracja i ciągłość NIE odrzucają metalicznych „klingów" (zrzut zamka,
+    trafienie w stal) — te bywają tonalne i wybrzmiewają >150 ms. Stąd dwa
+    dodatkowe bezpieczniki (realny przypadek: sesja 2026-08-12, zrzut zamka
+    4.1 kHz wygrywał z bzyczkiem granym 6 s później):
+
+    3. obwiednia — run o profilu wybrzmiewającego impulsu (szczyt ≥5× drugiego
+       najgłośniejszego okna) odpada (`_impact_ring`),
+    4. scoring — spośród pozostałych wygrywa NAJWCZEŚNIEJSZY (sygnał startu
+       poprzedza strzelanie), CHYBA że jest marginalny (≤200 ms i koncentracja
+       <0.85), a później gra run solidny (≥300 ms i koncentracja ≥0.9) — wtedy
+       wygrywa solidny.
 
     Gdy główny test nic nie znajdzie (bzyczek krótki/zagłuszony tłem — tylko
     pojedyncze okno przebija próg koncentracji), uruchamiamy łagodniejszy
@@ -241,19 +272,34 @@ def detect_dji_start(video_path: str | Path,
 
     floor = inband.max() * _BUZZER_FLOOR_FRAC
 
-    # --- Główny test: najwcześniejszy ciągły przebieg okien o conc ≥ próg. ---
+    # --- Główny test: ciągłe przebiegi okien o conc ≥ próg (bez impulsów). ---
     cand = (conc >= _BUZZER_CONC_MIN) & (inband >= floor)
+    runs: list[tuple[int, int]] = []
     i = 0
     while i < n_windows:
         if cand[i]:
             j = i
             while j + 1 < n_windows and cand[j + 1]:
                 j += 1
-            if (j - i + 1) >= _BUZZER_MIN_RUN:
-                return round(offset_s + i * win / sr, 3)
+            if (j - i + 1) >= _BUZZER_MIN_RUN and not _impact_ring(inband[i:j + 1]):
+                runs.append((i, j))
             i = j + 1
         else:
             i += 1
+
+    if runs:
+        # Najwcześniejszy wygrywa (start poprzedza strzelanie) — CHYBA że jest
+        # marginalny (ledwo nad progami), a dalej gra wyraźnie mocniejszy run:
+        # wtedy to ten późniejszy jest bzyczkiem, a wczesny to artefakt tła.
+        first_i, first_j = runs[0]
+        marginal = ((first_j - first_i + 1) <= _BUZZER_MARGINAL_LEN
+                    and conc[first_i:first_j + 1].max() < _BUZZER_MARGINAL_CONC)
+        if marginal:
+            for i2, j2 in runs[1:]:
+                if ((j2 - i2 + 1) >= _BUZZER_SOLID_LEN
+                        and conc[i2:j2 + 1].max() >= _BUZZER_SOLID_CONC):
+                    return round(offset_s + i2 * win / sr, 3)
+        return round(offset_s + first_i * win / sr, 3)
 
     # --- Fallback: najwcześniejszy ton o stabilnej częstotliwości ≥150 ms. ---
     for c in np.flatnonzero(conc >= _BUZZER_CONC_MIN):
@@ -267,7 +313,8 @@ def detect_dji_start(video_path: str | Path,
         while (right + 1 < n_windows and abs(dom_hz[right + 1] - f0) <= _BUZZER_FREQ_TOL
                and inband[right + 1] >= edge_floor):
             right += 1
-        if (right - left + 1) >= _BUZZER_MIN_RUN:
+        if ((right - left + 1) >= _BUZZER_MIN_RUN
+                and not _impact_ring(inband[left:right + 1])):
             return round(offset_s + left * win / sr, 3)
     return None
 

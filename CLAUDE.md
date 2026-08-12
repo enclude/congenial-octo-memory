@@ -151,7 +151,28 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   WAŻNE — czego NIE robić: samo „najgłośniejsze okno w paśmie" zawodzi, bo donośny strzał
   (szerokopasmowy) potrafi mieć w paśmie więcej energii niż buzzer; rozróżnia je dopiero
   koncentracja (strzał: energia od basu po wysokie → niska koncentracja) + ciągłość (strzał
-  <100 ms). FALLBACK gdy główny test nic nie znajdzie (bzyczek krótki/zagłuszony — tylko 1
+  <100 ms). **Guard obwiedni + scoring (v0.42.0),** realny przypadek z sesji 2026-08-12
+  (plik `_0035`): metaliczny kling **zrzutu zamka** („Load and make ready" pada przed
+  KAŻDYM startem!) dzwonił tonalnie 4.1 kHz przez równo 150 ms z koncentracją 0.8 —
+  przeszedł GŁÓWNY test i jako najwcześniejszy wygrał z idealnym bzyczkiem (2720 Hz,
+  650 ms, conc 0.99) granym 6 s później → T0 o 6 s za wcześnie. Koncentracja+ciągłość
+  NIE odrzucają dzwoniącej stali (jest tonalna i wybrzmiewa >150 ms); rozróżnia ją
+  dopiero OBWIEDNIA: (3) `_impact_ring` — run o profilu impulsu (szczytowe okno ≥5×
+  drugiego najgłośniejszego, `_BUZZER_IMPACT_RATIO`) odpada w głównym teście i w
+  fallbacku (kling: spadek 12× między oknami + dryf częstotliwości w dół, jak
+  wybrzmiewający metal; buzzer: płaska amplituda, wahania ~3×, częstotliwość co do Hz);
+  (4) scoring — najwcześniejszy run wygrywa, CHYBA że jest marginalny (≤`MIN_RUN`+1
+  okien i conc <0.85 — +1 okno na rozmycie AAC), a później gra solidny (≥2×`MIN_RUN`
+  i conc ≥0.9): wtedy wygrywa solidny (drugi bezpiecznik na artefakty o płaskiej
+  obwiedni; marginalny BEZ solidnego rywala nadal wygrywa — krótki/cichy bzyczek nie
+  ginie). Walidacja polowa: 19 nagrań z 2026-08-12 (obie kamery) — DWIE zmiany wyniku
+  i obie to naprawy: `_0035` (kling zrzutu zamka, ubił go guard obwiedni) oraz `_0027`
+  (dryfujący ton ~3.7 kHz, conc 0.76, obwiednia PŁASKA — ubił go dopiero scoring:
+  prawdziwy bzyczek 2720 Hz/conc 1.00 grał 18 s później; stara detekcja myliła się tu
+  PO CICHU). 17 pozostałych bez zmian. Testy: `test_impact_ring_field_profiles` (liczby z realnego
+  nagrania), `test_detect_dji_start_ignores_slide_drop_ring`,
+  `test_detect_dji_start_prefers_solid_run_over_marginal`,
+  `test_detect_dji_start_marginal_alone_still_wins`. FALLBACK gdy główny test nic nie znajdzie (bzyczek krótki/zagłuszony — tylko 1
   okno przebija próg koncentracji): bierze najwcześniejsze okno o conc≥0.7, którego
   **dominująca częstotliwość jest stabilna ±150 Hz przez ≥150 ms** (ton ma stałą częstotl.,
   strzał błądzi). Fallback odpala się tylko gdy główny zwróciłby None — zero regresji.

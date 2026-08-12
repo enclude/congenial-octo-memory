@@ -75,13 +75,13 @@ def id_tone_expr(session_id: int, repeats: int = 2, amp: float = 0.8,
     return "+".join(terms), t0
 
 
-def _make_buzzer_video(out: Path, freq: int) -> Path:
-    """Buduje 3-sekundowy MP4 z tonem `freq` Hz w oknie 0.5–0.9 s (bzyczek)."""
+def _make_tone_video(out: Path, expr: str, dur: float = 3.0) -> Path:
+    """Buduje MP4 z audio z wyrażenia aevalsrc (testowe bzyczki/klingi)."""
     # Apostrofy chronią przecinki wyrażenia przed parserem filtergraphu.
-    tone = f"aevalsrc='if(between(t,0.5,0.9),0.8*sin(2*PI*{freq}*t),0)':s=44100:d=3"
+    tone = f"aevalsrc='{expr}':s=44100:d={dur}"
     cmd = [
         ffmpeg.ffmpeg_exe(), "-y",
-        "-f", "lavfi", "-i", "testsrc=duration=3:size=320x240:rate=30",
+        "-f", "lavfi", "-i", f"testsrc=duration={dur}:size=320x240:rate=30",
         "-f", "lavfi", "-i", tone,
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
         "-shortest", str(out),
@@ -92,9 +92,36 @@ def _make_buzzer_video(out: Path, freq: int) -> Path:
     return out
 
 
+def _make_buzzer_video(out: Path, freq: int) -> Path:
+    """Buduje 3-sekundowy MP4 z tonem `freq` Hz w oknie 0.5–0.9 s (bzyczek)."""
+    return _make_tone_video(out, f"if(between(t,0.5,0.9),0.8*sin(2*PI*{freq}*t),0)")
+
+
 @pytest.fixture(scope="session")
 def tiny_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return _make_buzzer_video(tmp_path_factory.mktemp("video") / "tiny.mp4", 2700)
+
+
+@pytest.fixture(scope="session")
+def impact_then_buzzer_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Metaliczny kling (głośny atak 50 ms + cichsze wybrzmiewanie 4.1 kHz)
+    1.5 s przed bzyczkiem 2.7 kHz — model zrzutu zamka pistoletu z sesji
+    2026-08-12 (energia spada ~13× między atakiem a wybrzmiewaniem, ale ton
+    jest czysty i trwa >150 ms, więc koncentracja i ciągłość go przepuszczą)."""
+    expr = ("if(between(t,0.5,0.55),0.9*sin(2*PI*4100*t),0)"
+            "+if(between(t,0.55,0.7),0.25*sin(2*PI*4100*t),0)"
+            "+if(between(t,2.0,2.4),0.6*sin(2*PI*2700*t),0)")
+    return _make_tone_video(tmp_path_factory.mktemp("video") / "impact.mp4", expr)
+
+
+@pytest.fixture(scope="session")
+def marginal_then_buzzer_video(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Marginalny kandydat (150 ms, koncentracja ~0.78: ton 4 kHz + zakłócenie
+    1 kHz POZA pasmem buzzera, amplituda PŁASKA — guard obwiedni go nie łapie)
+    1.5 s przed solidnym bzyczkiem — scoring musi wybrać bzyczek."""
+    expr = ("if(between(t,0.5,0.65),0.35*sin(2*PI*4000*t)+0.186*sin(2*PI*1000*t),0)"
+            "+if(between(t,2.0,2.4),0.6*sin(2*PI*2700*t),0)")
+    return _make_tone_video(tmp_path_factory.mktemp("video") / "marginal.mp4", expr)
 
 
 @pytest.fixture(scope="session")
