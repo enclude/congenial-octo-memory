@@ -271,6 +271,9 @@ class RenderJob:
     label:  str
     kwargs: dict
     status: JobStatus = field(default=JobStatus.PENDING, compare=False)
+    # Powód ostatniego błędu (komunikat z RenderWorker.failed) — trafia do zapisu
+    # kolejki w AppData i do tooltipa wiersza; czyszczony przy starcie nowej próby.
+    error:  str | None = field(default=None, compare=False)
 
 
 def _job_to_dict(job: "RenderJob") -> dict:
@@ -283,6 +286,7 @@ def _job_to_dict(job: "RenderJob") -> dict:
         "id": job.id,
         "label": job.label,
         "status": job.status.name,
+        "error": job.error,
         "kwargs": {
             "video_path": str(kw.get("video_path", "")),
             "session": sess.to_dict() if sess is not None else None,
@@ -318,7 +322,8 @@ def _job_from_dict(d: dict) -> "RenderJob":
         output_format=k.get("output_format", "mp4"),
     )
     return RenderJob(id=d.get("id") or uuid.uuid4().hex,
-                     label=d.get("label", ""), kwargs=kwargs)
+                     label=d.get("label", ""), kwargs=kwargs,
+                     error=d.get("error"))
 
 
 class RenderQueueRunner(QObject):
@@ -416,6 +421,7 @@ class RenderQueueRunner(QObject):
 
     def _start_job(self, job: RenderJob) -> None:
         job.status = JobStatus.RUNNING
+        job.error = None   # nowa próba — stary powód błędu przestaje obowiązywać
         self._set_busy(True)
         self.job_status_changed.emit(job.id, JobStatus.RUNNING)
         w = RenderWorker(job.kwargs)
@@ -444,7 +450,13 @@ class RenderQueueRunner(QObject):
         self._finish_worker(job_id)
         self._fill_slots()
 
-    def _on_job_failed(self, job_id: str, _msg: str) -> None:
+    def _on_job_failed(self, job_id: str, msg: str) -> None:
+        # Powód błędu zapisany NA zadaniu PRZED `_mark` — handler `job_status_changed`
+        # (tooltip wiersza + autozapis kolejki) musi go już widzieć.
+        for j in self._jobs:
+            if j.id == job_id:
+                j.error = msg
+                break
         self._mark(job_id, JobStatus.FAILED)
         self._finish_worker(job_id)
         self._fill_slots()
@@ -507,6 +519,13 @@ class JobRowWidget(QWidget):
 
     def update_status(self, status: JobStatus) -> None:
         self._apply_status(status)
+
+    def set_error(self, msg: str | None) -> None:
+        """Powód błędu jako tooltip całego wiersza (pełny komunikat po najechaniu)."""
+        tip = f"Błąd renderu:\n{msg}" if msg else ""
+        self.setToolTip(tip)
+        self._label.setToolTip(tip)
+        self._progress.setToolTip(tip)
 
     def _apply_status(self, status: JobStatus) -> None:
         color = self._STATUS_COLORS.get(status, "#888888")
@@ -597,6 +616,8 @@ class RenderQueueWindow(QWidget):
 
     def add_job(self, job: RenderJob) -> None:
         row = JobRowWidget(job)
+        if job.error:   # kolejka wczytana z pliku — pokaż zapisany powód błędu
+            row.set_error(job.error)
         row.remove_requested.connect(self._on_remove)
         self._rows[job.id] = row
         self._list_layout.insertWidget(self._list_layout.count() - 1, row)
@@ -678,6 +699,11 @@ class RenderQueueWindow(QWidget):
     def _on_job_status_changed(self, job_id: str, status) -> None:
         if row := self._rows.get(job_id):
             row.update_status(status)
+            if status == JobStatus.FAILED:
+                job = next((j for j in self._runner.jobs() if j.id == job_id), None)
+                row.set_error(job.error if job else None)
+            elif status == JobStatus.RUNNING:
+                row.set_error(None)   # nowa próba — tooltip ze starym błędem myli
         if status != JobStatus.RUNNING:
             self._progress.pop(job_id, None)   # świeży % po wznowieniu/ponowieniu
         self._refresh_start_btn()

@@ -196,3 +196,64 @@ def test_run_with_progress_error_has_exit_code_and_real_message(tmp_path):
     assert "kod " in msg                    # kod wyjścia w nagłówku
     assert "missing.mp4" in msg             # prawdziwy błąd FFmpeg zachowany
     assert "progress=continue" not in msg   # bez spamu postępu
+
+
+def test_run_with_progress_reads_stderr_as_utf8(monkeypatch, tmp_path):
+    # FFmpeg pisze stderr w UTF-8; bez jawnego encoding `text=True` dekoduje wg
+    # locale (Windows: cp1250), a bajt 0x81 z UTF-8 „Ł" jest tam niezdefiniowany →
+    # UnicodeDecodeError w pętli czytającej (realny przypadek: metadane wyjścia
+    # z nazwą toru „ŁUKASZ W." wywracały render kilka sekund po starcie, bez
+    # śladu w render_log.txt). Wymagamy encoding="utf-8" + errors="replace".
+    import subprocess as sp
+    captured = {}
+
+    class FakeProc:
+        stderr = iter(())
+        returncode = 0
+
+        def wait(self):
+            return 0
+
+        def kill(self):
+            pass
+
+    def fake_popen(cmd, **kwargs):
+        captured.update(kwargs)
+        return FakeProc()
+
+    monkeypatch.setattr(sp, "Popen", fake_popen)
+    render._run_with_progress(["ffmpeg", "-i", "in.mp4", "out.mp4"], 1.0, None)
+    assert captured.get("encoding") == "utf-8"
+    assert captured.get("errors") == "replace"
+
+
+def test_run_with_progress_logs_python_exception_and_kills_proc(monkeypatch):
+    # Wyjątek PYTHONA w pętli czytającej (nie błąd FFmpeg) musi: ubić proces
+    # (inaczej FFmpeg zostaje osierocony) i zostawić ślad w logu renderu —
+    # wcześniej takie awarie nie miały ŻADNEJ linii wyniku (ani OK, ani FAIL).
+    import subprocess as sp
+
+    killed = {"kill": False}
+
+    def bad_lines():
+        yield "linia ok\n"
+        raise ValueError("symulowany wyjątek czytania")
+
+    class FakeProc:
+        stderr = bad_lines()
+        returncode = None
+
+        def wait(self):
+            return 0
+
+        def kill(self):
+            killed["kill"] = True
+
+    monkeypatch.setattr(sp, "Popen", lambda cmd, **kw: FakeProc())
+    logged = []
+    monkeypatch.setattr(render, "_log_render", logged.append)
+    import pytest
+    with pytest.raises(ValueError):
+        render._run_with_progress(["ffmpeg", "-i", "in.mp4", "out.mp4"], 1.0, None)
+    assert killed["kill"]
+    assert any(m.startswith("FAIL (python):") for m in logged)

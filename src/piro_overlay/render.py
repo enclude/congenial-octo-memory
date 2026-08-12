@@ -367,6 +367,7 @@ def _drawtext_usable() -> bool:
            "-vf", seg, "-frames:v", "1", "-f", "null", "-"]
     try:
         res = subprocess.run(cmd, capture_output=True, text=True,
+                             encoding="utf-8", errors="replace",
                              creationflags=ffmpeg.CREATE_NO_WINDOW)
         return res.returncode == 0
     except Exception:  # noqa: BLE001
@@ -461,6 +462,7 @@ def working_nvenc_args() -> tuple[str, ...] | None:
                *variant, "-frames:v", "1", "-f", "null", "-"]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace",
                                  creationflags=ffmpeg.CREATE_NO_WINDOW)
             if res.returncode == 0:
                 _nvenc_error = None
@@ -781,6 +783,7 @@ def render_gif(video_path: str | Path, session: Session, t0: float,
         if cancel_check and cancel_check():
             raise RenderCancelled()
         res = subprocess.run(cmd1, capture_output=True, text=True,
+                             encoding="utf-8", errors="replace",
                              creationflags=ffmpeg.CREATE_NO_WINDOW)
         if res.returncode != 0:
             raise RuntimeError("Błąd generowania palety GIF:\n" + res.stderr[-2000:])
@@ -890,8 +893,14 @@ def _run_with_progress(cmd: list[str], duration: float, progress_cb: ProgressCb 
     # nie miało kiedy zadziałać (pętla czytająca stderr blokowała się).
     cmd = [cmd[0], "-progress", "pipe:2", "-nostats", *cmd[1:]]
     _log_render(f"START ({duration:.1f}s): {' '.join(cmd)}")
+    # encoding JAWNIE utf-8 (errors="replace"): FFmpeg pisze stderr w UTF-8, a samo
+    # `text=True` dekoduje wg locale (Windows: cp1250). FFmpeg echem wypisuje m.in.
+    # metadane wyjścia (`-metadata comment=` z nazwą toru) — bajt 0x81 z UTF-8 „Ł"
+    # jest w cp1250 niezdefiniowany → UnicodeDecodeError w pętli czytającej, render
+    # padał w kilka sekund bez ŻADNEGO śladu w logu (realny przypadek: „ŁUKASZ W.").
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                            text=True, creationflags=ffmpeg.CREATE_NO_WINDOW)
+                            text=True, encoding="utf-8", errors="replace",
+                            creationflags=ffmpeg.CREATE_NO_WINDOW)
     if on_process:
         on_process(proc)   # pozwól workerowi ubić proces przy „Zatrzymaj"
     tail: list[str] = []
@@ -922,6 +931,16 @@ def _run_with_progress(cmd: list[str], duration: float, progress_cb: ProgressCb 
                     h, mm, s = m.groups()
                     t = int(h) * 3600 + int(mm) * 60 + float(s)
                     progress_cb(min(t / duration, 1.0))
+    except (RenderCancelled, RuntimeError):
+        raise
+    except Exception as exc:
+        # Wyjątek PYTHONA w pętli czytającej (nie błąd FFmpeg) — bez tego bloku
+        # proces FFmpeg zostawał żywy (osierocony), a log nie miał linii wyniku,
+        # więc awaria była niediagnozowalna (patrz przypadek UnicodeDecodeError).
+        proc.kill()
+        proc.wait()
+        _log_render(f"FAIL (python): {exc!r}")
+        raise
     finally:
         if on_process:
             on_process(None)

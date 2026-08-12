@@ -84,7 +84,13 @@ def ffprobe_exe() -> str | None:
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess:
+    # encoding JAWNIE utf-8: FFmpeg pisze na stdout/stderr w UTF-8, a `text=True`
+    # bez encoding dekoduje wg locale (Windows: cp1250) — bajt 0x81 z UTF-8 „Ł"
+    # jest w cp1250 niezdefiniowany → UnicodeDecodeError (realny przypadek:
+    # metadane z nazwą toru „ŁUKASZ W."). errors="replace" = nigdy nie wywalaj
+    # się na dekodowaniu cudzego wyjścia.
     return subprocess.run(cmd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace",
                           creationflags=CREATE_NO_WINDOW)
 
 

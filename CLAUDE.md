@@ -659,6 +659,27 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
 
 ## Uwagi / pułapki
 
+- **Wyjście FFmpeg czytaj ZAWSZE z `encoding="utf-8", errors="replace"` (v0.41.0):**
+  FFmpeg pisze stdout/stderr w UTF-8, a `text=True` bez `encoding` dekoduje wg locale
+  (Windows: cp1250). Bajt 0x81 z UTF-8 „Ł" jest w cp1250 NIEZDEFINIOWANY →
+  `UnicodeDecodeError` w pętli czytającej `_run_with_progress`. Realny przypadek: sesje
+  z torem „ŁUKASZ W." — FFmpeg echem wypisuje metadane wyjścia (`-metadata comment=`
+  z `nazwa_toru`, v0.39.0), render padał ~2–6 s po starcie; małe „ł"/„ń" (0x82/0x84)
+  przechodziły, więc wcześniejsze sesje niczego nie ujawniły. Podwójnie zdradliwe:
+  wyjątek Pythona (nie FFmpeg) wylatywał PRZED logowaniem wyniku — w `render_log.txt`
+  brak linii `OK`/`FAIL` dla tych prób, a proces FFmpeg zostawał osierocony. Od v0.41.0:
+  wszystkie `subprocess.run/Popen` czytające FFmpeg mają jawne utf-8 (`ffmpeg._run`,
+  `render._run_with_progress`, `_drawtext_usable`, `_resolve_nvenc_args`, paleta GIF),
+  a `_run_with_progress` łapie wyjątki Pythona w pętli → `proc.kill()` + wpis
+  `FAIL (python): …` do logu (testy: `test_run_with_progress_reads_stderr_as_utf8`,
+  `test_run_with_progress_logs_python_exception_and_kills_proc`).
+- **Kolejka: powód błędu na zadaniu (v0.41.0):** `RenderJob.error` — `_on_job_failed`
+  zapisuje komunikat z `RenderWorker.failed` NA zadaniu przed `_mark` (handler statusu
+  i autozapis muszą go już widzieć), `_job_to_dict`/`_job_from_dict` serializują pole
+  (trafia do `render_queue.json` w AppData — plik sam mówi, czemu zadanie padło),
+  wiersz kolejki pokazuje pełny komunikat w tooltipie (`JobRowWidget.set_error`).
+  Czyszczenie w `_start_job` (nowa próba), tooltip zdejmowany przy `RUNNING`.
+
 - **`Lang` to `(str, Enum)` → QComboBox gubi typ:** `lang_combo.addItem("Polski", Lang.PL)`
   + `currentData()` zwraca CZYSTY str `"pl"` (Qt spłaszcza str-enum w QVariant), nie `Lang.PL`.
   Dlatego `OverlayStyle.__post_init__` NORMALIZUJE `lang` do `Lang` (`Lang(self.lang)`).
