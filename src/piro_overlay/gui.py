@@ -984,7 +984,7 @@ class BatchDialog(QWidget):
 
     Dodajesz wiele plików, podajesz ID dla każdego, klikasz „Przygotuj" — aplikacja
     pobiera sesje z API, wykrywa T0 (bzyczek) i liczy auto-przycięcie. Wspólny styl
-    nakładki, jeden katalog docelowy i sufiks nazwy. Gotowe pliki trafiają do
+    nakładki, jeden katalog docelowy, prefiks i sufiks nazwy. Gotowe pliki trafiają do
     istniejącej kolejki renderów (`RenderQueueRunner`), która renderuje je po kolei.
     """
 
@@ -1049,6 +1049,9 @@ class BatchDialog(QWidget):
         out_row.addWidget(self._out_dir_edit, 1)
         out_row.addWidget(out_browse)
         form.addRow("Katalog docelowy:", out_row)
+
+        self._prefix_edit = QLineEdit("")
+        form.addRow("Prefiks nazwy:", self._prefix_edit)
 
         self._suffix_edit = QLineEdit("_PiRoOverlay")
         form.addRow("Sufiks nazwy:", self._suffix_edit)
@@ -1357,6 +1360,7 @@ class BatchDialog(QWidget):
             return
         fmt = self._format_combo.currentData()
         ext = _FORMAT_EXT.get(fmt, ".mp4")
+        prefix = self._prefix_edit.text()
         suffix = self._suffix_edit.text()
         add_participant = self._participant_chk.isChecked()
         no_overlay = not self._overlay_chk.isChecked()
@@ -1374,7 +1378,8 @@ class BatchDialog(QWidget):
                 part = _sanitize_filename_part(session.uczestnik or "")
                 if part:
                     extra += f"_{part}"
-            out_path = out_dir / (Path(row.video_path).stem + suffix + extra + ext)
+            out_path = out_dir / (prefix + Path(row.video_path).stem
+                                  + suffix + extra + ext)
             t0 = audio_sync.resolve_t0(p["t0"], AnchorMode.START_SIGNAL,
                                        session.shots[0].czas)
             kwargs = dict(
