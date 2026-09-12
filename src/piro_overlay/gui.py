@@ -31,11 +31,12 @@ import urllib.request
 import json
 
 from PySide6.QtCore import (
-    QEvent, QObject, QRect, QSettings, Qt, QThread, QTimer, QUrl, Signal,
+    QEvent, QLocale, QObject, QPoint, QRect, QRectF, QSettings, Qt, QThread, QTimer,
+    QUrl, Signal,
 )
 from PySide6.QtGui import (
-    QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPen,
-    QPixmap, QShortcut,
+    QAction, QColor, QDesktopServices, QFontMetrics, QIcon, QImage, QKeySequence,
+    QPainter, QPen, QPixmap, QPolygon, QShortcut,
 )
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QComboBox, QCheckBox,
@@ -54,12 +55,13 @@ from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session
 from .parser import parse_timeline
 from . import ui_theme
 from .ui_theme import (
-    SPACING, apply_theme, current_tokens, load_app_fonts, repolish, restore_window_state,
-    save_window_state, set_app_user_model_id, set_windows_dark_titlebar, setup_hidpi,
+    RADIUS, SPACING, apply_theme, current_tokens, load_app_fonts, repolish, restore_window_state,
+    make_font, save_window_state, set_app_user_model_id, set_windows_dark_titlebar,
+    setup_hidpi,
 )
 from .ui_widgets import (
     ColorSwatchButton, FormSection, InlineMessage, PathField, SegmentedControl, StatusDot,
-    set_busy, set_kind, set_role, status_message,
+    _focus_ring, set_busy, set_kind, set_role, status_message,
 )
 
 # GUI jest po polsku — teksty nowych elementów (pasek akcji, sekcje, pozycje)
@@ -69,6 +71,7 @@ _TR = get_translator(Lang.PL)
 PREVIEW_HEIGHT = 360  # obniżona jakość podglądu — szybciej i lżej dla dużych plików
 _HANDLE_PX = 8        # tolerancja trafienia uchwytu przycięcia (px)
 _AXIS_H = 22          # wysokość paska osi czasu (px)
+_TAG_H = 16           # wysokość pastylki etykiety markera (px)
 
 _FORMAT_EXT = {"mp4": ".mp4", "webm": ".webm", "gif": ".gif"}  # format → rozszerzenie
 _SESSION_ID_MAX = 10_000_000   # górny zakres ID sesji API (główne okno i wsad)
@@ -109,13 +112,33 @@ _MINOR_STEP: dict[float, float | None] = {
 }
 
 
+def _dec_sep() -> str:
+    """Separator dziesiętny UI — ten sam, którego używają spinboxy (QLocale systemu)."""
+    try:
+        return str(QLocale().decimalPoint())
+    except Exception:  # noqa: BLE001 — brak QApplication (import w testach)
+        return "."
+
+
 def _fmt_axis_time(t: float) -> str:
-    """Etykieta czasu na osi: 's' dla < 60 s, 'M:SS' dla dłuższych nagrań."""
+    """Etykieta czasu na osi: 's' dla < 60 s, 'M:SS' dla dłuższych nagrań.
+
+    JEDYNY format czasu w UI osi/pastylek/paska podglądu — separator dziesiętny
+    bierzemy z locale, żeby oś i spinboxy nie pokazywały dwóch różnych („37.6s"
+    obok „37,60 s" to anty-wzorzec 6 ze skilla).
+    """
     if t < 60:
         # :g usuwa zbędne zera (0.10 → 0.1, 1.00 → 1)
-        return f"{t:g}s"
-    m, s = divmod(int(round(t)), 60)
-    return f"{m}:{s:02d}"
+        label = f"{t:g}s"
+    else:
+        m, s = divmod(int(round(t)), 60)
+        label = f"{m}:{s:02d}"
+    return label.replace(".", _dec_sep())
+
+
+def _fmt_time_s(v: float) -> str:
+    """Sekundy w komunikatach UI — jak `_fmt_num`, ale z separatorem z locale."""
+    return _fmt_num(v).replace(".", _dec_sep())
 
 
 def _nice_tick_step(span: float, width: int, target_px: int = 100) -> float:
@@ -1475,17 +1498,26 @@ class WaveformWidget(QWidget):
 
     - lewy klik (poza uchwytami) → ustawia kotwicę T0,
     - Ctrl + lewy klik → podgląd klatki w danym czasie (bez zmiany T0),
-    - przeciągnięcie uchwytu (zielony=start, czerwony=koniec) → przycięcie fragmentu,
-    - cienkie znaczniki = wykryte onsety (pomoc w trafieniu sygnału/strzału).
+    - przeciągnięcie uchwytu (Od/Do) → przycięcie fragmentu,
+    - cienkie znaczniki = wykryte onsety (pomoc w trafieniu sygnału/strzału),
+    - klawiatura (po fokusie): ←/→ kotwica, Home/End granice przycięcia,
+      +/− zoom, 0 reset, O znaczniki onsetów.
+
+    Kolory pochodzą WYŁĄCZNIE z tokenów motywu (`current_tokens`) i są czytane
+    w `paintEvent` — zmiana motywu wymaga jedynie `update()`.
     """
 
     anchorChanged = Signal(float)
     trimChanged = Signal(float, float)
     previewAt = Signal(float)   # Ctrl+klik → podgląd w czasie t
 
+    KEY_STEP = 0.05       # ←/→ przesuwa kotwicę o 50 ms
+    KEY_STEP_FAST = 1.0   # Shift + ←/→
+
     def __init__(self):
         super().__init__()
         self.setMinimumHeight(140)
+        self.setFocusPolicy(Qt.StrongFocus)   # oś jest kontrolką, nie dekoracją
         self.env: list[float] = []
         self.duration = 0.0
         self.onsets: list[float] = []
@@ -1494,15 +1526,20 @@ class WaveformWidget(QWidget):
         self.preview_t: float | None = None   # czas aktualnie podglądu (Ctrl+klik)
         self.trim_start = 0.0
         self.trim_end = 0.0
+        self.show_onsets = True       # warstwa widoku (klawisz O) — dane zostają
         # okno widoku (zoom): widoczny zakres czasu [view_start, view_end]
         self.view_start = 0.0
         self.view_end = 0.0
         self._drag: str | None = None  # "start" | "end" | None
         self._pan = None               # (x0, vs, ve) podczas przesuwania
+        # cache obwiedni: dwa pixmapy (w zakresie / poza zakresem) + klucz
+        self._wave_cache: QPixmap | None = None
+        self._wave_cache_dim: QPixmap | None = None
+        self._cache_key: tuple | None = None
+        self._hidden_tags: list[tuple[int, str]] = []   # etykiety zdjęte przez kolizję
+        self._base_tip = _TR("wave_tip")
         self.setCursor(Qt.CrossCursor)
-        self.setToolTip("Klik = ustaw kotwicę (snap do strzału) · "
-                        "Ctrl+klik = podgląd klatki w danym czasie · "
-                        "kółko = zoom · prawy przycisk = przesuń · dwuklik = reset zoomu")
+        self.setToolTip(self._base_tip)
 
     def set_data(self, env, duration, onsets):
         self.env = env
@@ -1514,6 +1551,7 @@ class WaveformWidget(QWidget):
         self.preview_t = None
         self.view_start = 0.0
         self.view_end = duration
+        self._cache_key = None
         self.update()
 
     def set_anchor(self, t: float):
@@ -1531,6 +1569,42 @@ class WaveformWidget(QWidget):
     def _in_view(self, t: float) -> bool:
         return self.view_start <= t <= self.view_end
 
+    def _plot_h(self) -> int:
+        return max(1, self.height() - _AXIS_H)
+
+    def fit_view(self) -> None:
+        """Cały materiał w widoku (reset zoomu) — przycisk „Dopasuj" i klawisz 0."""
+        if self.duration <= 0:
+            return
+        self.view_start, self.view_end = 0.0, self.duration
+        self.update()
+
+    def zoom_to_trim(self) -> None:
+        """Widok = zakres Od…Do z 5 % marginesu."""
+        if self.duration <= 0:
+            return
+        a, b = self.trim_start, self.trim_end
+        if b - a < 0.1:
+            self.fit_view()
+            return
+        pad = (b - a) * 0.05
+        self.view_start = max(0.0, a - pad)
+        self.view_end = min(self.duration, b + pad)
+        self.update()
+
+    def _zoom(self, factor: float, center_t: float) -> None:
+        span = self._span()
+        new_span = max(0.05, min(self.duration, span * factor))
+        frac = (center_t - self.view_start) / span
+        ns = center_t - frac * new_span
+        ne = ns + new_span
+        if ns < 0:
+            ns, ne = 0.0, new_span
+        if ne > self.duration:
+            ne, ns = self.duration, self.duration - new_span
+        self.view_start, self.view_end = max(0.0, ns), min(self.duration, ne)
+        self.update()
+
     # --- mapowanie czas <-> px (względem okna widoku) ---
     def _t2x(self, t: float) -> float:
         return (t - self.view_start) / self._span() * self.width()
@@ -1542,69 +1616,135 @@ class WaveformWidget(QWidget):
         return max(self.view_start, min(self.view_end, t))
 
     # --- rysowanie ---
-    def paintEvent(self, _):
-        p = QPainter(self)
-        w, h = self.width(), self.height()
-        plot_h = h - _AXIS_H          # obszar waveformu (nad osią)
-        mid = plot_h / 2
-        p.fillRect(self.rect(), QColor(24, 26, 34))
-        if not self.env or self.duration <= 0:
-            p.setPen(QColor(150, 150, 150))
-            p.drawText(self.rect(), Qt.AlignCenter, "Ścieżka audio pojawi się po wczytaniu wideo")
-            return
+    def _columns(self, w: int) -> list[float]:
+        """Jedna kolumna na piksel: maksimum obwiedni z próbek wpadających w kolumnę.
 
-        # przyciemnienie poza fragmentem przycięcia
-        xs, xe = self._t2x(self.trim_start), self._t2x(self.trim_end)
-        if xs > 0:
-            p.fillRect(0, 0, int(xs), plot_h, QColor(0, 0, 0, 120))
-        if xe < w:
-            p.fillRect(int(xe), 0, w - int(xe), plot_h, QColor(0, 0, 0, 120))
-
-        # waveform — tylko kubełki w widoku
-        p.setPen(QColor(90, 170, 230))
+        Przy dużym zoomie próbek jest mniej niż kolumn — wtedy odwrotnie: każda
+        kolumna czyta próbkę ze swojego czasu (inaczej fala byłaby dziurawa)."""
         n = len(self.env)
+        if n == 0 or self.duration <= 0 or w <= 0:
+            return []
+        cols = [0.0] * w
         i_lo = max(0, int(self.view_start / self.duration * n))
         i_hi = min(n, int(self.view_end / self.duration * n) + 1)
-        for i in range(i_lo, i_hi):
-            t = i / n * self.duration
-            x = self._t2x(t)
-            half = self.env[i] * (mid - 4)
-            p.drawLine(int(x), int(mid - half), int(x), int(mid + half))
+        if i_hi - i_lo >= w:
+            for i in range(i_lo, i_hi):
+                x = int(self._t2x(i / n * self.duration))
+                if 0 <= x < w and self.env[i] > cols[x]:
+                    cols[x] = self.env[i]
+        else:
+            span = self._span()
+            for x in range(w):
+                i = int((self.view_start + (x + 0.5) / w * span) / self.duration * n)
+                if 0 <= i < n:
+                    cols[x] = self.env[i]
+        return cols
 
-        # onsety (w widoku)
-        p.setPen(QPen(QColor(255, 196, 0, 120), 1))
-        for t in self.onsets:
-            if self._in_view(t):
-                x = int(self._t2x(t))
-                p.drawLine(x, 0, x, plot_h)
+    def _ensure_wave_cache(self, tokens: dict) -> None:
+        key = (len(self.env), round(self.view_start, 6), round(self.view_end, 6),
+               self.width(), self.height(),
+               tokens["text_muted"], tokens["text_disabled"])
+        if key == self._cache_key and self._wave_cache is not None:
+            return
+        w, plot_h = self.width(), self._plot_h()
+        dpr = self.devicePixelRatioF()
+        cols = self._columns(w)
+        mid = plot_h / 2
+        out = []
+        for color in (tokens["text_muted"], tokens["text_disabled"]):
+            pm = QPixmap(max(1, int(w * dpr)), max(1, int(plot_h * dpr)))
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.transparent)
+            q = QPainter(pm)
+            q.setRenderHint(QPainter.Antialiasing, False)   # 1 px kolumny mają być ostre
+            q.setPen(QPen(QColor(color), 1))
+            for x, amp in enumerate(cols):
+                if amp <= 0:
+                    continue
+                half = amp * (mid - 4)
+                q.drawLine(x, int(mid - half), x, int(mid + half))
+            q.end()
+            out.append(pm)
+        self._wave_cache, self._wave_cache_dim = out
+        self._cache_key = key
 
-        # uchwyty przycięcia
-        p.setPen(QPen(QColor(80, 220, 120), 2))
-        p.drawLine(int(xs), 0, int(xs), plot_h)
-        p.setPen(QPen(QColor(235, 80, 80), 2))
-        p.drawLine(int(xe), 0, int(xe), plot_h)
+    def paintEvent(self, _):
+        p = QPainter(self)
+        t = current_tokens(QApplication.instance())
+        w, h = self.width(), self.height()
+        plot_h = self._plot_h()
+        p.fillRect(self.rect(), QColor(t["surface"]))
+        if not self.env or self.duration <= 0:
+            p.setPen(QColor(t["text_muted"]))
+            p.setFont(make_font("font_ui_small"))
+            p.drawText(self.rect(), Qt.AlignCenter, _TR("wave_empty"))
+            self._paint_focus(p, t)
+            return
 
-        # kotwica
+        xs, xe = int(self._t2x(self.trim_start)), int(self._t2x(self.trim_end))
+        # tło zakresu Od..Do
+        if xe > xs:
+            p.fillRect(xs, 0, xe - xs, plot_h, QColor(t["accent_subtle"]))
+
+        self._ensure_wave_cache(t)
+        if self._wave_cache is not None:
+            p.drawPixmap(0, 0, self._wave_cache)
+            # poza zakresem: przyciemnienie tła + fala w kolorze „wyłączonym"
+            dim = QColor(t["bg"])
+            dim.setAlpha(130)
+            for x0, x1 in ((0, xs), (xe, w)):
+                if x1 <= x0:
+                    continue
+                p.fillRect(x0, 0, x1 - x0, plot_h, dim)
+                p.save()
+                p.setClipRect(x0, 0, x1 - x0, plot_h)
+                p.drawPixmap(0, 0, self._wave_cache_dim)
+                p.restore()
+
+        # onsety (w widoku) — warstwa przełączana klawiszem O
+        if self.show_onsets:
+            onset = QColor(t["success"])
+            onset.setAlpha(130)
+            p.setPen(QPen(onset, 1))
+            for o in self.onsets:
+                if self._in_view(o):
+                    x = int(self._t2x(o))
+                    p.drawLine(x, 0, x, plot_h)
+
+        # uchwyty przycięcia (info — zieleń/czerwień są zarezerwowane dla stanów)
+        p.setPen(QPen(QColor(t["info"]), 2))
+        p.drawLine(xs, 0, xs, plot_h)
+        p.drawLine(xe, 0, xe, plot_h)
+
+        # kotwica T0/T1 — najważniejszy marker
         if self.anchor is not None and self._in_view(self.anchor):
-            p.setPen(QPen(QColor(0, 230, 230), 2))
+            p.setPen(QPen(QColor(t["accent"]), 2))
             xa = int(self._t2x(self.anchor))
             p.drawLine(xa, 0, xa, plot_h)
 
         # kursor podglądu (Ctrl+klik)
         if self.preview_t is not None and self._in_view(self.preview_t):
-            p.setPen(QPen(QColor(255, 140, 0), 2, Qt.DashLine))
+            p.setPen(QPen(QColor(t["text"]), 1, Qt.DashLine))
             xp = int(self._t2x(self.preview_t))
             p.drawLine(xp, 0, xp, plot_h)
 
-        self._paint_markers(p, w, plot_h)
-        self._paint_axis(p, w, h, plot_h)
+        self._paint_markers(p, w, plot_h, t)
+        self._paint_axis(p, w, h, plot_h, t)
+        self._paint_focus(p, t)
 
-    def _tag(self, p: QPainter, x: int, text: str, color: QColor, align: str, y: int = 0):
-        """Rysuje kolorową etykietę-znacznik (align: left/center/right, y: góra prostokąta)."""
-        fm = p.fontMetrics()
-        tw = fm.horizontalAdvance(text)
-        pad = 4
-        bw = tw + 2 * pad
+    def _paint_focus(self, p: QPainter, tokens: dict) -> None:
+        if self.hasFocus():
+            _focus_ring(p, QRectF(self.rect()), RADIUS["r_sm"], tokens)
+
+    @staticmethod
+    def _tag_text_color(color: QColor, tokens: dict) -> str:
+        """Tekst pastylki wg kontrastu do jej tła (luminancja względna)."""
+        lum = (0.2126 * color.redF() + 0.7152 * color.greenF() + 0.0722 * color.blueF())
+        return tokens["bg"] if lum > 0.45 else tokens["text"]
+
+    def _tag_rect(self, fm: QFontMetrics, x: int, text: str, align: str, row: int) -> QRect:
+        pad = SPACING["sp_1"]
+        bw = fm.horizontalAdvance(text) + 2 * pad
         if align == "left":
             bx = x
         elif align == "right":
@@ -1612,67 +1752,96 @@ class WaveformWidget(QWidget):
         else:
             bx = x - bw // 2
         bx = max(0, min(bx, self.width() - bw))
-        p.fillRect(bx, y, bw, 16, color)
-        p.setPen(QColor(15, 16, 22))
-        p.drawText(bx + pad, y + 12, text)
+        return QRect(int(bx), row * (_TAG_H + 2), bw, _TAG_H)
 
-    def _paint_markers(self, p: QPainter, w: int, plot_h: int):
-        """Kolorowe znaczniki: szary=krawędzie wideo, cyjan=T0/T1, zielony/czerwony=przycięcie."""
-        edge = QColor(150, 160, 180)   # szary — krawędzie wideo
-        cyan = QColor(0, 210, 210)     # T0/T1
-        green = QColor(80, 220, 120)   # początek przycięcia
-        red = QColor(235, 80, 80)      # koniec przycięcia
+    def _draw_tag(self, p: QPainter, rect: QRect, text: str, color: QColor,
+                  text_color: str) -> None:
+        p.setPen(Qt.NoPen)
+        p.setBrush(color)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.drawRoundedRect(rect, RADIUS["r_sm"], RADIUS["r_sm"])
+        p.setRenderHint(QPainter.Antialiasing, False)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QColor(text_color))
+        p.drawText(rect, Qt.AlignCenter, text)
 
-        # krawędzie wideo — szare, przerywane (tylko gdy w widoku)
-        p.setPen(QPen(edge, 1, Qt.DashLine))
-        if self._in_view(0.0):
-            x0 = int(self._t2x(0.0))
-            p.drawLine(x0, 0, x0, plot_h)
-            self._tag(p, x0, f"Start {_fmt_axis_time(0)}", edge, "left")
-        if self._in_view(self.duration):
-            xd = int(self._t2x(self.duration))
-            p.drawLine(xd, 0, xd, plot_h)
-            self._tag(p, xd, f"Koniec {_fmt_axis_time(self.duration)}", edge, "right")
+    def _paint_markers(self, p: QPainter, w: int, plot_h: int, t: dict):
+        """Krawędzie nagrania (bez pastylek) + pastylki T0/Od/Do/podglądu.
 
+        Etykiety układane są w dwóch rzędach; przy trzeciej kolizji zostaje sam
+        znacznik, a tekst wędruje do tooltipa (priorytet: T0 > Od/Do > podgląd)."""
+        p.setFont(make_font("font_ui_small"))
+        fm = QFontMetrics(p.font())
+
+        # krawędzie wideo — przerywane, bez etykiet (podziałka osi wystarczy)
+        p.setPen(QPen(QColor(t["text_muted"]), 1, Qt.DashLine))
+        for edge_t in (0.0, self.duration):
+            if self._in_view(edge_t):
+                xe = int(self._t2x(edge_t))
+                p.drawLine(xe, 0, xe, plot_h)
+
+        items: list[tuple[int, str, QColor, str]] = []
         if self.anchor is not None and self._in_view(self.anchor):
-            self._tag(p, int(self._t2x(self.anchor)),
-                      f"{self.anchor_label} {_fmt_axis_time(self.anchor)}", cyan, "center")
-
-        orange = QColor(255, 140, 0)
-        if self.preview_t is not None and self._in_view(self.preview_t):
-            self._tag(p, int(self._t2x(self.preview_t)),
-                      f"▶ {_fmt_axis_time(self.preview_t)}", orange, "center")
-
-        # dolny rząd (nad osią): zakres przycięcia, zgodnie z kolorami uchwytów
-        ty = plot_h - 16
+            items.append((int(self._t2x(self.anchor)),
+                          f"{self.anchor_label} {_fmt_axis_time(round(self.anchor, 1))}",
+                          QColor(t["accent"]), t["accent_text"]))
         if self._in_view(self.trim_start):
-            self._tag(p, int(self._t2x(self.trim_start)),
-                      f"Od {_fmt_axis_time(self.trim_start)}", green, "center", y=ty)
+            items.append((int(self._t2x(self.trim_start)),
+                          f"Od {_fmt_axis_time(round(self.trim_start, 1))}", QColor(t["info"]), ""))
         if self._in_view(self.trim_end):
-            self._tag(p, int(self._t2x(self.trim_end)),
-                      f"Do {_fmt_axis_time(self.trim_end)}", red, "center", y=ty)
+            items.append((int(self._t2x(self.trim_end)),
+                          f"Do {_fmt_axis_time(round(self.trim_end, 1))}", QColor(t["info"]), ""))
+        if self.preview_t is not None and self._in_view(self.preview_t):
+            items.append((int(self._t2x(self.preview_t)),
+                          f"▶ {_fmt_axis_time(round(self.preview_t, 1))}", QColor(t["text"]), ""))
 
-    def _paint_axis(self, p: QPainter, w: int, h: int, plot_h: int):
+        placed: list[list[QRect]] = [[], []]
+        self._hidden_tags = []
+        for x, text, color, forced in items:
+            drawn = False
+            for row in (0, 1):
+                rect = self._tag_rect(fm, x, text, "center", row)
+                if any(rect.intersects(o) for o in placed[row]):
+                    continue
+                placed[row].append(rect)
+                self._draw_tag(p, rect, text, color,
+                               forced or self._tag_text_color(color, t))
+                drawn = True
+                break
+            if not drawn:
+                self._hidden_tags.append((x, text))
+
+    def _paint_axis(self, p: QPainter, w: int, h: int, plot_h: int, t: dict):
         """Rysuje oś czasu (podziałka + etykiety) dla aktualnego okna widoku."""
-        p.fillRect(0, plot_h, w, _AXIS_H, QColor(18, 19, 26))
-        p.setPen(QPen(QColor(90, 95, 110), 1))
+        p.setFont(make_font("font_ui_small"))
+        fm = QFontMetrics(p.font())
+        p.setPen(QPen(QColor(t["border"]), 1))
         p.drawLine(0, plot_h, w, plot_h)
 
         step = _nice_tick_step(self._span(), w)
-        t = math.ceil(self.view_start / step) * step
-        while t <= self.view_end + 1e-6:
-            x = int(self._t2x(t))
-            p.setPen(QPen(QColor(90, 95, 110), 1))
+        tick = math.ceil(self.view_start / step) * step
+        while tick <= self.view_end + 1e-6:
+            x = int(self._t2x(tick))
+            p.setPen(QPen(QColor(t["border"]), 1))
             p.drawLine(x, plot_h, x, plot_h + 4)
-            p.setPen(QColor(170, 175, 190))
-            label = _fmt_axis_time(round(t, 3))
-            if x <= 1:
-                p.drawText(x + 2, h - 5, label)
-            elif x >= w - 2:
-                p.drawText(x - 4 * len(label) - 2, h - 5, label)
-            else:
-                p.drawText(x - 4 * len(label), h - 5, label)
-            t += step
+            p.setPen(QColor(t["text_muted"]))
+            label = _fmt_axis_time(round(tick, 3))
+            lw = fm.horizontalAdvance(label)
+            lx = max(2, min(x - lw // 2, w - lw - 2))
+            p.drawText(lx, h - 5, label)
+            tick += step
+
+        # wskaźnik podglądu: mały trójkąt na osi (linia jest nad osią)
+        if self.preview_t is not None and self._in_view(self.preview_t):
+            xp = int(self._t2x(self.preview_t))
+            tri = QPolygon([QPoint(xp - 4, plot_h + 1), QPoint(xp + 4, plot_h + 1),
+                            QPoint(xp, plot_h + 7)])
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(t["text"]))
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.drawPolygon(tri)
+            p.setRenderHint(QPainter.Antialiasing, False)
+            p.setBrush(Qt.NoBrush)
 
     def _snap_to_onset(self, t: float) -> float:
         """Dostraja kliknięcie do najbliższego wykrytego onsetu (jeśli blisko)."""
@@ -1688,26 +1857,61 @@ class WaveformWidget(QWidget):
             return
         cursor_t = self._x2t(e.position().x())
         factor = 0.8 if e.angleDelta().y() > 0 else 1.25  # do wewnątrz / na zewnątrz
-        span = self._span()
-        new_span = max(0.05, min(self.duration, span * factor))
-        frac = (cursor_t - self.view_start) / span
-        ns = cursor_t - frac * new_span
-        ne = ns + new_span
-        if ns < 0:
-            ns, ne = 0.0, new_span
-        if ne > self.duration:
-            ne, ns = self.duration, self.duration - new_span
-        self.view_start, self.view_end = max(0.0, ns), min(self.duration, ne)
-        self.update()
+        self._zoom(factor, cursor_t)
         e.accept()
 
+    def keyPressEvent(self, e):
+        """Klawiatura osi (skill §11): kotwica, granice przycięcia, zoom, onsety."""
+        if self.duration <= 0:
+            super().keyPressEvent(e)
+            return
+        key = e.key()
+        step = self.KEY_STEP_FAST if e.modifiers() & Qt.ShiftModifier else self.KEY_STEP
+        center = (self.view_start + self.view_end) / 2
+        if key in (Qt.Key_Left, Qt.Key_Right):
+            base = self.anchor if self.anchor is not None else self.trim_start
+            self._commit_anchor(base + (step if key == Qt.Key_Right else -step))
+        elif key == Qt.Key_Home:
+            self._commit_anchor(self.trim_start)
+        elif key == Qt.Key_End:
+            self._commit_anchor(self.trim_end)
+        elif key in (Qt.Key_Plus, Qt.Key_Equal):
+            self._zoom(0.8, center)
+        elif key == Qt.Key_Minus:
+            self._zoom(1.25, center)
+        elif key == Qt.Key_0:
+            self.fit_view()
+        elif key == Qt.Key_O:
+            self.show_onsets = not self.show_onsets
+            self.update()
+        else:
+            super().keyPressEvent(e)
+            return
+        e.accept()
+
+    def _commit_anchor(self, t: float) -> None:
+        """Ustawia kotwicę z klawiatury — jak klik myszą (ten sam sygnał)."""
+        t = max(0.0, min(self.duration, t))
+        self._ensure_visible(t)
+        self.set_anchor(t)
+        self.anchorChanged.emit(t)
+
+    def _ensure_visible(self, t: float) -> None:
+        """Przesuwa widok (bez zmiany zoomu), gdy kotwica wyjedzie poza okno."""
+        span = self._span()
+        if t < self.view_start:
+            self.view_start, self.view_end = max(0.0, t), max(0.0, t) + span
+        elif t > self.view_end:
+            self.view_end = min(self.duration, t)
+            self.view_start = max(0.0, self.view_end - span)
+
     def mouseDoubleClickEvent(self, _):
-        self.view_start, self.view_end = 0.0, self.duration
-        self.update()
+        self.fit_view()
 
     def mousePressEvent(self, e):
         if self.duration <= 0:
             return
+        self.setFocus(Qt.MouseFocusReason)
         if e.button() == Qt.RightButton:
             self._pan = (e.position().x(), self.view_start, self.view_end)
             self.setCursor(Qt.ClosedHandCursor)
@@ -1742,6 +1946,7 @@ class WaveformWidget(QWidget):
             self.update()
             return
         if not self._drag:
+            self._hover(e.position().x())
             return
         t = self._x2t(e.position().x())
         if self._drag == "start":
@@ -1750,6 +1955,16 @@ class WaveformWidget(QWidget):
             self.trim_end = max(t, self.trim_start + 0.05)
         self.update()
         self.trimChanged.emit(self.trim_start, self.trim_end)
+
+    def _hover(self, x: float) -> None:
+        """Kursor uchwytu w strefie chwytu + tooltip etykiety zdjętej przez kolizję."""
+        if self.duration > 0 and (abs(x - self._t2x(self.trim_start)) <= _HANDLE_PX
+                                  or abs(x - self._t2x(self.trim_end)) <= _HANDLE_PX):
+            self.setCursor(Qt.SizeHorCursor)
+        else:
+            self.setCursor(Qt.CrossCursor)
+        hidden = [text for hx, text in self._hidden_tags if abs(hx - x) <= 8]
+        self.setToolTip(" · ".join(hidden) if hidden else self._base_tip)
 
     def mouseReleaseEvent(self, _):
         self._drag = None
@@ -1775,6 +1990,49 @@ class PreviewLabel(QLabel):
         self._disp: QRect | None = None    # gdzie leży pixmap wewnątrz widżetu
         self._frame_size: tuple[int, int] | None = None
         self.edit_mode = False
+        self.setMouseTracking(True)   # kursor „łapki" nad nakładką bez wciśniętego LPM
+        # Prostokąty nakładek (piksele KLATKI) — rysowane tylko w trybie edycji.
+        self.rects: dict[str, tuple[int, int, int, int]] = {}
+
+    def set_edit_rects(self, rects: dict[str, tuple[int, int, int, int]]) -> None:
+        self.rects = dict(rects)
+        if self.edit_mode:
+            self.update()
+
+    def set_edit_mode(self, on: bool) -> None:
+        self.edit_mode = on
+        self.update()
+
+    def _to_widget(self, r: tuple[int, int, int, int]) -> QRect | None:
+        """Prostokąt z pikseli klatki na piksele widżetu (odwrotność `_to_frame`)."""
+        if not self._disp or not self._frame_size or self._frame_size[0] <= 0:
+            return None
+        fw, fh = self._frame_size
+        sx = self._disp.width() / fw
+        sy = self._disp.height() / fh
+        return QRect(int(self._disp.x() + r[0] * sx), int(self._disp.y() + r[1] * sy),
+                     max(1, int(r[2] * sx)), max(1, int(r[3] * sy)))
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if not self.edit_mode or not self.rects:
+            return
+        t = current_tokens(QApplication.instance())
+        p = QPainter(self)
+        p.setFont(make_font("font_ui_small"))
+        accent = QColor(t["accent"])
+        for key, r in self.rects.items():
+            wr = self._to_widget(r)
+            if wr is None:
+                continue
+            p.setPen(QPen(accent, 1))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(wr)
+            label = _TR("rect_" + key)
+            # podpis nad ramką, a gdy nie ma miejsca — pod jej górną krawędzią
+            ly = wr.top() - 4 if wr.top() > 16 else wr.top() + 14
+            p.drawText(wr.left() + 2, ly, label)
+        p.end()
 
     def set_frame_geometry(self, disp: QRect, frame_size: tuple[int, int]) -> None:
         self._disp = disp
@@ -1801,6 +2059,12 @@ class PreviewLabel(QLabel):
             if f:
                 self.dragged.emit(*f)
                 return
+        if self.edit_mode and not e.buttons():
+            f = self._to_frame(e.position())
+            over = bool(f) and any(
+                r[0] <= f[0] <= r[0] + r[2] and r[1] <= f[1] <= r[1] + r[3]
+                for r in self.rects.values())
+            self.setCursor(Qt.OpenHandCursor if over else Qt.ArrowCursor)
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
@@ -2012,6 +2276,10 @@ class MainWindow(QMainWindow):
         # Próbki koloru malują się z tokenów motywu — wymuś przerysowanie.
         for btn in self.findChildren(ColorSwatchButton):
             btn.update()
+        # Oś czasu i ramki edycji malują się z tokenów w paintEvent — cache fali
+        # unieważnia się sam (kolor jest częścią klucza), ale repaint trzeba wymusić.
+        self.waveform.update()
+        self.preview_label.update()
         self._update_preview()
 
     def _build_ui(self):
@@ -2041,14 +2309,33 @@ class MainWindow(QMainWindow):
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
 
-        self.edit_pos_btn = QPushButton("✥ Edytuj pozycje (przeciąganie)")
+        # Pasek nad podglądem: tryb edycji, widok osi, czas podglądu.
+        # (Aplikacja NIE odtwarza wideo — brak transportu play/pauza jest celowy.)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, SPACING["sp_2"])
+        bar.setSpacing(SPACING["sp_2"])
+        self.edit_pos_btn = QToolButton()
+        self.edit_pos_btn.setText("✥ " + _TR("act_edit_pos"))
+        self.edit_pos_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.edit_pos_btn.setCheckable(True)
-        self.edit_pos_btn.setToolTip(
-            "Tryb edycji: przeciągaj w podglądzie panel strzału i zegar, by ustawić ich\n"
-            "pozycję (offsety). W tym trybie podgląd pokazuje panel strzału także przy\n"
-            "kotwicy „Sygnał startu”.")
+        self.edit_pos_btn.setToolTip(f"{_TR('tip_edit_pos')} (E)")
         self.edit_pos_btn.toggled.connect(self._on_edit_pos_toggled)
-        right.addWidget(self.edit_pos_btn)
+        bar.addWidget(self.edit_pos_btn)
+        bar.addStretch(1)
+        self.fit_btn = QPushButton(_TR("preview_fit"))
+        set_kind(self.fit_btn, "ghost")
+        self.fit_btn.setToolTip(f"{_TR('tip_preview_fit')} (0)")
+        self.fit_btn.clicked.connect(self._on_fit_view)
+        bar.addWidget(self.fit_btn)
+        self.zoom_range_btn = QPushButton(_TR("preview_zoom_range"))
+        set_kind(self.zoom_range_btn, "ghost")
+        self.zoom_range_btn.setToolTip(_TR("tip_preview_zoom_range"))
+        self.zoom_range_btn.clicked.connect(self._on_zoom_range)
+        bar.addWidget(self.zoom_range_btn)
+        self.preview_time_label = QLabel("")
+        set_role(self.preview_time_label, "mono")
+        bar.addWidget(self.preview_time_label)
+        right.addLayout(bar)
 
         self.preview_label = PreviewLabel("Przeciągnij tu plik wideo lub użyj „…”")
         self.preview_label.setMinimumSize(480, 270)
@@ -2062,6 +2349,7 @@ class MainWindow(QMainWindow):
         self.preview_stack = QStackedWidget()
         self.preview_stack.addWidget(self._empty_state_page())
         self.preview_stack.addWidget(self.preview_label)
+        self.preview_stack.addWidget(self._loading_page())
         right.addWidget(self.preview_stack, 3)
 
         self.waveform = WaveformWidget()
@@ -2101,6 +2389,9 @@ class MainWindow(QMainWindow):
                             self.autotrim_btn]
         # Escape wychodzi z trybu „Edytuj pozycje" (skill §11: tryb zawsze z wyjściem).
         QShortcut(QKeySequence.Cancel, self, self._escape_edit_pos)
+        # „E" przełącza tryb edycji — ale nie wtedy, gdy użytkownik pisze w polu.
+        QShortcut(QKeySequence("E"), self, self._shortcut_edit_pos)
+        self._update_preview_time()
         self._set_render_enabled(True)   # bez wideo „Renderuj" jest wyłączone
 
         self.setCentralWidget(central)
@@ -2128,6 +2419,60 @@ class MainWindow(QMainWindow):
         v.addLayout(brow)
         v.addStretch(1)
         return page
+
+    def _loading_page(self) -> QWidget:
+        """Stan „pracuję" podglądu: co się dzieje + nieokreślony postęp (skill §10)."""
+        page = QWidget()
+        self.loading_page = page
+        v = QVBoxLayout(page)
+        v.setSpacing(SPACING["sp_3"])
+        v.addStretch(1)
+        self.loading_label = QLabel(_TR("busy_audio"))
+        set_role(self.loading_label, "muted")
+        self.loading_label.setAlignment(Qt.AlignCenter)
+        self.loading_bar = QProgressBar()
+        self.loading_bar.setRange(0, 0)      # nieokreślony — długość analizy nieznana
+        self.loading_bar.setTextVisible(False)
+        self.loading_bar.setFixedWidth(120)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(self.loading_bar)
+        row.addStretch(1)
+        v.addWidget(self.loading_label)
+        v.addLayout(row)
+        v.addStretch(1)
+        return page
+
+    def _show_loading(self, text: str, busy: bool = True) -> None:
+        self.loading_label.setText(text)
+        self.loading_bar.setRange(0, 0) if busy else self.loading_bar.setRange(0, 100)
+        self.preview_stack.setCurrentWidget(self.loading_page)
+
+    def _update_preview_time(self) -> None:
+        """„▶ czas / długość" w pasku nad podglądem — format z `_fmt_axis_time`."""
+        dur = self.waveform.duration
+        if dur <= 0:
+            self.preview_time_label.setText("")
+            return
+        t = self.waveform.preview_t
+        if t is None:
+            t = self.t0_spin.value()
+        # dziesiąte sekundy wystarczą — surowa długość („20,0156s") jest nieczytelna
+        self.preview_time_label.setText(
+            f"▶ {_fmt_axis_time(round(t, 1))} / {_fmt_axis_time(round(dur, 1))}")
+
+    def _on_fit_view(self) -> None:
+        self.waveform.fit_view()
+
+    def _on_zoom_range(self) -> None:
+        self.waveform.zoom_to_trim()
+
+    def _shortcut_edit_pos(self) -> None:
+        """„E" przełącza tryb edycji tylko poza polami tekstowymi (skill §11)."""
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox)):
+            return
+        self.edit_pos_btn.toggle()
 
     def _escape_edit_pos(self) -> None:
         if self.edit_pos_btn.isChecked():
@@ -2844,17 +3189,19 @@ class MainWindow(QMainWindow):
         lrf = ffmpeg.find_lrf(path)
         self.lrf_path = str(lrf) if lrf else None
         audio_src = self.lrf_path or path
-        msg = "Analiza audio (proxy LRF)…" if self.lrf_path else "Analiza audio…"
-        self.preview_label.setText(msg)
+        self._show_loading(_TR("busy_audio_lrf") if self.lrf_path else _TR("busy_audio"))
 
         self.wave_worker = WaveformWorker(audio_src)
         self.wave_worker.done.connect(self._on_wave_done)
-        self.wave_worker.failed.connect(lambda m: self.preview_label.setText("Błąd audio: " + m))
+        self.wave_worker.failed.connect(
+            lambda m: self._show_loading(_TR("audio_failed").format(m), busy=False))
         self.wave_worker.start()
         self._request_frame()
 
     def _on_wave_done(self, env, dur, onsets):
         self.waveform.set_data(env, dur, onsets)
+        self.preview_stack.setCurrentWidget(self.preview_label)
+        self._update_preview_time()
         for s in (self.trim_start_spin, self.trim_end_spin, self.t0_spin):
             s.setMaximum(max(dur, 1.0))
         self._set_trim_silently(0.0, dur)
@@ -2901,7 +3248,7 @@ class MainWindow(QMainWindow):
             end = min(end, dur)
         self.trim_start_spin.setValue(start)
         self.trim_end_spin.setValue(end)
-        self._ok(_TR("msg_t0_detected").format(_fmt_num(round(detected, 2))))
+        self._ok(_TR("msg_t0_detected").format(_fmt_time_s(round(detected, 2))))
 
     def _force_start_signal_mode(self) -> None:
         """Wykryty bzyczek JEST sygnałem startu → wymuś tryb kotwicy START_SIGNAL."""
@@ -3128,9 +3475,10 @@ class MainWindow(QMainWindow):
             tail=_TRIM_TAIL_S, lead_in=_LEAD_IN_S, duration=dur)
         self.trim_start_spin.setValue(start)
         self.trim_end_spin.setValue(end)
-        self._ok(_TR("msg_trimmed").format(_fmt_num(round(start, 2)), _fmt_num(round(end, 2)))
-                 + f" (T0={_fmt_num(round(t0, 2))} s, "
-                   f"ostatni strzał {_fmt_num(round(session.shots[-1].czas, 2))} s)")
+        self._ok(_TR("msg_trimmed").format(_fmt_time_s(round(start, 2)),
+                                           _fmt_time_s(round(end, 2)))
+                 + f" (T0={_fmt_time_s(round(t0, 2))} s, "
+                   f"ostatni strzał {_fmt_time_s(round(session.shots[-1].czas, 2))} s)")
 
     @staticmethod
     def _shot_to_text(shot):
@@ -3155,7 +3503,7 @@ class MainWindow(QMainWindow):
             self._notify("sync", _TR("msg_no_anchor"))
             return
         self.t0_spin.setValue(detected)  # wywoła _on_t0_spin → waveform + podgląd
-        self._ok(_TR("msg_anchor_detected").format(_fmt_num(round(detected, 2))))
+        self._ok(_TR("msg_anchor_detected").format(_fmt_time_s(round(detected, 2))))
 
     def _detect_start_signal(self):
         """Wykrywa bzyczek shot-timera (filtr 2–4.8 kHz) i ustawia go jako T0.
@@ -3179,7 +3527,7 @@ class MainWindow(QMainWindow):
             return
         self._force_start_signal_mode()
         self.t0_spin.setValue(detected)
-        self._ok(_TR("msg_t0_detected").format(_fmt_num(round(detected, 2))))
+        self._ok(_TR("msg_t0_detected").format(_fmt_time_s(round(detected, 2))))
 
     def _detect_id_tone(self):
         """Dekoduje ID sesji z sygnału tonowego (timer po zapisie w bazie),
@@ -3217,7 +3565,7 @@ class MainWindow(QMainWindow):
         cur = self.t0_spin.value()
         nxt = next((o for o in onsets if o > cur + 1e-3), onsets[0])  # wrap do pierwszego
         self.t0_spin.setValue(nxt)
-        self._ok(_TR("msg_anchor_detected").format(_fmt_num(round(nxt, 2))))
+        self._ok(_TR("msg_anchor_detected").format(_fmt_time_s(round(nxt, 2))))
 
     # --- synchronizacja waveform <-> spinboxy ---
     def _on_wave_anchor(self, t: float):
@@ -3228,6 +3576,7 @@ class MainWindow(QMainWindow):
 
     def _on_t0_spin(self, v: float):
         self.waveform.set_anchor(v)
+        self._update_preview_time()
         self._request_frame()  # nowy czas → nowa klatka w tle (debounced)
 
     def _apply_auto_trim(self, *_):
@@ -3249,7 +3598,8 @@ class MainWindow(QMainWindow):
             real_t0, session.shots[-1].czas, tail=self.tail_spin.value(), duration=dur)
         self.trim_start_spin.setValue(start)
         self.trim_end_spin.setValue(end)
-        self._ok(_TR("msg_trimmed").format(_fmt_num(round(start, 2)), _fmt_num(round(end, 2))))
+        self._ok(_TR("msg_trimmed").format(_fmt_time_s(round(start, 2)),
+                                           _fmt_time_s(round(end, 2))))
 
     def _on_trim_spin(self):
         self.waveform.set_trim(self.trim_start_spin.value(), self.trim_end_spin.value())
@@ -3265,7 +3615,7 @@ class MainWindow(QMainWindow):
         if bad:
             dur = self.waveform.duration or self.trim_end_spin.maximum()
             self.sync_msg.show_message(
-                _TR("msg_trim_invalid").format(_fmt_num(round(dur, 2))), "danger")
+                _TR("msg_trim_invalid").format(_fmt_time_s(round(dur, 2))), "danger")
         elif self.sync_msg.isVisible():
             self.sync_msg.clear()
 
@@ -3274,6 +3624,7 @@ class MainWindow(QMainWindow):
         if not self.video_path:
             return
         self._scrubber_t = t
+        self._update_preview_time()
         self._scrubber_timer.start(_SCRUBBER_DEBOUNCE_MS)
 
     def _do_scrubber_preview(self) -> None:
@@ -3291,6 +3642,9 @@ class MainWindow(QMainWindow):
 
     def _on_scrubber_frame_ready(self, frame: Image.Image, t: float) -> None:
         """Klatka scrubber gotowa → nałóż panel aktywny dla czasu t."""
+        # Klatka scrubbera nie liczy `_preview_rects` (inny czas = inne panele),
+        # więc stare ramki edycji znikają do najbliższego `_update_preview`.
+        self.preview_label.set_edit_rects({})
         try:
             session = self.session or self._safe_session()
             if session is None or not session.shots:
@@ -3404,6 +3758,8 @@ class MainWindow(QMainWindow):
                            if (mode != AnchorMode.START_SIGNAL or edit) else 0.0)
                 self._composite_clock(frame, pstyle, session, elapsed)
             self._show_image(frame)
+            # Ramki nakładek w trybie edycji rysuje sam `PreviewLabel`.
+            self.preview_label.set_edit_rects(self._preview_rects)
         except Exception:  # noqa: BLE001
             # Bez modala (podgląd odświeża się przy każdej zmianie stylu), ale ze
             # śladem — ciche połykanie maskowało błędy kompozycji nakładek.
@@ -3450,7 +3806,7 @@ class MainWindow(QMainWindow):
 
     # --- edycja pozycji nakładek przez przeciąganie w podglądzie ---
     def _on_edit_pos_toggled(self, on: bool) -> None:
-        self.preview_label.edit_mode = on
+        self.preview_label.set_edit_mode(on)
         self.preview_label.setCursor(Qt.OpenHandCursor if on else Qt.ArrowCursor)
         self._grab = None
         if on:
@@ -3555,7 +3911,7 @@ class MainWindow(QMainWindow):
                 first, last = shots[0].czas, shots[-1].czas
                 self.timeline_label.setText(
                     f"{len(shots)} {_TR('timeline_shots')}, "
-                    f"{_fmt_num(first)}–{_fmt_num(last)} s")
+                    f"{_fmt_time_s(first)}–{_fmt_time_s(last)} s")
                 set_role(self.timeline_label, "muted")
         # Pusta etykieta znika, żeby nie zostawiać dziury pod polem.
         self.timeline_label.setVisible(bool(self.timeline_label.text()))
@@ -3569,6 +3925,8 @@ class MainWindow(QMainWindow):
             return None
 
     def _show_image(self, pil_img):
+        # Klatka bywa gotowa przed analizą audio — wtedy kończymy stan „ładowanie".
+        self.preview_stack.setCurrentWidget(self.preview_label)
         img = pil_img.convert("RGBA")
         fw, fh = img.size
         qim = ImageQt(img)
@@ -4222,6 +4580,11 @@ def _pop_option(argv: list[str], name: str) -> str | None:
     return value
 
 
+# Oś czasu do zrzutów (--screenshot --video): kilka strzałów z widocznymi splitami.
+_SHOT_DEMO_TIMELINE = ("1: 1.5s | 2: 2.1s (+0.6s) | 3: 2.9s (+0.8s) | "
+                       "4: 3.6s (+0.7s) | 5: 4.4s (+0.8s) | 6: 5.3s (+0.9s)")
+
+
 def main():
     _install_crash_logging()
 
@@ -4230,6 +4593,7 @@ def main():
     argv = list(sys.argv)
     shot_path = _pop_option(argv, "--screenshot")
     shot_video = _pop_option(argv, "--video")   # tylko z --screenshot (zrzut z nagraniem)
+    shot_edit = _pop_flag(argv, "--edit")       # zrzut w trybie „Edytuj pozycje"
     scale = _pop_option(argv, "--scale")
     force_light = _pop_flag(argv, "--light")
     if shot_path:
@@ -4287,6 +4651,26 @@ def main():
                 time.sleep(0.05)
             for _ in range(10):
                 app.processEvents()
+            # Oś bez markerów niczego nie pokazuje — zrzut dostaje demo osi czasu,
+            # kursor podglądu i fokus na osi (pierścień fokusu musi być widoczny).
+            win.timeline_edit.setPlainText(_SHOT_DEMO_TIMELINE)
+            win._set_source("text")
+            win._refresh_timeline_summary()
+            if shot_edit:
+                win.edit_pos_btn.setChecked(True)
+            dur = win.waveform.duration
+            if dur:
+                t0 = win.t0_spin.value()
+                # zrzut ma pokazać WĘŻSZY zakres Od…Do niż całe nagranie
+                # zrzut ma pokazać WĘŻSZY zakres Od…Do niż całe nagranie
+                win.trim_start_spin.setValue(max(0.0, t0 - 2.0))
+                win.trim_end_spin.setValue(min(dur, t0 + 8.0))
+                win.waveform.preview_t = min(dur, t0 + 2.0)
+            win.waveform.setFocus()
+            win._update_preview()
+            win._update_preview_time()
+            for _ in range(10):
+                app.processEvents()
         for _ in range(5):
             app.processEvents()
         ok = win.grab().save(shot_path)
@@ -4313,6 +4697,11 @@ def main():
             inner.render(pix)
             if pix.save(insp):
                 print("zapisano " + insp)
+        # Tryb zrzutu kończy się bez pętli zdarzeń — żywy QThread (klatka/audio)
+        # ginie razem z interpreterem i Qt wywala proces PO wypisaniu wyniku.
+        for worker in (win._frame_worker, win.wave_worker):
+            if worker is not None and worker.isRunning():
+                worker.wait(_THREAD_JOIN_MS)
         return 0 if ok else 1
 
     app.aboutToQuit.connect(lambda: save_window_state(win, settings, win.splitter))

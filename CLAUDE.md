@@ -234,6 +234,11 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   Binarka imageio-ffmpeg NIE ma NVENC.
 - **Waveform:** `audio_sync.compute_waveform` → `gui.WaveformWidget` (klik=kotwica,
   uchwyty=trim, znaczniki=onsety). Ctrl+klik = podgląd klatki z nakładką (scrubber).
+  Od v0.48.0 rysowanie idzie WYŁĄCZNIE z tokenów motywu (`current_tokens` czytane
+  w `paintEvent`, bez kopii w polach), obwiednia jest w cache `QPixmap`
+  (`_ensure_wave_cache`, klucz `(len(env), view_start, view_end, w, h, kolory)`),
+  etykiety markerów układają się w dwóch rzędach bez kolizji, a oś przyjmuje fokus
+  i klawiaturę — szczegóły w sekcji „Oś czasu, podgląd i format czasu (v0.48.0)".
 - **Wykrywanie sygnału startu (bzyczek):** `audio_sync.detect_dji_start` rozpoznaje buzzer
   shot-timera po DWÓCH cechach (okna 50 ms, FFT): (1) **koncentracji** energii w paśmie
   2000–4800 Hz = `energia_w_paśmie/energia_całkowita ≥ 0.7` (bzyczek to czysty ton —
@@ -637,6 +642,54 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   sekcji webowej) mają do niego dostęp, ale nic nie zmienia się w zachowaniu. Manualne
   wklejanie tekstu (bez prefiksu) działa jak dotychczas — `extract_start_delay` na tekście
   bez prefiksu zwraca `(tekst_bez_zmian, None)`.
+- **Oś czasu, podgląd i format czasu (v0.48.0)** — piąta (ostatnia) iteracja odświeżenia
+  UI wg skilla `python-desktop-ux` (§8 oś czasu, §9 podgląd, §11 klawiatura):
+  - **`WaveformWidget` z tokenów:** tło osi `surface`, zakres Od…Do `accent_subtle`,
+    poza zakresem `bg` z alfą 130 + fala w `text_disabled`, fala w zakresie `text_muted`,
+    onsety `success` (alfa), kotwica T0/T1 `accent` 2 px, uchwyty Od/Do `info` 2 px
+    (zieleń/czerwień ZNIKAJĄ — kolory semantyczne tylko dla stanów), krawędzie
+    Start/Koniec `text_muted` przerywane BEZ pastylek, kursor podglądu `text` 1 px
+    przerywany + trójkąt na osi, podziałka `border`, etykiety `text_muted`
+    w `font_ui_small`. Zmiana motywu = samo `update()` (dopisane do `_on_theme_toggled`).
+  - **Cache obwiedni:** `_ensure_wave_cache` renderuje falę do DWÓCH `QPixmap`
+    (w zakresie / poza zakresem) z `setDevicePixelRatio`, jedna kolumna na piksel
+    (`_columns`: max z próbek wpadających w kolumnę, a przy dużym zoomie odwrotnie —
+    kolumna czyta próbkę ze swojego czasu, inaczej fala jest dziurawa). Klucz cache NIE
+    zawiera przycięcia (żeby przeciąganie uchwytu nie przebudowywało pixmap) — stąd dwa
+    pixmapy i `setClipRect` zamiast przebarwiania w locie. Mapowanie `_t2x/_x2t` i cała
+    interakcja myszą bez zmian.
+  - **Etykiety bez kolizji:** `_tag_rect`/`_draw_tag` — pastylka `RADIUS["r_sm"]`, tło
+    w kolorze markera, tekst `accent_text` dla T0 i `text`/`bg` wybierane po luminancji
+    tła (`_tag_text_color`). Dwa rzędy; trzecia kolizja = sam znacznik, tekst wraca
+    w tooltipie po najechaniu (`_hover` + `_hidden_tags`). Priorytet: T0 > Od/Do > podgląd.
+  - **Fokus i klawiatura osi:** `Qt.StrongFocus` + pierścień `_focus_ring` w `paintEvent`;
+    ←/→ kotwica o 0,05 s (Shift: 1 s, `_commit_anchor` emituje `anchorChanged` jak klik),
+    Home/End = granice przycięcia, `+`/`−` zoom, `0` reset (`fit_view`), `O` przełącza
+    WARSTWĘ onsetów (widok, nie dane). Kursor `SizeHorCursor` w strefie uchwytu.
+  - **Pasek nad podglądem:** `edit_pos_btn` jest teraz `QToolButton` checkable (stan
+    `:checked` z QSS — `accent_subtle` + ramka `accent`), obok ghost „Dopasuj"
+    (`fit_view`) i „Zoom do zakresu" (`zoom_to_trim`, widok = Od…Do + 5 %) oraz etykieta
+    `role=mono` „▶ czas / długość". Skrót `E` przełącza tryb edycji tylko, gdy fokus nie
+    jest w polu tekstowym/spinboxie/combo (`_shortcut_edit_pos`); Escape wychodzi (było).
+    Transportu play/pauza NIE ma i mieć nie będzie — aplikacja nie odtwarza wideo.
+  - **`PreviewLabel`:** w trybie edycji rysuje ramki 1 px `accent` wokół nakładek
+    (`set_edit_rects` dostaje `_preview_rects` w pikselach KLATKI, `_to_widget` to
+    odwrotność `_to_frame`) z podpisami `rect_panel`/`rect_clock`/`rect_meta`; poza trybem
+    edycji podgląd jest czysty. Kursor `OpenHandCursor` nad nakładką (`setMouseTracking`).
+    Klatka scrubbera czyści ramki (inny czas = inne pozycje paneli). Stan „Analiza audio…"
+    to TRZECIA strona `QStackedWidget` (`_loading_page`: `role=muted` + nieokreślony
+    `QProgressBar` 120 px) zamiast surowego tekstu na etykiecie podglądu.
+  - **Jeden format czasu:** `_fmt_axis_time` (oś, pastylki, pasek podglądu) podmienia
+    separator dziesiętny na ten z `QLocale` (PL: przecinek), a komunikaty o czasie idą
+    przez nowe `_fmt_time_s` (`_fmt_num` + separator z locale). `_fmt_num` ZOSTAJE z kropką
+    — używa go builder komendy CLI, gdzie przecinek byłby błędem składni.
+  - **Ikony:** świadomie BEZ zestawu SVG (repo go nie ma) — zostają glify unicode ✥ i ▶.
+  - **PUŁAPKA — tryb `--screenshot` kończył się kodem 9:** bez pętli zdarzeń żywy QThread
+    (klatka/analiza audio) ginie razem z interpreterem i Qt wywala proces JUŻ PO wypisaniu
+    „zapisano …" (pliki są poprawne, ale exit code kłamie, a przez potok WSL ginie też
+    stdout). `main()` w trybie zrzutu czeka teraz na `_frame_worker`/`wave_worker`.
+    Tryb zrzutu z `--video` ustawia demo osi czasu, węższe przycięcie, kursor podglądu
+    i fokus na osi; nowa flaga `--edit` robi zrzut trybu „Edytuj pozycje".
 
 ## Wersja webowa (`web/`) — v0.24.0
 

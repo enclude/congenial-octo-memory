@@ -152,6 +152,38 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "empty_title": {Lang.PL: "Brak wideo", Lang.EN: "No video"},
     "empty_hint": {Lang.PL: "Przeciągnij tu plik albo użyj Ctrl+O",
                    Lang.EN: "Drop a file here or press Ctrl+O"},
+    # --- oś czasu, podgląd (iteracja V) ---
+    "wave_empty": {Lang.PL: "Ścieżka audio pojawi się po wczytaniu wideo",
+                   Lang.EN: "The audio track appears once a video is loaded"},
+    "wave_tip": {
+        Lang.PL: "Klik = ustaw kotwicę (snap do strzału) · Ctrl+klik = podgląd klatki · "
+                 "kółko = zoom · prawy przycisk = przesuń · dwuklik = reset zoomu · "
+                 "←/→ = kotwica o 0,05 s (Shift: 1 s) · Home/End = granice przycięcia · "
+                 "+/− = zoom, 0 = reset · O = znaczniki onsetów",
+        Lang.EN: "Click = set anchor (snaps to a shot) · Ctrl+click = frame preview · "
+                 "wheel = zoom · right button = pan · double click = reset zoom · "
+                 "←/→ = anchor by 0.05 s (Shift: 1 s) · Home/End = trim bounds · "
+                 "+/− = zoom, 0 = reset · O = onset markers"},
+    "act_edit_pos": {Lang.PL: "Edytuj pozycje", Lang.EN: "Edit positions"},
+    "tip_edit_pos": {
+        Lang.PL: "Tryb edycji: przeciągaj w podglądzie panel strzału, metadane i zegar, "
+                 "by ustawić ich pozycję (offsety). Escape kończy edycję.",
+        Lang.EN: "Edit mode: drag the shot panel, metadata and clock in the preview to "
+                 "set their position (offsets). Escape leaves the mode."},
+    "preview_fit": {Lang.PL: "Dopasuj", Lang.EN: "Fit"},
+    "tip_preview_fit": {Lang.PL: "Pokaż całe nagranie na osi (reset zoomu)",
+                        Lang.EN: "Show the whole recording on the timeline (reset zoom)"},
+    "preview_zoom_range": {Lang.PL: "Zoom do zakresu", Lang.EN: "Zoom to range"},
+    "tip_preview_zoom_range": {
+        Lang.PL: "Powiększ oś do zakresu przycięcia (Od…Do) z marginesem",
+        Lang.EN: "Zoom the timeline to the trim range (From…To) with a margin"},
+    "rect_panel": {Lang.PL: "panel strzału", Lang.EN: "shot panel"},
+    "rect_clock": {Lang.PL: "zegar", Lang.EN: "clock"},
+    "rect_meta": {Lang.PL: "metadane", Lang.EN: "metadata"},
+    "busy_audio": {Lang.PL: "Analiza audio…", Lang.EN: "Analysing audio…"},
+    "busy_audio_lrf": {Lang.PL: "Analiza audio (proxy LRF)…",
+                       Lang.EN: "Analysing audio (LRF proxy)…"},
+    "audio_failed": {Lang.PL: "Błąd audio: {}", Lang.EN: "Audio error: {}"},
 }
 
 _FALLBACK_LANG = Lang.EN
