@@ -36,9 +36,9 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QApplication, QButtonGroup, QColorDialog, QComboBox, QCheckBox,
+    QAbstractSpinBox, QApplication, QComboBox, QCheckBox,
     QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
-    QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QRadioButton,
+    QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QSpinBox, QSplitter, QPlainTextEdit, QToolBar, QToolButton,
     QVBoxLayout, QWidget,
 )
@@ -55,7 +55,10 @@ from .ui_theme import (
     SPACING, apply_theme, current_tokens, load_app_fonts, repolish, restore_window_state,
     save_window_state, set_app_user_model_id, set_windows_dark_titlebar, setup_hidpi,
 )
-from .ui_widgets import FormSection, StatusDot, set_kind, set_role, status_message
+from .ui_widgets import (
+    ColorSwatchButton, FormSection, PathField, SegmentedControl, StatusDot,
+    set_kind, set_role, status_message,
+)
 
 # GUI jest po polsku — teksty nowych elementów (pasek akcji, sekcje, pozycje)
 # idą przez istniejący mechanizm i18n, żeby nie powstał drugi słownik.
@@ -70,6 +73,7 @@ _SESSION_ID_MAX = 10_000_000   # górny zakres ID sesji API (główne okno i wsa
 _DEFAULT_OFFSET_PX = 32        # domyślny offset panelu/zegara — musi zgadzać się
                                # z pominięciami w _build_cli_command (krótsza komenda)
 _LEAD_IN_S = 5.0               # sekundy przed T0 przy auto-przycięciu
+_VIDEO_FILTER = "Wideo (*.mp4 *.mov *.mkv *.avi)"
 _TRIM_TAIL_S = 5.0             # margines po ostatnim strzale przy auto-przycięciu
 _IMPORT_TAIL_S = 75.0          # okno po T0 przy detekcji po imporcie (brak osi czasu)
 _THREAD_JOIN_MS = 3000         # limit oczekiwania na wątki robocze przy zamykaniu
@@ -1790,48 +1794,6 @@ class PreviewLabel(QLabel):
 
 
 # ----------------------------- okno główne -----------------------------
-class ColorButton(QPushButton):
-    changed = Signal()
-
-    def __init__(self, rgba):
-        super().__init__()
-        self._rgba = rgba
-        self.clicked.connect(self._pick)
-        self._refresh()
-
-    def rgba(self):
-        return self._rgba
-
-    def _pick(self):
-        c = QColorDialog.getColor(QColor(*self._rgba), self,
-                                  options=QColorDialog.ShowAlphaChannel)
-        if c.isValid():
-            self._rgba = (c.red(), c.green(), c.blue(), c.alpha())
-            self._refresh()
-            self.changed.emit()
-
-    def _refresh(self):
-        # Jedyny `setStyleSheet` w gui.py: pasek koloru po lewej NIE da się wyrazić
-        # właściwością dynamiczną (wartość jest z danych, nie ze skończonego zbioru
-        # ról). Pozostałe barwy bierzemy z tokenów motywu, żeby przycisk nie był
-        # ciemną wyspą w jasnym motywie. Docelowo → `ui_widgets.ColorSwatchButton`.
-        r, g, b, a = self._rgba
-        self.setText(f"RGBA {r},{g},{b},{a}")
-        tokens = current_tokens(QApplication.instance())
-        self.setStyleSheet(
-            f"QPushButton {{"
-            f"background-color: {tokens['surface']};"
-            f"color: {tokens['text']};"
-            f"border-left: 20px solid rgba({r},{g},{b},{a});"
-            f"border-top: 1px solid {tokens['border_strong']};"
-            f"border-bottom: 1px solid {tokens['border_strong']};"
-            f"border-right: 1px solid {tokens['border_strong']};"
-            f"border-radius: 4px;"
-            f"padding: 3px 8px;"
-            f"}}"
-        )
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2013,9 +1975,9 @@ class MainWindow(QMainWindow):
                 set_windows_dark_titlebar(win, mode == "dark")
             except Exception:  # noqa: BLE001 — offscreen nie ma uchwytu okna
                 pass
-        # ColorButton maluje się własnym arkuszem z tokenów — przerysuj po zmianie.
-        for btn in self.findChildren(ColorButton):
-            btn._refresh()
+        # Próbki koloru malują się z tokenów motywu — wymuś przerysowanie.
+        for btn in self.findChildren(ColorSwatchButton):
+            btn.update()
         self._update_preview()
 
     def _build_ui(self):
@@ -2149,7 +2111,11 @@ class MainWindow(QMainWindow):
         `Ignored` sprawia, że minimum bierze się z `setMinimumWidth`, nie z tekstu."""
         for sp in spins:
             sp.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-            sp.setMinimumWidth(84)   # mieści „0,00 s" + strzałki
+            sp.setMinimumWidth(92)   # mieści „0,00 s" + sufiks + strzałki (także 150 %)
+            sp.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            # Bez śledzenia klawiatury podgląd nie przelicza się na KAŻDY wpisany
+            # znak (wpisanie „12" nie generuje najpierw wartości 1).
+            sp.setKeyboardTracking(False)
 
     @staticmethod
     def _narrow(width: int, *spins) -> None:
@@ -2169,31 +2135,46 @@ class MainWindow(QMainWindow):
 
     def _input_group(self):
         sec = self._section("input", "sec_input")
-        self.video_edit = QLineEdit()
-        browse = QPushButton("…")
-        browse.setFixedWidth(36)
-        browse.clicked.connect(self.act_open.trigger)
-        row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(self.video_edit); row.addWidget(browse)
-        sec.add_row("Wideo", _wrap(row))
+        self.video_field = PathField(mode="open", filter=_VIDEO_FILTER,
+                                     placeholder=_TR("path_video_placeholder"))
+        self.video_field.browse.setToolTip(_TR("tip_choose_video"))
+        # Przeglądanie idzie przez akcję paska (pamięć katalogu w `config`),
+        # nie przez własny dialog PathField — inaczej zgubilibyśmy `last_dir`.
+        self.video_field.browse.clicked.disconnect()
+        self.video_field.browse.clicked.connect(self.act_open.trigger)
+        # Wpisanie/upuszczenie ścieżki = ta sama droga co wybór z dialogu.
+        self.video_field.changed.connect(self._set_video)
+        sec.add_row("Wideo", self.video_field)
 
-        self.rb_text = QRadioButton("Tekst")
-        self.rb_id = QRadioButton("ID (API)")
-        self.rb_id.setChecked(True)
-        grp = QButtonGroup(self); grp.addButton(self.rb_text); grp.addButton(self.rb_id)
-        srow = QHBoxLayout(); srow.setContentsMargins(0, 0, 0, 0)
-        srow.addWidget(self.rb_text); srow.addWidget(self.rb_id); srow.addStretch(1)
-        sec.add_row("Źródło", _wrap(srow))
+        self.source_seg = SegmentedControl([("text", _TR("source_text")),
+                                            ("id", _TR("source_id"))])
+        self.source_seg.set_value("id")
+        sec.add_row("Źródło", self.source_seg)
 
         self.timeline_edit = QPlainTextEdit()
-        self.timeline_edit.setPlaceholderText("1: 2.81s | 2: 4.63s (+1.82s) | ...")
+        self.timeline_edit.setPlaceholderText("1: 2.81s | 2: 4.63s (+1.82s)")
+        self.timeline_edit.setProperty("role", "mono")
         self.timeline_edit.setMaximumHeight(80)
         self.timeline_edit.setTabChangesFocus(True)
         self.timeline_edit.textChanged.connect(self._update_preview)
-        sec.add_row("Oś czasu", self.timeline_edit)
+        self.timeline_edit.textChanged.connect(self._refresh_timeline_summary)
+        self.timeline_label = QLabel()
+        set_role(self.timeline_label, "muted")
+        self.timeline_label.setWordWrap(True)
+        tl_box = QVBoxLayout(); tl_box.setContentsMargins(0, 0, 0, 0)
+        tl_box.setSpacing(SPACING["sp_1"])
+        tl_box.addWidget(self.timeline_edit)
+        tl_box.addWidget(self.timeline_label)
+        sec.add_row("Oś czasu", _wrap(tl_box))
 
         self.id_spin = QSpinBox(); self.id_spin.setRange(1, _SESSION_ID_MAX)
-        self._narrow(110, self.id_spin)
+        # Stała szerokość + BEZ strzałek: ID sesji nie jest wartością, którą
+        # inkrementuje się o 1 — a `Ignored` + `AllNonFixedFieldsGrow` zgniatały
+        # to pole do paska kilku pikseli obok przycisku „Pobierz".
+        self.id_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.id_spin.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.id_spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.id_spin.setFixedWidth(110)
         fetch = QPushButton("Pobierz")
         fetch.setToolTip("Pobiera oś czasu i metadane z API (bez zmiany przycięcia). Ctrl+G")
         fetch.clicked.connect(self.act_fetch.trigger)
@@ -2228,11 +2209,12 @@ class MainWindow(QMainWindow):
         # w formularzu pusty wiersz.
         meta_lab = sec.add_row("", self.api_meta_label)
         meta_lab.hide()
-        self.rb_id.toggled.connect(
-            lambda checked: self.api_meta_label.setVisible(
-                checked and bool(self.api_meta_label.text())
+        self.source_seg.currentChanged.connect(
+            lambda key: self.api_meta_label.setVisible(
+                key == "id" and bool(self.api_meta_label.text())
             )
         )
+        self._refresh_timeline_summary()
         return sec
 
     def _sync_group(self):
@@ -2269,7 +2251,7 @@ class MainWindow(QMainWindow):
         self.t0_spin = _dspin(0, 100000, 0.05, " s")
         self._elastic(self.t0_spin)
         self.t0_spin.valueChanged.connect(self._on_t0_spin)
-        sec.add_row("Kotwica (czas)", self.t0_spin)
+        sec.add_row("Kotwica", self.t0_spin)
 
         self.trim_start_spin = _dspin(0, 100000, 0.1, " s")
         self.trim_end_spin = _dspin(0, 100000, 0.1, " s")
@@ -2318,10 +2300,10 @@ class MainWindow(QMainWindow):
         self.lang_combo.currentIndexChanged.connect(self._update_preview)
         sec.add_row("Język", self.lang_combo)
 
-        self.scale_spin = _dspin(0.3, 5.0, 0.1, "", 1.0)
-        self._narrow(90, self.scale_spin)
+        self.scale_spin = _pct_spin()
+        self._narrow(92, self.scale_spin)
         self.scale_spin.valueChanged.connect(self._update_preview)
-        sec.add_row("Rozmiar (skala)", self.scale_spin)
+        sec.add_row("Rozmiar", self.scale_spin)
 
         self.pos_combo = QComboBox()
         self._fill_positions(self.pos_combo)
@@ -2390,10 +2372,10 @@ class MainWindow(QMainWindow):
 
     def _colors_section(self):
         sec = self._section("colors", "sec_colors")
-        self.bg_btn = ColorButton((0, 0, 0, 170))
-        self.text_btn = ColorButton((255, 255, 255, 255))
-        self.accent_btn = ColorButton((255, 196, 0, 255))
-        self.border_btn = ColorButton((255, 255, 255, 220))
+        self.bg_btn = ColorSwatchButton((0, 0, 0, 170))
+        self.text_btn = ColorSwatchButton((255, 255, 255, 255))
+        self.accent_btn = ColorSwatchButton((255, 196, 0, 255))
+        self.border_btn = ColorSwatchButton((255, 255, 255, 220))
         for b in (self.bg_btn, self.text_btn, self.accent_btn, self.border_btn):
             b.changed.connect(self._update_preview)
         sec.add_row("Tło", self.bg_btn)
@@ -2478,20 +2460,20 @@ class MainWindow(QMainWindow):
         self._narrow(100, self.banner_spin)
         sec.add_row("Czas", self.banner_spin)
 
-        self.banner_scale_spin = _dspin(0.3, 5.0, 0.1, "", 1.0)
-        self._narrow(90, self.banner_scale_spin)
+        self.banner_scale_spin = _pct_spin()
+        self._narrow(92, self.banner_scale_spin)
         self.banner_scale_spin.valueChanged.connect(self._update_preview)
-        sec.add_row("Rozmiar (skala)", self.banner_scale_spin)
+        sec.add_row("Rozmiar", self.banner_scale_spin)
 
-        self.banner_bg_btn = ColorButton((0, 0, 0, 150))
+        self.banner_bg_btn = ColorSwatchButton((0, 0, 0, 150))
         self.banner_bg_btn.changed.connect(self._update_preview)
         sec.add_row("Tło", self.banner_bg_btn)
 
-        self.banner_text_btn = ColorButton((255, 196, 0, 255))
+        self.banner_text_btn = ColorSwatchButton((255, 196, 0, 255))
         self.banner_text_btn.changed.connect(self._update_preview)
         sec.add_row("Tekst", self.banner_text_btn)
 
-        self.banner_border_btn = ColorButton((255, 196, 0, 220))
+        self.banner_border_btn = ColorSwatchButton((255, 196, 0, 220))
         self.banner_border_btn.changed.connect(self._update_preview)
         sec.add_row("Obramowanie", self.banner_border_btn)
 
@@ -2542,7 +2524,7 @@ class MainWindow(QMainWindow):
         idx = self.lang_combo.findData(style.lang)
         if idx >= 0:
             self.lang_combo.setCurrentIndex(idx)
-        self.scale_spin.setValue(style.scale)
+        _set_pct(self.scale_spin, style.scale)
         self._set_data(self.pos_combo, style.position)
         self.off_x.setValue(style.offset_x)
         self.off_y.setValue(style.offset_y)
@@ -2558,10 +2540,10 @@ class MainWindow(QMainWindow):
             self.meta_pos_combo.setCurrentIndex(midx)
         self.meta_off_x.setValue(style.meta_offset_x)
         self.meta_off_y.setValue(style.meta_offset_y)
-        self.bg_btn._rgba = style.bg_color;     self.bg_btn._refresh()
-        self.text_btn._rgba = style.text_color; self.text_btn._refresh()
-        self.accent_btn._rgba = style.accent_color; self.accent_btn._refresh()
-        self.border_btn._rgba = style.border_color; self.border_btn._refresh()
+        self.bg_btn.set_rgba(style.bg_color, emit=False)
+        self.text_btn.set_rgba(style.text_color, emit=False)
+        self.accent_btn.set_rgba(style.accent_color, emit=False)
+        self.border_btn.set_rgba(style.border_color, emit=False)
         self.border_chk.setChecked(style.border_enabled)
         self.border_w.setValue(style.border_width)
         self.clock_chk.setChecked(style.show_running_clock)
@@ -2571,10 +2553,10 @@ class MainWindow(QMainWindow):
         self.clock_off_x.setValue(style.clock_offset_x)
         self.clock_off_y.setValue(style.clock_offset_y)
         self.banner_spin.setValue(style.start_banner_duration)
-        self.banner_scale_spin.setValue(style.start_banner_scale)
-        self.banner_bg_btn._rgba = style.start_banner_bg_color; self.banner_bg_btn._refresh()
-        self.banner_text_btn._rgba = style.start_banner_text_color; self.banner_text_btn._refresh()
-        self.banner_border_btn._rgba = style.start_banner_border_color; self.banner_border_btn._refresh()
+        _set_pct(self.banner_scale_spin, style.start_banner_scale)
+        self.banner_bg_btn.set_rgba(style.start_banner_bg_color, emit=False)
+        self.banner_text_btn.set_rgba(style.start_banner_text_color, emit=False)
+        self.banner_border_btn.set_rgba(style.start_banner_border_color, emit=False)
         self.banner_border_chk.setChecked(style.start_banner_border_enabled)
         self.banner_border_w.setValue(style.start_banner_border_width)
 
@@ -2615,13 +2597,12 @@ class MainWindow(QMainWindow):
 
     def _output_group(self):
         sec = self._section("output", "sec_output")
-        self.out_edit = QLineEdit()
-        out_browse = QPushButton("…")
-        out_browse.setFixedWidth(36)
-        out_browse.clicked.connect(self._choose_output)
-        orow = QHBoxLayout(); orow.setContentsMargins(0, 0, 0, 0)
-        orow.addWidget(self.out_edit); orow.addWidget(out_browse)
-        sec.add_row("Plik wyjściowy", _wrap(orow))
+        self.out_field = PathField(mode="save", filter="Wideo (*.mp4 *.webm *.gif)",
+                                   placeholder=_TR("path_output_placeholder"))
+        self.out_field.browse.setToolTip(_TR("tip_choose_output"))
+        self.out_field.browse.clicked.disconnect()
+        self.out_field.browse.clicked.connect(self._choose_output)
+        sec.add_row("Plik wyjściowy", self.out_field)
 
         self.format_combo = QComboBox()
         self.format_combo.addItem("MP4 (H.264)", "mp4")
@@ -2701,7 +2682,7 @@ class MainWindow(QMainWindow):
     def current_style(self):
         return OverlayStyle(
             lang=self.lang_combo.currentData(),
-            scale=self.scale_spin.value(),
+            scale=_pct_value(self.scale_spin),
             position=self.pos_combo.currentData(),
             offset_x=self.off_x.value(), offset_y=self.off_y.value(),
             panel_mode=self.panel_mode_combo.currentData(),
@@ -2720,7 +2701,7 @@ class MainWindow(QMainWindow):
             clock_offset_x=self.clock_off_x.value(),
             clock_offset_y=self.clock_off_y.value(),
             start_banner_duration=self.banner_spin.value(),
-            start_banner_scale=self.banner_scale_spin.value(),
+            start_banner_scale=_pct_value(self.banner_scale_spin),
             start_banner_bg_color=self.banner_bg_btn.rgba(),
             start_banner_text_color=self.banner_text_btn.rgba(),
             start_banner_border_enabled=self.banner_border_chk.isChecked(),
@@ -2730,8 +2711,8 @@ class MainWindow(QMainWindow):
 
     def _choose_video(self):
         start_dir = config.load_last_dir("video") or ""
-        path, _ = QFileDialog.getOpenFileName(self, "Wybierz wideo", start_dir,
-                                              "Wideo (*.mp4 *.mov *.mkv *.avi)")
+        path, _ = QFileDialog.getOpenFileName(self, _TR("choose_video"), start_dir,
+                                              _VIDEO_FILTER)
         if path:
             config.save_last_dir("video", Path(path).parent)
             self._set_video(path)
@@ -2743,10 +2724,10 @@ class MainWindow(QMainWindow):
             self._save_file_settings()
         self._file_settings_ready = False
         self.video_path = path
-        self.video_edit.setText(path)
+        self.video_field.set_path(path, emit=False)
         p = Path(path)
         out_ext = _FORMAT_EXT.get(self.format_combo.currentData(), ".mp4")
-        self.out_edit.setText(str(p.with_name(p.stem + "_PiRoOverlay" + out_ext)))
+        self.out_field.set_path(str(p.with_name(p.stem + "_PiRoOverlay" + out_ext)), emit=False)
         # Inwaliduj cache — nowe wideo, stara klatka nieaktualna
         self._cached_frame = None
         self._cached_frame_t = -1.0
@@ -2845,7 +2826,7 @@ class MainWindow(QMainWindow):
             "webm": "Wideo WebM (*.webm)",
             "gif":  "Animowany GIF (*.gif)",
         }
-        current_text = self.out_edit.text()
+        current_text = self.out_field.path()
         if current_text:
             default_name = current_text
         else:
@@ -2856,10 +2837,10 @@ class MainWindow(QMainWindow):
             filters.get(fmt, "Wideo (*.mp4)"))
         if path:
             config.save_last_dir("output", Path(path).parent)
-            self.out_edit.setText(path)
+            self.out_field.set_path(path, emit=False)
 
     def _build_session(self):
-        if self.rb_id.isChecked():
+        if self._source_is_id():
             return api.fetch_session(self.id_spin.value())
         shots = parse_timeline(self.timeline_edit.toPlainText())
         if self.session is not None:
@@ -3005,7 +2986,7 @@ class MainWindow(QMainWindow):
                 "Nie znaleziono sygnału ID w audio — wpisz ID ręcznie.")
             return
         self.id_spin.setValue(detected)
-        self.rb_id.setChecked(True)  # render ma użyć sesji z API, nie pola tekstowego
+        self._set_source("id")  # render ma użyć sesji z API, nie pola tekstowego
         status_message(self.statusBar(),
                        f"Wykryto ID z audio: {detected}", "success", 8000)
         self._fetch_id_and_trim()
@@ -3310,6 +3291,42 @@ class MainWindow(QMainWindow):
         if self.edit_pos_btn.isChecked():
             self.preview_label.setCursor(Qt.OpenHandCursor)
 
+    # ---------- źródło osi czasu (warstwa zgodności po zamianie radio → segmenty) ----------
+    def _source_is_id(self) -> bool:
+        """Czy oś czasu bierzemy z API po ID (zamiennik `rb_id.isChecked()`)."""
+        return self.source_seg.value() == "id"
+
+    def _set_source(self, key: str) -> None:
+        """Ustawia źródło ("id"/"text"); klucze są te same co w `file_settings.json`."""
+        self.source_seg.set_value(key)
+
+    def _refresh_timeline_summary(self) -> None:
+        """Walidacja inline osi czasu: podsumowanie albo powód błędu pod polem."""
+        text = self.timeline_edit.toPlainText().strip()
+        invalid = False
+        if not text:
+            self.timeline_label.setText("")
+            set_role(self.timeline_label, "muted")
+        else:
+            try:
+                shots = parse_timeline(text)
+                if not shots:
+                    raise ValueError(_TR("timeline_empty"))
+            except Exception as exc:  # noqa: BLE001 — parser rzuca TimelineParseError
+                invalid = True
+                self.timeline_label.setText(f"{_TR('timeline_invalid')}: {exc}")
+                set_role(self.timeline_label, "danger")
+            else:
+                first, last = shots[0].czas, shots[-1].czas
+                self.timeline_label.setText(
+                    f"{len(shots)} {_TR('timeline_shots')}, "
+                    f"{_fmt_num(first)}–{_fmt_num(last)} s")
+                set_role(self.timeline_label, "muted")
+        # Pusta etykieta znika, żeby nie zostawiać dziury pod polem.
+        self.timeline_label.setVisible(bool(self.timeline_label.text()))
+        self.timeline_edit.setProperty("invalid", "true" if invalid else "false")
+        repolish(self.timeline_edit)
+
     def _safe_session(self):
         try:
             return self._build_session()
@@ -3332,7 +3349,7 @@ class MainWindow(QMainWindow):
     def _collect_render_kwargs(self) -> dict | None:
         if not self.video_path:
             QMessageBox.warning(self, "Brak wideo", "Wybierz plik wideo."); return None
-        if not self.out_edit.text():
+        if not self.out_field.path():
             QMessageBox.warning(self, "Brak wyjścia", "Podaj plik wyjściowy."); return None
         no_overlay = self.no_overlay_chk.isChecked()
         if no_overlay and self.format_combo.currentData() != "mp4":
@@ -3363,7 +3380,7 @@ class MainWindow(QMainWindow):
         te = self.trim_end_spin.value()
         return dict(
             video_path=self.video_path, session=session, t0=t0,
-            style=self.current_style(), mode=mode, out_path=self.out_edit.text(),
+            style=self.current_style(), mode=mode, out_path=self.out_field.path(),
             trim_start=ts if ts > 0 else None,
             trim_end=te if te > 0 else None,
             encoder="auto" if self.gpu_chk.isChecked() else "cpu",
@@ -3376,7 +3393,7 @@ class MainWindow(QMainWindow):
         """Komplet parametrów aktualnego pliku do zapisu w AppData."""
         return {
             "style": self.current_style().to_dict(),
-            "source": "id" if self.rb_id.isChecked() else "text",
+            "source": self.source_seg.value(),
             "id": self.id_spin.value(),
             "timeline": self.timeline_edit.toPlainText(),
             "anchor": self._anchor_mode().value,
@@ -3387,7 +3404,7 @@ class MainWindow(QMainWindow):
             "gpu": self.gpu_chk.isChecked(),
             "no_overlay": self.no_overlay_chk.isChecked(),
             "format": self.format_combo.currentData(),
-            "output": self.out_edit.text(),
+            "output": self.out_field.path(),
         }
 
     def _apply_file_settings(self, data: dict) -> None:
@@ -3399,10 +3416,7 @@ class MainWindow(QMainWindow):
             self._apply_style(style)  # ustawia też język, zegar, planszę START
         except Exception:  # noqa: BLE001
             pass
-        if data.get("source") == "text":
-            self.rb_text.setChecked(True)
-        else:
-            self.rb_id.setChecked(True)
+        self._set_source("text" if data.get("source") == "text" else "id")
         if data.get("id"):
             self.id_spin.setValue(int(data["id"]))
         if data.get("timeline"):
@@ -3420,7 +3434,7 @@ class MainWindow(QMainWindow):
         if fidx >= 0:
             self.format_combo.setCurrentIndex(fidx)
         if data.get("output"):
-            self.out_edit.setText(data["output"])
+            self.out_field.set_path(data["output"], emit=False)
         # Źródło = ID → pobierz dane z API od razu (cicho), żeby metadane toru/
         # zawodnika i oś czasu były gotowe bez ręcznego „Pobierz".
         if data.get("source") == "id" and data.get("id"):
@@ -3444,12 +3458,12 @@ class MainWindow(QMainWindow):
         nakładki (kolory, skala, pozycja panelu, offsety, plansza START) nie mają
         odpowiedników w CLI i są pomijane (patrz nota w oknie)."""
         parts = ["PiroOverlay.exe"]
-        video = self.video_edit.text() or (self.video_path or "<wideo>")
+        video = self.video_field.path() or (self.video_path or "<wideo>")
         parts += ["--video", _cli_quote(video)]
 
         no_overlay = self.no_overlay_chk.isChecked()
         if not no_overlay:
-            if self.rb_id.isChecked():
+            if self._source_is_id():
                 parts += ["--id", str(self.id_spin.value())]
             else:
                 tl = self.timeline_edit.toPlainText().strip()
@@ -3490,7 +3504,7 @@ class MainWindow(QMainWindow):
                     if style.clock_offset_y != _DEFAULT_OFFSET_PX:
                         parts += ["--clock-offset-y", str(style.clock_offset_y)]
 
-        out = self.out_edit.text()
+        out = self.out_field.path()
         if out:
             parts += ["-o", _cli_quote(out)]
         return " ".join(parts)
@@ -3629,7 +3643,7 @@ class MainWindow(QMainWindow):
 
     def _on_format_changed(self, *_):
         """Aktualizuje rozszerzenie pliku wyjściowego gdy zmienia się format."""
-        current = self.out_edit.text()
+        current = self.out_field.path()
         if not current:
             return
         p = Path(current)
@@ -3637,7 +3651,7 @@ class MainWindow(QMainWindow):
         new_ext = _FORMAT_EXT.get(fmt, ".mp4")
         # Zamień obecne rozszerzenie tylko jeśli jest znane (mp4/webm/gif/mov/avi/mkv).
         if p.suffix.lower() in (".mp4", ".webm", ".gif", ".mov", ".avi", ".mkv"):
-            self.out_edit.setText(str(p.with_suffix(new_ext)))
+            self.out_field.set_path(str(p.with_suffix(new_ext)), emit=False)
 
     def _on_no_overlay_toggled(self, state):
         self.appearance_box.setDisabled(bool(state))
@@ -3815,6 +3829,29 @@ def _dspin(lo, hi, step, suffix="", value=None):
     if value is not None:
         s.setValue(value)
     return s
+
+
+def _pct_spin() -> QSpinBox:
+    """Skala nakładki pokazywana jako procent (30–500 %), zapisywana jako ułamek.
+
+    Konwersja ×/÷100 żyje WYŁĄCZNIE w widoku (`_pct_value` / `_set_pct`) —
+    `OverlayStyle.scale` i pliki ustawień nadal trzymają float (0.8, 1.25).
+    """
+    s = QSpinBox()
+    s.setRange(30, 500)
+    s.setSingleStep(5)
+    s.setSuffix(" %")
+    s.setValue(100)
+    s.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    return s
+
+
+def _pct_value(spin: QSpinBox) -> float:
+    return spin.value() / 100.0
+
+
+def _set_pct(spin: QSpinBox, value: float) -> None:
+    spin.setValue(int(round(value * 100)))
 
 
 def _ispin(lo, hi, value):

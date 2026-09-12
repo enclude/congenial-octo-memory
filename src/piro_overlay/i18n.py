@@ -61,6 +61,18 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "sec_clock": {Lang.PL: "Zegar", Lang.EN: "Clock"},
     "sec_banner": {Lang.PL: "Plansza START", Lang.EN: "START banner"},
     "sec_output": {Lang.PL: "Wyjście", Lang.EN: "Output"},
+    # --- pola ścieżek i walidacja osi czasu (GUI, iteracja III) ---
+    "path_video_placeholder": {Lang.PL: "Przeciągnij plik wideo…",
+                               Lang.EN: "Drop a video file…"},
+    "path_output_placeholder": {Lang.PL: "Plik wynikowy…", Lang.EN: "Output file…"},
+    "tip_choose_video": {Lang.PL: "Wybierz plik wideo (Ctrl+O)",
+                         Lang.EN: "Choose a video file (Ctrl+O)"},
+    "tip_choose_output": {Lang.PL: "Wybierz plik wyjściowy",
+                          Lang.EN: "Choose the output file"},
+    "timeline_shots": {Lang.PL: "strzałów", Lang.EN: "shots"},
+    "timeline_invalid": {Lang.PL: "Nie rozpoznano osi czasu",
+                         Lang.EN: "Cannot parse the timeline"},
+    "timeline_empty": {Lang.PL: "brak strzałów", Lang.EN: "no shots"},
     # --- wartości list: pozycja nakładki (klucz techniczny zostaje bez zmian) ---
     "pos_top_left": {Lang.PL: "Lewy górny", Lang.EN: "Top left"},
     "pos_top_center": {Lang.PL: "Górny środek", Lang.EN: "Top centre"},

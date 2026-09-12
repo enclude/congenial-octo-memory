@@ -123,6 +123,44 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Komponenty UI (v0.46.0):** trzecia iteracja odświeżenia (skill `python-desktop-ux`,
+  krok III) — wymiana kontrolek na te z `ui_widgets.py`, ZERO zmian w formacie ustawień.
+  (1) `ColorButton` USUNIĘTY → `ColorSwatchButton` (7 użyć: tło/tekst/akcent/obramowanie
+  + 3 planszy START): próbka z szachownicą pod alfą, `#RRGGBB` i alfa w %, malowana z
+  tokenów zamiast `setStyleSheet` — `grep -c setStyleSheet gui.py` == 0. W `_apply_style`
+  ustawianie wartości idzie przez `set_rgba(rgba, emit=False)` (dawne `btn._rgba = …;
+  btn._refresh()`); do `OverlayStyle` nadal trafiają krotki RGBA 0–255.
+  (2) Radio „Tekst/ID (API)" → `SegmentedControl` + **warstwa zgodności** na `MainWindow`:
+  `_source_is_id()` i `_set_source("id"/"text")` zastąpiły `rb_id.isChecked()`/`setChecked`
+  we WSZYSTKICH miejscach (`_build_session`, `_detect_id_tone`, `_collect/_apply_file_settings`,
+  `_build_cli_command`); klucz `"source"` w `file_settings.json` ma te same wartości
+  (`source_seg.value()` zwraca dokładnie `"id"`/`"text"`).
+  (3) `video_edit`/`out_edit` (QLineEdit + „…") → `PathField` (elipsa OD LEWEJ, tooltip z
+  pełną ścieżką, drag&drop). PUŁAPKA: `PathField` ma WŁASNY `QFileDialog` bez pamięci
+  katalogu — przycisk przeglądania jest `disconnect()`-owany i podpięty do istniejących
+  `act_open`/`_choose_output` (`config.load/save_last_dir` bez zmian). Zapisy robimy
+  `set_path(path, emit=False)`, bo `changed` jest podpięty do `_set_video` (upuszczenie
+  pliku na pole = ta sama droga co wybór z dialogu, bez dublowania `dropEvent` okna).
+  (4) Oś czasu: `role=mono`, krótszy placeholder i **walidacja inline** —
+  `_refresh_timeline_summary()` parsuje pole przez `parse_timeline` i pokazuje pod nim
+  „N strzałów, 2.81–26.14 s" (`role=muted`) albo powód błędu (`role=danger`) +
+  `invalid="true"` na polu (nowe reguły QSS dla `QPlainTextEdit` w `ui_theme.py`); pusta
+  etykieta jest chowana, żeby nie zostawiać dziury w formularzu.
+  (5) **Skala nakładki tylko w WIDOKU jako procent**: `_pct_spin()` (QSpinBox 30–500,
+  krok 5, sufiks „ %"), konwersja ×/÷100 wyłącznie w `_pct_value`/`_set_pct` wołanych z
+  `current_style()`/`_apply_style` — `style.scale` i pliki ustawień nadal trzymają float.
+  Skutek uboczny: skala ma teraz ziarno 1 % (0.855 z pliku wróci jako 0.86).
+  (6) Pola czasu (`t0_spin`, `trim_*`, `tail_spin`, helper `_elastic`) wyrównane do prawej,
+  `setKeyboardTracking(False)` (podgląd nie przelicza się na każdy wpisany znak),
+  min. szerokość 92 px (sufiks „ s" mieści się też przy 150 %).
+  REGRESJA Z ITERACJI II NAPRAWIONA: `id_spin` z `QSizePolicy.Ignored` + `AllNonFixedFieldsGrow`
+  zgniatał się do paska ~4 px obok „Pobierz" — teraz `Fixed` 110 px, wyrównany do prawej i
+  `setButtonSymbols(NoButtons)` (strzałki nie mają sensu dla ID sesji; typ `QSpinBox`
+  i `id_spin.value()` zostają, bo czyta je wiele miejsc). Test bez Qt się nie da —
+  `tests/test_gui_style_roundtrip.py` (`pytest.importorskip("PySide6")`) sprawdza
+  `_apply_style(style)` → `current_style().to_dict() == style.to_dict()` oraz klucze źródła.
+  Zrzuty: `pictures/ui-refresh/03-*.png`.
+
 - **Layout i sekcje UI (v0.45.0):** `ui_widgets.py` (kopia `scripts/qt_widgets.py` ze skilla
   `python-desktop-ux`, import na `.ui_theme`, bez demo) + własna klasa `StatusDot` (kropka
   statusu malowana kolorem roli z `current_tokens`). W `gui.py` ZERO `setStyleSheet` poza

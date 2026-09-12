@@ -268,7 +268,7 @@ QToolTip {
 QLabel[role="title"]   { font-size: ${font_title}pt; font-weight: bold; }
 QLabel[role="section"] { font-size: ${font_section}pt; font-weight: bold; }
 QLabel[role="muted"]   { color: $text_muted; font-size: ${font_small}pt; }
-QLabel[role="mono"]    { font-family: "$mono_family"; }
+QLabel[role="mono"], QPlainTextEdit[role="mono"] { font-family: "$mono_family"; }
 QLabel[role="danger"]  { color: $danger; }
 QLabel[role="success"] { color: $success; }
 QLabel[role="warning"] { color: $warning; }
@@ -366,7 +366,8 @@ QLineEdit:read-only { background: $surface; border-color: $border; }
 QLineEdit:disabled, QAbstractSpinBox:disabled, QComboBox:disabled, QPlainTextEdit:disabled {
     background: $surface; color: $text_disabled; border-color: $border;
 }
-QLineEdit[invalid="true"], QAbstractSpinBox[invalid="true"] { border: 2px solid $danger; }
+QLineEdit[invalid="true"], QAbstractSpinBox[invalid="true"],
+QPlainTextEdit[invalid="true"] { border: 2px solid $danger; }
 QLineEdit::placeholder { color: $text_muted; }
 
 /* ---- spin boxes ------------------------------------------------------- */
