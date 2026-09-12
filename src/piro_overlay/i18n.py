@@ -184,6 +184,18 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "busy_audio_lrf": {Lang.PL: "Analiza audio (proxy LRF)…",
                        Lang.EN: "Analysing audio (LRF proxy)…"},
     "audio_failed": {Lang.PL: "Błąd audio: {}", Lang.EN: "Audio error: {}"},
+    # --- okna pomocnicze: kolejka renderów, wsad (iteracja odświeżenia UI v0.49.0) ---
+    "queue_title": {Lang.PL: "Kolejka renderów", Lang.EN: "Render queue"},
+    "queue_empty": {
+        Lang.PL: "Kolejka jest pusta — dodaj zadanie przyciskiem „Dodaj do kolejki” "
+                 "w głównym oknie.",
+        Lang.EN: "The queue is empty — add a job with the “Add to queue” button "
+                 "in the main window."},
+    "batch_title": {Lang.PL: "Przetwarzanie wsadowe (auto + ID)",
+                    Lang.EN: "Batch processing (auto + ID)"},
+    "batch_empty": {
+        Lang.PL: "Przeciągnij tu pliki wideo albo użyj „Dodaj pliki…”",
+        Lang.EN: "Drop video files here or use “Add files…”"},
 }
 
 _FALLBACK_LANG = Lang.EN

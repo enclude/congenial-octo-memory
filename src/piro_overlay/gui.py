@@ -40,10 +40,10 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QComboBox, QCheckBox,
-    QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+    QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QPlainTextEdit,
-    QToolBar, QToolButton, QVBoxLayout, QWidget,
+    QStatusBar, QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
 
 from PIL import Image
@@ -60,7 +60,8 @@ from .ui_theme import (
     setup_hidpi,
 )
 from .ui_widgets import (
-    ColorSwatchButton, FormSection, InlineMessage, PathField, SegmentedControl, StatusDot,
+    ColorSwatchButton, FormSection, InlineMessage, PathField, SectionHeader,
+    SegmentedControl, StatusDot,
     _focus_ring, set_busy, set_kind, set_role, status_message,
 )
 
@@ -543,17 +544,23 @@ class JobRowWidget(QWidget):
         JobStatus.FAILED:  "danger",
     }
 
+    _label_full = ""   # pełna etykieta (plik → wyjście), do elizji na resize
+
     def __init__(self, job: RenderJob, parent=None):
         super().__init__(parent)
         self._job_id = job.id
+        self._label_full = job.label
+        self._error_msg: str | None = None
         lay = QHBoxLayout(self)
         lay.setContentsMargins(4, 2, 4, 2)
+        lay.setSpacing(SPACING["sp_2"])
 
         self._status_icon = StatusDot()
         lay.addWidget(self._status_icon)
 
-        self._label = QLabel(job.label)
-        self._label.setMinimumWidth(200)
+        self._label = QLabel()
+        self._label.setMinimumWidth(120)
+        self._label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         lay.addWidget(self._label, 1)
 
         self._progress = QProgressBar()
@@ -562,15 +569,28 @@ class JobRowWidget(QWidget):
         self._progress.setTextVisible(True)   # pokazuj liczbowy % postępu
         self._progress.setFormat("%p%")
         self._progress.setProperty("kind", "labeled")
-        self._progress.setFixedWidth(120)
+        self._progress.setFixedWidth(140)
         lay.addWidget(self._progress)
 
-        self._del_btn = QPushButton("Usuń")
-        self._del_btn.setFixedWidth(50)
+        self._del_btn = QToolButton()
+        self._del_btn.setText("✕")
+        self._del_btn.setToolTip("Usuń zadanie z kolejki")
+        set_kind(self._del_btn, "ghost")
         self._del_btn.clicked.connect(lambda: self.remove_requested.emit(self._job_id))
         lay.addWidget(self._del_btn)
 
         self._apply_status(job.status)
+        self._update_elided_label()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_elided_label()
+
+    def _update_elided_label(self) -> None:
+        fm = QFontMetrics(self._label.font())
+        avail = max(40, self._label.width())
+        self._label.setText(fm.elidedText(self._label_full, Qt.ElideMiddle, avail))
+        self._refresh_tooltips()
 
     def update_progress(self, p: float) -> None:
         self._progress.setValue(int(p * 100))
@@ -580,7 +600,11 @@ class JobRowWidget(QWidget):
 
     def set_error(self, msg: str | None) -> None:
         """Powód błędu jako tooltip całego wiersza (pełny komunikat po najechaniu)."""
-        tip = f"Błąd renderu:\n{msg}" if msg else ""
+        self._error_msg = msg
+        self._refresh_tooltips()
+
+    def _refresh_tooltips(self) -> None:
+        tip = f"Błąd renderu:\n{self._error_msg}" if self._error_msg else self._label_full
         self.setToolTip(tip)
         self._label.setToolTip(tip)
         self._progress.setToolTip(tip)
@@ -604,13 +628,17 @@ class RenderQueueWindow(QWidget):
         super().__init__(parent, Qt.Window)
         # To QWidget, nie QDialog — Escape trzeba podpiąć samemu (skill, qt §8).
         QShortcut(QKeySequence.Cancel, self, self.close)
-        self.setWindowTitle("Kolejka renderów")
-        self.setMinimumWidth(560)
+        self.setWindowTitle(_TR("queue_title"))
+        self.setMinimumSize(640, 400)
         self._runner = runner
         self._rows: dict[str, JobRowWidget] = {}
         self._progress: dict[str, float] = {}   # job_id → ostatni postęp (0–1)
+        self._geometry_restored = False
 
         root = QVBoxLayout(self)
+        root.setSpacing(SPACING["sp_3"])
+        header = SectionHeader(_TR("queue_title"), collapsible=False)
+        root.addWidget(header)
 
         self._list_widget = QWidget()
         self._list_layout = QVBoxLayout(self._list_widget)
@@ -618,43 +646,29 @@ class RenderQueueWindow(QWidget):
         self._list_layout.addStretch(1)
 
         scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._list_widget)
         scroll.setMinimumHeight(200)
         root.addWidget(scroll, 1)
 
-        self._status_label = QLabel("Gotowy")
-        root.addWidget(self._status_label)
+        self._empty_label = QLabel(_TR("queue_empty"))
+        set_role(self._empty_label, "muted")
+        self._empty_label.setAlignment(Qt.AlignCenter)
+        self._empty_label.setWordWrap(True)
+        self._list_layout.insertWidget(0, self._empty_label)
 
-        btn_row = QHBoxLayout()
-        self._start_btn = QPushButton("Start kolejki")
-        self._start_btn.setToolTip("Renderuje oczekujące zadania (tyle naraz, ile "
-                                   "ustawiono w „Równoległe”; nieudane ponawia automatycznie)")
-        self._start_btn.clicked.connect(self._on_start)
-        self._stop_btn = QPushButton("Zatrzymaj")
-        self._stop_btn.setToolTip("Przerywa biegnące rendery i pauzuje kolejkę "
-                                  "(zadania zostają jako oczekujące — „Start kolejki” wznawia)")
-        self._stop_btn.setEnabled(False)
-        self._stop_btn.clicked.connect(self._on_stop)
-        self._clear_btn = QPushButton("Wyczyść zakończone")
-        self._clear_btn.setToolTip("Usuwa z listy zadania ukończone i nieudane")
-        self._clear_btn.clicked.connect(self._on_clear_finished)
-        self._save_btn = QPushButton("Zapisz kolejkę")
-        self._save_btn.setToolTip("Zapisz niewykonane zadania w AppData (odzysk po awarii)")
-        self._save_btn.clicked.connect(self._on_save_queue)
-        self._load_btn = QPushButton("Wczytaj kolejkę")
-        self._load_btn.setToolTip("Wczytaj zapisaną kolejkę z AppData")
-        self._load_btn.clicked.connect(self._on_load_queue)
-        btn_row.addWidget(self._start_btn)
-        btn_row.addWidget(self._stop_btn)
-        btn_row.addWidget(self._clear_btn)
-        btn_row.addWidget(self._save_btn)
-        btn_row.addWidget(self._load_btn)
-        btn_row.addStretch(1)
-        btn_row.addWidget(QLabel("Równoległe:"))
+        self._statusbar = QStatusBar()
+        status_message(self._statusbar, "Gotowy", "muted", 0)
+        root.addWidget(self._statusbar)
+
+        parallel_row = QHBoxLayout()
+        parallel_row.setContentsMargins(0, 0, 0, 0)
+        parallel_row.addWidget(QLabel("Równoległe:"))
         self._parallel_spin = QSpinBox()
         self._parallel_spin.setRange(1, config._QUEUE_PARALLEL_MAX)
         self._parallel_spin.setValue(config.load_queue_parallel())
+        self._parallel_spin.setFixedWidth(56)
         self._parallel_spin.setToolTip(
             "Ile plików renderować jednocześnie. Przy NVENC pojedynczy render\n"
             "wykorzystuje GPU w ~50% (kompozycja nakładki idzie na CPU) — dwa\n"
@@ -663,13 +677,49 @@ class RenderQueueWindow(QWidget):
             "Zmiana w trakcie działa od następnego wolnego slotu.")
         self._parallel_spin.valueChanged.connect(self._on_parallel_changed)
         runner.set_parallel(self._parallel_spin.value())
-        btn_row.addWidget(self._parallel_spin)
+        parallel_row.addWidget(self._parallel_spin)
+        parallel_row.addStretch(1)
+        root.addLayout(parallel_row)
+
+        btn_row = QHBoxLayout()
+        self._start_btn = QPushButton("Start kolejki")
+        set_kind(self._start_btn, "primary")
+        self._start_btn.setToolTip("Renderuje oczekujące zadania (tyle naraz, ile "
+                                   "ustawiono w „Równoległe”; nieudane ponawia automatycznie)")
+        self._start_btn.clicked.connect(self._on_start)
+        self._stop_btn = QPushButton("Zatrzymaj")
+        set_kind(self._stop_btn, "secondary")
+        self._stop_btn.setToolTip("Przerywa biegnące rendery i pauzuje kolejkę "
+                                  "(zadania zostają jako oczekujące — „Start kolejki” wznawia)")
+        self._stop_btn.setEnabled(False)
+        self._stop_btn.clicked.connect(self._on_stop)
+        self._clear_btn = QPushButton("Wyczyść zakończone")
+        set_kind(self._clear_btn, "ghost")
+        self._clear_btn.setToolTip("Usuwa z listy zadania ukończone i nieudane")
+        self._clear_btn.clicked.connect(self._on_clear_finished)
+        self._save_btn = QPushButton("Zapisz kolejkę…")
+        set_kind(self._save_btn, "ghost")
+        self._save_btn.setToolTip("Zapisz niewykonane zadania w AppData (odzysk po awarii)")
+        self._save_btn.clicked.connect(self._on_save_queue)
+        self._load_btn = QPushButton("Wczytaj kolejkę…")
+        set_kind(self._load_btn, "ghost")
+        self._load_btn.setToolTip("Wczytaj zapisaną kolejkę z AppData")
+        self._load_btn.clicked.connect(self._on_load_queue)
+        btn_row.addWidget(self._start_btn)
+        btn_row.addWidget(self._stop_btn)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self._clear_btn)
+        btn_row.addWidget(self._save_btn)
+        btn_row.addWidget(self._load_btn)
         root.addLayout(btn_row)
 
         runner.job_progress.connect(self._on_job_progress)
         runner.job_status_changed.connect(self._on_job_status_changed)
         runner.queue_finished.connect(self._on_queue_finished)
         runner.queue_stopped.connect(self._on_queue_stopped)
+
+    def _update_empty_state(self) -> None:
+        self._empty_label.setVisible(not self._rows)
 
     def add_job(self, job: RenderJob) -> None:
         row = JobRowWidget(job)
@@ -681,12 +731,20 @@ class RenderQueueWindow(QWidget):
         self._runner.add_job(job)
         self._refresh_start_btn()
         self._autosave_queue()
+        self._update_empty_state()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._geometry_restored:
+            self._geometry_restored = True
+            restore_window_state(self, QSettings(), prefix="ui/queue")
 
     def closeEvent(self, event):
         if self._runner._running:
             self.hide()
             event.ignore()
         else:
+            save_window_state(self, QSettings(), prefix="ui/queue")
             event.accept()
 
     def _on_start(self) -> None:
@@ -698,15 +756,15 @@ class RenderQueueWindow(QWidget):
                 row.update_status(JobStatus.PENDING)
         started = self._runner.start_queue()
         if not started:
-            self._status_label.setText("Renderowanie już trwa — poczekaj na koniec.")
+            status_message(self._statusbar, "Renderowanie już trwa — poczekaj na koniec.", "warning", 5000)
         else:
-            self._status_label.setText("Renderowanie kolejki…")
+            status_message(self._statusbar, "Renderowanie kolejki…", "info", 0)
         self._refresh_start_btn()
 
     def _on_stop(self) -> None:
         self._runner.stop()
         self._stop_btn.setEnabled(False)
-        self._status_label.setText("Zatrzymywanie kolejki (przerywam biegnące rendery)…")
+        status_message(self._statusbar, "Zatrzymywanie kolejki (przerywam biegnące rendery)…", "warning", 0)
 
     def _on_clear_finished(self) -> None:
         for job_id, row in list(self._rows.items()):
@@ -716,6 +774,7 @@ class RenderQueueWindow(QWidget):
                 row.deleteLater()
                 del self._rows[job_id]
         self._runner.clear_finished()
+        self._update_empty_state()
 
     def _on_remove(self, job_id: str) -> None:
         if self._runner.remove_job(job_id):
@@ -723,6 +782,7 @@ class RenderQueueWindow(QWidget):
             if row:
                 self._list_layout.removeWidget(row)
                 row.deleteLater()
+            self._update_empty_state()
 
     def _on_parallel_changed(self, n: int) -> None:
         self._runner.set_parallel(n)
@@ -750,8 +810,10 @@ class RenderQueueWindow(QWidget):
             detail = f"{name} · bieżący {cur * 100:.0f}%"
         else:
             detail = f"{len(running)} plików równolegle"
-        self._status_label.setText(
-            f"Ukończone {done}/{total} · {detail} · łącznie {overall * 100:.0f}%")
+        status_message(
+            self._statusbar,
+            f"Ukończone {done}/{total} · {detail} · łącznie {overall * 100:.0f}%",
+            "info", 0)
 
     def _on_job_status_changed(self, job_id: str, status) -> None:
         if row := self._rows.get(job_id):
@@ -767,14 +829,16 @@ class RenderQueueWindow(QWidget):
         self._autosave_queue()   # DONE wypada z zapisu, FAILED zostaje (do ponowienia)
 
     def _on_queue_finished(self) -> None:
-        self._status_label.setText("Kolejka zakończona.")
+        status_message(self._statusbar, "Kolejka zakończona.", "success", 0)
         self._refresh_start_btn()
         QMessageBox.information(self, "Kolejka renderów",
                                 "Wszystkie zadania zostały ukończone.")
 
     def _on_queue_stopped(self) -> None:
-        self._status_label.setText(
-            "Kolejka zatrzymana. „Start kolejki” wznawia od przerwanego pliku.")
+        status_message(
+            self._statusbar,
+            "Kolejka zatrzymana. „Start kolejki” wznawia od przerwanego pliku.",
+            "warning", 0)
         self._refresh_start_btn()
 
     def _refresh_start_btn(self) -> None:
@@ -802,8 +866,10 @@ class RenderQueueWindow(QWidget):
         payload = self._queue_payload()
         config.save_queue(payload)
         n = len(payload["jobs"])
-        self._status_label.setText(
-            f"Zapisano kolejkę ({n} zadań) → {config.queue_path()}")
+        status_message(
+            self._statusbar,
+            f"Zapisano kolejkę ({n} zadań) → {config.queue_path()}",
+            "success", 5000)
 
     def _on_load_queue(self) -> None:
         data = config.load_queue()
@@ -823,7 +889,7 @@ class RenderQueueWindow(QWidget):
             job.status = JobStatus.PENDING   # wczytane = do ponowienia
             self.add_job(job)
             added += 1
-        self._status_label.setText(f"Wczytano {added} zadań z zapisanej kolejki.")
+        status_message(self._statusbar, f"Wczytano {added} zadań z zapisanej kolejki.", "success", 5000)
 
 
 # ----------------------------- przetwarzanie wsadowe -----------------------------
@@ -936,14 +1002,17 @@ class BatchRowWidget(QWidget):
     def __init__(self, row: BatchRow, parent=None):
         super().__init__(parent)
         self._row_id = row.id
+        self._name_full = Path(row.video_path).name
         lay = QHBoxLayout(self)
         lay.setContentsMargins(4, 2, 4, 2)
+        lay.setSpacing(SPACING["sp_2"])
 
         self._status_icon = StatusDot()
         lay.addWidget(self._status_icon)
 
-        self._name = QLabel(Path(row.video_path).name)
-        self._name.setMinimumWidth(180)
+        self._name = QLabel()
+        self._name.setMinimumWidth(100)
+        self._name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self._name.setToolTip(row.video_path)
         lay.addWidget(self._name, 2)
 
@@ -951,7 +1020,12 @@ class BatchRowWidget(QWidget):
         self._id_spin = QSpinBox()
         self._id_spin.setRange(0, _SESSION_ID_MAX)   # 0 = brak ID (wiersz nieprzygotowany)
         self._id_spin.setValue(row.session_id)
-        self._id_spin.setFixedWidth(100)
+        # Jak `id_spin` głównego okna: stała szerokość, bez strzałek, do prawej —
+        # ID sesji nie jest wartością, którą inkrementuje się o 1.
+        self._id_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self._id_spin.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._id_spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._id_spin.setFixedWidth(110)
         self._id_spin.valueChanged.connect(
             lambda v: self.id_changed.emit(self._row_id, v))
         lay.addWidget(self._id_spin)
@@ -961,18 +1035,31 @@ class BatchRowWidget(QWidget):
         self._info.setProperty("role", "muted")
         lay.addWidget(self._info, 2)
 
-        self._play_btn = QPushButton("▶")
-        self._play_btn.setFixedWidth(34)
+        self._play_btn = QToolButton()
+        self._play_btn.setText("▶")
+        set_kind(self._play_btn, "ghost")
         self._play_btn.setToolTip("Otwórz plik źródłowy w odtwarzaczu")
         self._play_btn.clicked.connect(lambda: self.play_requested.emit(self._row_id))
         lay.addWidget(self._play_btn)
 
-        self._del_btn = QPushButton("Usuń")
-        self._del_btn.setFixedWidth(50)
+        self._del_btn = QToolButton()
+        self._del_btn.setText("✕")
+        set_kind(self._del_btn, "ghost")
+        self._del_btn.setToolTip("Usuń plik z listy wsadowej")
         self._del_btn.clicked.connect(lambda: self.remove_requested.emit(self._row_id))
         lay.addWidget(self._del_btn)
 
         self.update_row(row)
+        self._update_elided_name()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_elided_name()
+
+    def _update_elided_name(self) -> None:
+        fm = QFontMetrics(self._name.font())
+        avail = max(40, self._name.width())
+        self._name.setText(fm.elidedText(self._name_full, Qt.ElideMiddle, avail))
 
     def set_session_id(self, value: int) -> None:
         """Ustawia ID w spinboxie (wyemituje `id_changed` → aktualizacja wiersza)."""
@@ -1047,28 +1134,36 @@ class BatchDialog(QWidget):
                  base_style: OverlayStyle, parent=None):
         super().__init__(parent, Qt.Window)
         QShortcut(QKeySequence.Cancel, self, self.close)   # jak w oknie kolejki
-        self.setWindowTitle("Przetwarzanie wsadowe (auto + ID)")
-        self.setMinimumSize(720, 460)
+        self.setWindowTitle(_TR("batch_title"))
+        self.setMinimumSize(720, 700)
+        self.setAcceptDrops(True)
         self._runner = runner
         self._queue_window = queue_window
         self._base_style = base_style
         self._rows: dict[str, BatchRow] = {}
         self._row_widgets: dict[str, BatchRowWidget] = {}
         self._workers: dict[str, QThread] = {}   # prep/detect, trzymane do finished
+        self._geometry_restored = False
 
         root = QVBoxLayout(self)
+        root.setSpacing(SPACING["sp_3"])
+        root.addWidget(SectionHeader(_TR("batch_title"), collapsible=False))
 
         top = QHBoxLayout()
         add_btn = QPushButton("Dodaj pliki…")
+        set_kind(add_btn, "secondary")
         add_btn.setToolTip("Dodaje pliki wideo do listy wsadowej")
         add_btn.clicked.connect(self._add_files)
         export_btn = QPushButton("Eksport → schowek")
+        set_kind(export_btn, "ghost")
         export_btn.setToolTip("Kopiuje listę jako wiersze „<ścieżka>;<ID>”")
         export_btn.clicked.connect(self._export_clipboard)
         import_btn = QPushButton("Import ze schowka")
+        set_kind(import_btn, "ghost")
         import_btn.setToolTip("Wkleja listę „<ścieżka>;<ID>” ze schowka")
         import_btn.clicked.connect(self._import_clipboard)
         self._detect_id_btn = QPushButton("Wykryj ID z audio")
+        set_kind(self._detect_id_btn, "ghost")
         self._detect_id_btn.setToolTip(
             "Dla plików bez ID szuka w nagraniu sygnału tonowego ID, który timer\n"
             "odtwarza po zapisie sesji w bazie (marker 5000 Hz + 4 cyfry + cyfra\n"
@@ -1081,6 +1176,7 @@ class BatchDialog(QWidget):
         top.addWidget(self._detect_id_btn)
         top.addStretch(1)
         self._count_label = QLabel("Brak plików.")
+        set_role(self._count_label, "muted")
         top.addWidget(self._count_label)
         root.addLayout(top)
 
@@ -1089,43 +1185,45 @@ class BatchDialog(QWidget):
         self._list_layout.setSpacing(2)
         self._list_layout.addStretch(1)
         scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidgetResizable(True)
         scroll.setWidget(self._list_widget)
         scroll.setMinimumHeight(180)
         root.addWidget(scroll, 1)
 
-        # --- ustawienia wspólne dla całej partii ---
-        opts = QGroupBox("Ustawienia wspólne")
-        form = QFormLayout(opts)
+        self._empty_label = QLabel(_TR("batch_empty"))
+        set_role(self._empty_label, "muted")
+        self._empty_label.setAlignment(Qt.AlignCenter)
+        self._empty_label.setWordWrap(True)
+        self._list_layout.insertWidget(0, self._empty_label)
 
-        out_row = QHBoxLayout()
-        self._out_dir_edit = QLineEdit()
-        out_browse = QPushButton("Wybierz…")
-        out_browse.clicked.connect(self._pick_out_dir)
-        out_row.addWidget(self._out_dir_edit, 1)
-        out_row.addWidget(out_browse)
-        form.addRow("Katalog docelowy:", out_row)
+        # --- ustawienia wspólne dla całej partii ---
+        opts = FormSection("Ustawienia wspólne", collapsible=False)
+
+        self._out_dir = PathField(mode="dir", placeholder="np. D:\\rendery")
+        opts.add_row("Katalog docelowy", self._out_dir)
 
         self._prefix_edit = QLineEdit("")
-        form.addRow("Prefiks nazwy:", self._prefix_edit)
+        opts.add_row("Prefiks nazwy", self._prefix_edit)
 
         self._suffix_edit = QLineEdit("_PiRoOverlay")
-        form.addRow("Sufiks nazwy:", self._suffix_edit)
+        opts.add_row("Sufiks nazwy", self._suffix_edit)
 
         self._participant_chk = QCheckBox("Dodaj informacje o uczestniku")
         self._participant_chk.setToolTip(
             "Po sufiksie doda do nazwy pliku ID sesji oraz nazwę uczestnika "
             "(znaki diakrytyczne sanityzowane, np. Jarosław → Jaroslaw).")
-        form.addRow("", self._participant_chk)
+        opts.add_row("", self._participant_chk)
 
         self._format_combo = QComboBox()
         for label, val in (("MP4 (H.264)", "mp4"), ("WebM (VP9)", "webm"),
                            ("GIF (animowany)", "gif")):
             self._format_combo.addItem(label, val)
         self._format_combo.currentIndexChanged.connect(lambda *_: self._refresh())
-        form.addRow("Format:", self._format_combo)
+        opts.add_row("Format", self._format_combo)
 
         toggles = QHBoxLayout()
+        toggles.setContentsMargins(0, 0, 0, 0)
         self._gpu_chk = QCheckBox("GPU (NVENC, jeśli dostępne)")
         self._gpu_chk.setChecked(True)
         self._overlay_chk = QCheckBox("Nakładka ze strzałami")
@@ -1137,7 +1235,7 @@ class BatchDialog(QWidget):
         toggles.addWidget(self._overlay_chk)
         toggles.addWidget(self._clock_chk)
         toggles.addStretch(1)
-        form.addRow("Nakładki:", toggles)
+        opts.add_widget_row(_wrap(toggles))
         root.addWidget(opts)
 
         note = QLabel(
@@ -1150,27 +1248,61 @@ class BatchDialog(QWidget):
         note.setWordWrap(True)
         root.addWidget(note)
 
+        self._statusbar = QStatusBar()
+        self._batch_progress = QProgressBar()
+        self._batch_progress.setRange(0, 100)
+        self._batch_progress.setTextVisible(False)
+        self._batch_progress.setFixedWidth(140)
+        self._batch_progress.hide()
+        self._statusbar.addPermanentWidget(self._batch_progress)
+        status_message(self._statusbar, "Gotowy", "muted", 0)
+        root.addWidget(self._statusbar)
+
         btns = QHBoxLayout()
         self._prep_btn = QPushButton("Przygotuj wszystkie")
+        set_kind(self._prep_btn, "primary")
         self._prep_btn.setToolTip("Dla plików z ID: pobiera sesję z API, wykrywa "
                                   "sygnał startu (T0) i liczy auto-przycięcie")
         self._prep_btn.clicked.connect(self._prepare_all)
         self._enqueue_btn = QPushButton("Wyślij gotowe do kolejki")
+        set_kind(self._enqueue_btn, "secondary")
         self._enqueue_btn.setToolTip("Buduje zadania renderu z przygotowanych "
                                      "plików i dodaje je do kolejki renderów")
         self._enqueue_btn.clicked.connect(self._enqueue_ready)
         self._clear_btn = QPushButton("Wyczyść wszystko")
+        set_kind(self._clear_btn, "ghost")
         self._clear_btn.setToolTip("Usuwa wszystkie pliki z listy wsadowej")
         self._clear_btn.clicked.connect(self._clear_all)
         close_btn = QPushButton("Zamknij")
+        set_kind(close_btn, "ghost")
         close_btn.clicked.connect(self.close)
         btns.addWidget(self._prep_btn)
         btns.addWidget(self._enqueue_btn)
-        btns.addWidget(self._clear_btn)
         btns.addStretch(1)
+        btns.addWidget(self._clear_btn)
         btns.addWidget(close_btn)
         root.addLayout(btns)
 
+        self._refresh()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._geometry_restored:
+            self._geometry_restored = True
+            restore_window_state(self, QSettings(), prefix="ui/batch")
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.toLocalFile()]
+        if not paths:
+            return
+        if not self._out_dir.path():
+            self._out_dir.set_path(str(Path(paths[0]).parent), emit=False)
+        for path in paths:
+            self._add_row(path)
         self._refresh()
 
     # --- dodawanie / usuwanie plików ---
@@ -1180,8 +1312,8 @@ class BatchDialog(QWidget):
             "Wideo (*.mp4 *.mov *.mkv *.avi);;Wszystkie pliki (*)")
         if not paths:
             return
-        if not self._out_dir_edit.text() and paths:
-            self._out_dir_edit.setText(str(Path(paths[0]).parent))
+        if not self._out_dir.path() and paths:
+            self._out_dir.set_path(str(Path(paths[0]).parent), emit=False)
         for path in paths:
             self._add_row(path)
         self._refresh()
@@ -1204,7 +1336,11 @@ class BatchDialog(QWidget):
         w.id_changed.connect(self._on_id_changed)
         self._row_widgets[row.id] = w
         self._list_layout.insertWidget(self._list_layout.count() - 1, w)
+        self._update_empty_state()
         return row
+
+    def _update_empty_state(self) -> None:
+        self._empty_label.setVisible(not self._rows)
 
     def _export_clipboard(self) -> None:
         """Kopiuje całą listę do schowka — po jednym pliku w wierszu „<ścieżka>;<ID>”."""
@@ -1266,6 +1402,7 @@ class BatchDialog(QWidget):
         if w:
             self._list_layout.removeWidget(w)
             w.deleteLater()
+        self._update_empty_state()
         self._refresh()
 
     def _clear_all(self) -> None:
@@ -1289,6 +1426,7 @@ class BatchDialog(QWidget):
             w.deleteLater()
         self._rows.clear()
         self._row_widgets.clear()
+        self._update_empty_state()
         self._refresh()
 
     def _play_row(self, row_id: str) -> None:
@@ -1308,12 +1446,6 @@ class BatchDialog(QWidget):
         row.status = BatchRowStatus.PENDING if value > 0 else BatchRowStatus.NEEDS_ID
         self._sync_row(row)
         self._refresh()
-
-    def _pick_out_dir(self) -> None:
-        d = QFileDialog.getExistingDirectory(self, "Katalog docelowy",
-                                             self._out_dir_edit.text() or "")
-        if d:
-            self._out_dir_edit.setText(d)
 
     def _on_overlay_toggled(self, on: bool) -> None:
         self._clock_chk.setEnabled(on)
@@ -1409,7 +1541,7 @@ class BatchDialog(QWidget):
                 self, "Przetwarzanie wsadowe",
                 "Brak przygotowanych plików. Kliknij „Przygotuj wszystkie”.")
             return
-        out_dir = Path(self._out_dir_edit.text()) if self._out_dir_edit.text() else None
+        out_dir = Path(self._out_dir.path()) if self._out_dir.path() else None
         if out_dir is None or not out_dir.is_dir():
             QMessageBox.warning(self, "Brak katalogu",
                                 "Wskaż istniejący katalog docelowy.")
@@ -1479,16 +1611,30 @@ class BatchDialog(QWidget):
                        if r.status == BatchRowStatus.NEEDS_ID)
         self._count_label.setText(
             f"Plików: {n} · gotowych: {ready}" if n else "Brak plików.")
+        set_busy(self._prep_btn, busy and any(
+            r.status == BatchRowStatus.PREPARING for r in self._rows.values()),
+            "Przygotowuję…")
+        set_busy(self._detect_id_btn, busy and any(
+            r.status == BatchRowStatus.DETECTING for r in self._rows.values()),
+            "Wykrywam…")
         self._prep_btn.setEnabled(pending > 0 and not busy)
         self._enqueue_btn.setEnabled(ready > 0 and not busy)
         self._clear_btn.setEnabled(n > 0 and not busy)
         self._detect_id_btn.setEnabled(needs_id > 0 and not busy)
+        self._batch_progress.setVisible(busy)
+        if busy:
+            self._batch_progress.setRange(0, 0)   # nieokreślony — postęp per plik nieznany
+            status_message(self._statusbar, "Przetwarzanie w tle…", "info", 0)
+        else:
+            self._batch_progress.setRange(0, 100)
+            status_message(self._statusbar, "Gotowy", "muted", 0)
 
     def closeEvent(self, event):
         if any(r.status in _BATCH_BUSY for r in self._rows.values()):
             self.hide()
             event.ignore()
         else:
+            save_window_state(self, QSettings(), prefix="ui/batch")
             event.accept()
 
 
@@ -4603,6 +4749,58 @@ _SHOT_DEMO_TIMELINE = ("1: 1.5s | 2: 2.1s (+0.6s) | 3: 2.9s (+0.8s) | "
                        "4: 3.6s (+0.7s) | 5: 4.4s (+0.8s) | 6: 5.3s (+0.9s)")
 
 
+def _screenshot_helper_window(win: "MainWindow", kind: str) -> QWidget:
+    """Buduje okno pomocnicze (`kind` = "queue"/"batch") z kilkoma przykładowymi
+    wierszami w różnych statusach — TYLKO do zrzutów `--screenshot --window`."""
+    if kind == "queue":
+        qwin = win._get_queue_window()
+        demo = (
+            (JobStatus.PENDING, "sesja_042.mp4 → sesja_042_PiRoOverlay.mp4", 0.0, None),
+            (JobStatus.RUNNING, "sesja_043.mp4 → sesja_043_PiRoOverlay.mp4", 0.42, None),
+            (JobStatus.FAILED, "sesja_044.mp4 → sesja_044_PiRoOverlay.mp4", 0.0,
+             "FFmpeg: kod wyjścia 1 — Nothing was written (drugi strumień wideo)"),
+        )
+        for status, label, progress, error in demo:
+            job = RenderJob(id=uuid.uuid4().hex, label=label, kwargs={"video_path": label})
+            qwin.add_job(job)
+            row = qwin._rows[job.id]
+            row.update_status(status)
+            if status == JobStatus.RUNNING:
+                row.update_progress(progress)
+            if error:
+                row.set_error(error)
+        qwin.resize(760, 420)
+        qwin.show()
+        qwin.raise_()
+        return qwin
+
+    if kind == "batch":
+        win._show_batch_window()
+        bwin = win._batch_window
+        demo = (
+            (BatchRowStatus.NEEDS_ID, 0, ""),
+            (BatchRowStatus.READY, 305, ""),
+            (BatchRowStatus.FAILED, 306, "API: sesja o tym ID nie istnieje"),
+        )
+        for i, (status, session_id, error) in enumerate(demo):
+            path = f"D:/nagrania/sesja_{40 + i}.mp4"
+            row = bwin._add_row(path, session_id=session_id)
+            if row is None:
+                continue
+            row.status = status
+            row.error = error
+            if status == BatchRowStatus.READY:
+                row.prep = {"t0": 3.42, "trim_start": 0.0, "trim_end": 45.2}
+            bwin._sync_row(row)
+        bwin._refresh()
+        bwin.resize(820, 720)
+        bwin.show()
+        bwin.raise_()
+        return bwin
+
+    raise ValueError(f"nieznane okno do zrzutu: {kind!r}")
+
+
 def main():
     _install_crash_logging()
 
@@ -4612,6 +4810,8 @@ def main():
     shot_path = _pop_option(argv, "--screenshot")
     shot_video = _pop_option(argv, "--video")   # tylko z --screenshot (zrzut z nagraniem)
     shot_edit = _pop_flag(argv, "--edit")       # zrzut w trybie „Edytuj pozycje"
+    # zrzut okna pomocniczego zamiast głównego: "queue" (kolejka) albo "batch" (wsad)
+    shot_window = _pop_option(argv, "--window")
     scale = _pop_option(argv, "--scale")
     force_light = _pop_flag(argv, "--light")
     if shot_path:
@@ -4655,6 +4855,19 @@ def main():
     except Exception:  # noqa: BLE001 — offscreen nie ma uchwytu okna
         pass
 
+    if shot_path and shot_window:
+        sub = _screenshot_helper_window(win, shot_window)
+        for _ in range(10):
+            app.processEvents()
+        try:
+            set_windows_dark_titlebar(sub, theme["mode"] == "dark")
+        except Exception:  # noqa: BLE001 — offscreen nie ma uchwytu okna
+            pass
+        for _ in range(5):
+            app.processEvents()
+        ok = sub.grab().save(shot_path)
+        print(("zapisano " if ok else "BŁĄD ") + shot_path)
+        return 0 if ok else 1
 
     if shot_path:
         if shot_video:

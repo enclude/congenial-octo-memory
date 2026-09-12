@@ -690,6 +690,48 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
     stdout). `main()` w trybie zrzutu czeka teraz na `_frame_worker`/`wave_worker`.
     Tryb zrzutu z `--video` ustawia demo osi czasu, węższe przycięcie, kursor podglądu
     i fokus na osi; nowa flaga `--edit` robi zrzut trybu „Edytuj pozycje".
+- **Kolejka renderów i wsad przez komponenty UI (v0.49.0)** — odświeżenie okien
+  pomocniczych (`RenderQueueWindow`, `BatchDialog`) tymi samymi komponentami co główne
+  okno (skill `python-desktop-ux`), po pięciu iteracjach na oknie głównym (v0.44–v0.48.1):
+  - **`RenderQueueWindow`:** nagłówek `SectionHeader` (klucz i18n `queue_title`), lista
+    zadań w `QScrollArea` bez ramki, jeden `QStatusBar` (`status_message`) zamiast gołego
+    `QLabel` — pokazuje łączny % i komunikaty stanu z rolami (info/warning/success);
+    pasek akcji z JEDNYM primary („Start kolejki"), secondary „Zatrzymaj", reszta ghost.
+    `JobRowWidget`: etykieta z elipsą środkową (`QFontMetrics.elidedText`, przelicza się
+    w `resizeEvent`) + tooltip pełnej nazwy (albo powodu błędu, gdy ustawiony), „Usuń" jako
+    `QToolButton` ghost „✕". Stan pusty (`queue_empty`) wyśrodkowany, `role=muted`.
+    Geometria w `QSettings` (`ui/queue/geometry`, przez `restore_window_state`/
+    `save_window_state(prefix="ui/queue")`) — odczyt w `showEvent` (raz), zapis w
+    `closeEvent` (gdy kolejka nie renderuje).
+  - **`BatchDialog`:** `QGroupBox("Ustawienia wspólne")` → `FormSection` (katalog
+    docelowy jako `PathField(mode="dir")` — `PathField` już wspierał tryb katalogu,
+    zero zmian w `ui_widgets.py`); pasek akcji: „Dodaj pliki…" secondary, reszta
+    (import/eksport/wykryj ID) ghost, dół: „Przygotuj wszystkie" primary, „Wyślij gotowe
+    do kolejki" secondary, „Wyczyść wszystko"/„Zamknij" ghost. Drag&drop plików wideo na
+    całe okno (`setAcceptDrops`/`dropEvent` → `_add_row`, jak `_add_files`). Stan pusty
+    listy (`batch_empty`). Pasek stanu: `QStatusBar` + `QProgressBar` nieokreślony
+    (widoczny tylko gdy trwa `DETECTING`/`PREPARING`), przyciski „Przygotuj wszystkie"/
+    „Wykryj ID z audio" w stanie `set_busy` podczas operacji w tle. `BatchRowWidget`:
+    `_id_spin` jak `id_spin` głównego okna (`Fixed` 110 px, `NoButtons`, do prawej),
+    nazwa pliku z elipsą środkową + tooltip pełnej ścieżki, „▶"/„Usuń" jako `QToolButton`
+    ghost. Geometria w `ui/batch/geometry` (ten sam mechanizm co kolejka).
+  - **`--window queue|batch` w trybie `--screenshot`:** `_screenshot_helper_window(win,
+    kind)` otwiera odpowiednie okno pomocnicze z 2–3 przykładowymi wierszami (statusy
+    PENDING/RUNNING/FAILED w kolejce; NEEDS_ID/READY/FAILED we wsadzie) i zwraca je do
+    zrzutu zamiast głównego okna — `main()` rozgałęzia PRZED istniejącą logiką
+    `--video`/grab głównego okna.
+  - **PUŁAPKA — `BatchDialog` za niski po zamianie `QGroupBox` na `FormSection`:**
+    `FormSection` (nagłówek + odstępy tokenów) zajmuje więcej pionu niż
+    `QGroupBox`+`QFormLayout`; przy starym `setMinimumSize(720, 460)` layout się nakładał
+    (pola „Katalog docelowy"/„Prefiks"/„Format" zachodziły na siebie). Zmierzone
+    `sizeHint()` z 3 wierszami wynosi ok. 690 px wysokości → `setMinimumSize` podniesione
+    do `(720, 700)`.
+  - **Nowe klucze `_STRINGS`:** `queue_title`, `queue_empty`, `batch_title`,
+    `batch_empty` (PL+EN) — pozostałe teksty okien (nazwy przycisków, tooltipy)
+    zostały jako literały PL zgodnie z resztą `gui.py` (drugi mechanizm i18n nie
+    powstał).
+  - Bez zmian: `RenderQueueRunner`, `BatchPrepWorker`, `BatchIdDetectWorker`,
+    `_job_to_dict`/`_job_from_dict`, format `render_queue.json`, logika statusów.
 
 ## Wersja webowa (`web/`) — v0.24.0
 
