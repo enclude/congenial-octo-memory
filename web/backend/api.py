@@ -29,12 +29,13 @@ from .settings import Settings
 router = APIRouter(prefix="/api")
 
 _REPO_URL = "https://github.com/enclude/congenial-octo-memory"
+_SITE_URL = "https://shothud.com"   # strona projektu (marka ShotHUD)
 
 
 @router.get("/version")
 def version() -> dict:
     """Wersja aplikacji + link do repo — stopka frontendu (jedno źródło prawdy: __init__.py)."""
-    return {"version": __version__, "repo": _REPO_URL}
+    return {"version": __version__, "repo": _REPO_URL, "site": _SITE_URL}
 
 # Kontenery wideo przyjmowane na wejściu (rozszerzenie z nagłówka X-Filename;
 # faktyczną zawartość i tak weryfikuje ffmpeg.probe po zapisie).

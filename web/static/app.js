@@ -21,6 +21,7 @@ fetch("/api/version")
   .then((data) => {
     $("app-version").textContent = "v" + data.version;
     $("repo-link").href = data.repo;
+    if (data.site) $("site-link").href = data.site;
   })
   .catch(() => {}); // stopka ma statyczny link jako fallback — brak wersji nie jest krytyczny
 

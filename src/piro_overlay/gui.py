@@ -68,6 +68,7 @@ from .ui_widgets import (
 # GUI jest po polsku — teksty nowych elementów (pasek akcji, sekcje, pozycje)
 # idą przez istniejący mechanizm i18n, żeby nie powstał drugi słownik.
 _TR = get_translator(Lang.PL)
+SITE_URL = "https://shothud.com"     # strona projektu (marka ShotHUD)
 
 PREVIEW_HEIGHT = 360  # obniżona jakość podglądu — szybciej i lżej dla dużych plików
 _HANDLE_PX = 8        # tolerancja trafienia uchwytu przycięcia (px)
@@ -2408,6 +2409,12 @@ class MainWindow(QMainWindow):
         self.progress.setFixedWidth(180)
         self.progress.setProperty("kind", "labeled")
         bar.addPermanentWidget(self.progress)
+        # Adres strony projektu (marka ShotHUD) — klikalny, po prawej stronie paska.
+        site = QLabel(f'<a href="{SITE_URL}" style="color: inherit;">shothud.com</a>')
+        site.setOpenExternalLinks(True)
+        site.setToolTip(_TR("site_tooltip"))
+        set_role(site, "muted")
+        bar.addPermanentWidget(site)
 
     def sync_theme_action(self, mode: str) -> None:
         """Ustawia stan przełącznika BEZ ponownego nakładania motywu.

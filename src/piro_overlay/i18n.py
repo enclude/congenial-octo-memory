@@ -29,6 +29,7 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "shots_label": {Lang.PL: "strzałów", Lang.EN: "shots"},
     # --- GUI ---
     "app_title": {Lang.PL: "Piro Overlay", Lang.EN: "Piro Overlay"},
+    "site_tooltip": {Lang.PL: "Strona projektu: shothud.com", Lang.EN: "Project website: shothud.com"},
     "choose_video": {Lang.PL: "Wybierz wideo", Lang.EN: "Choose video"},
     "source_text": {Lang.PL: "Tekst", Lang.EN: "Text"},
     "source_id": {Lang.PL: "ID (API)", Lang.EN: "ID (API)"},
