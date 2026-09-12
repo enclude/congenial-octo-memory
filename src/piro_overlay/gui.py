@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import faulthandler
 import math
+import os
 import re
 import subprocess
 import sys
@@ -27,7 +28,9 @@ from pathlib import Path
 import urllib.request
 import json
 
-from PySide6.QtCore import QEvent, QObject, QRect, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import (
+    QEvent, QObject, QRect, QSettings, Qt, QThread, QTimer, QUrl, Signal,
+)
 from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QButtonGroup, QColorDialog, QComboBox, QCheckBox,
@@ -42,6 +45,11 @@ from PIL.ImageQt import ImageQt
 from . import __version__, api, audio_sync, config, ffmpeg, overlay, render, resources
 from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session
 from .parser import parse_timeline
+from . import ui_theme
+from .ui_theme import (
+    apply_theme, load_app_fonts, restore_window_state, save_window_state,
+    set_app_user_model_id, set_windows_dark_titlebar, setup_hidpi,
+)
 
 PREVIEW_HEIGHT = 360  # obniżona jakość podglądu — szybciej i lżej dla dużych plików
 _HANDLE_PX = 8        # tolerancja trafienia uchwytu przycięcia (px)
@@ -1401,6 +1409,7 @@ class BatchDialog(QWidget):
             self._sync_row(row)
 
         self._queue_window.show()
+        _dark_titlebar(self._queue_window)
         self._queue_window.raise_()
         self._refresh()
         QMessageBox.information(
@@ -1887,7 +1896,7 @@ class MainWindow(QMainWindow):
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
         left_scroll.setWidget(left_container)
-        left_scroll.setMinimumWidth(360)
+        left_scroll.setMinimumWidth(500)
 
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
@@ -1925,7 +1934,8 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_container)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([380, 800])
+        splitter.setSizes([540, 640])
+        self.splitter = splitter   # restore_window_state/save_window_state (QSettings)
         root.addWidget(splitter)
 
         # Etykieta kotwicy (T0/T1) zależy od trybu — podłączamy po utworzeniu waveformu.
@@ -3225,6 +3235,8 @@ class MainWindow(QMainWindow):
         close_btn.clicked.connect(dlg.accept)
         btns.addStretch(1); btns.addWidget(copy_btn); btns.addWidget(close_btn)
         lay.addLayout(btns)
+        dlg.show()
+        _dark_titlebar(dlg)
         dlg.exec()
 
     def _start_render(self):
@@ -3361,11 +3373,13 @@ class MainWindow(QMainWindow):
         win = self._get_queue_window()
         win.add_job(job)
         win.show()
+        _dark_titlebar(win)
         win.raise_()
 
     def _show_queue_window(self):
         win = self._get_queue_window()
         win.show()
+        _dark_titlebar(win)
         win.raise_()
 
     def _show_batch_window(self):
@@ -3380,6 +3394,7 @@ class MainWindow(QMainWindow):
             self._batch_window._clock_chk.setChecked(
                 self.current_style().show_running_clock)
         self._batch_window.show()
+        _dark_titlebar(self._batch_window)
         self._batch_window.raise_()
 
     def _get_queue_window(self) -> RenderQueueWindow:
@@ -3545,6 +3560,23 @@ class WheelGuard(QObject):
         return False
 
 
+def _theme_mode() -> str:
+    """Tryb motywu zapisany w QSettings (`ui/theme`); domyślnie ciemny."""
+    try:
+        value = QSettings().value("ui/theme", "dark")
+        return "light" if str(value) == "light" else "dark"
+    except Exception:  # noqa: BLE001
+        return "dark"
+
+
+def _dark_titlebar(widget) -> None:
+    """Ciemna belka okna wg bieżącego motywu — wołaj PO `show()`."""
+    try:
+        set_windows_dark_titlebar(widget, _theme_mode() == "dark")
+    except Exception:  # noqa: BLE001 — brak uchwytu okna (offscreen)
+        pass
+
+
 _crash_log_file = None  # utrzymuje otwarty uchwyt dla faulthandler (GC by go zamknął)
 
 
@@ -3579,17 +3611,93 @@ def _install_crash_logging() -> None:
         pass
 
 
+def _pop_flag(argv: list[str], name: str) -> bool:
+    """Usuń flagę bez wartości z `argv`; True gdy była obecna."""
+    if name in argv:
+        argv.remove(name)
+        return True
+    return False
+
+
+def _pop_option(argv: list[str], name: str) -> str | None:
+    """Usuń flagę z wartością z `argv` i zwróć tę wartość (albo None)."""
+    if name not in argv:
+        return None
+    i = argv.index(name)
+    value = argv[i + 1] if i + 1 < len(argv) else None
+    del argv[i:i + (2 if value is not None else 1)]
+    return value
+
+
 def main():
     _install_crash_logging()
-    app = QApplication(sys.argv)
+
+    # Flagi deweloperskie GUI (bez argparse — `app.py` przekazuje KAŻDY argument
+    # do CLI, więc te flagi żyją wyłącznie tutaj i są zdejmowane przed QApplication).
+    argv = list(sys.argv)
+    shot_path = _pop_option(argv, "--screenshot")
+    scale = _pop_option(argv, "--scale")
+    force_light = _pop_flag(argv, "--light")
+    if shot_path:
+        # Zmienne środowiskowe z powłoki WSL nie docierają pewnie do procesu
+        # Windows — tryb zrzutu ustawia je sam, PRZED utworzeniem QApplication.
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        if sys.platform == "win32":
+            # Platforma offscreen na Windows nie ma własnej bazy fontów —
+            # bez tego tekst renderuje się jako prostokąty.
+            os.environ.setdefault("QT_QPA_FONTDIR", r"C:\Windows\Fonts")
+    if scale:
+        os.environ["QT_SCALE_FACTOR"] = str(scale)
+
+    setup_hidpi()                          # musi być przed QApplication
+    set_app_user_model_id("Piro.Overlay")  # ikona i grupowanie w pasku zadań (.exe)
+
+    app = QApplication(argv)
     app.setApplicationName("PiroOverlay")
+    app.setOrganizationName("Piro")        # QSettings wymaga org + app
     app.setApplicationVersion(__version__)
     app.setWindowIcon(QIcon(resources.icon_path()))
+    load_app_fonts(Path(resources.font_path()).parent)
+
+    mode = "light" if force_light else _theme_mode()
+    theme = apply_theme(app, mode)
+
     app._wheel_guard = WheelGuard(app)   # referencja, by filtr nie zniknął (GC)
     app.installEventFilter(app._wheel_guard)
+
+    settings = QSettings()
     win = MainWindow()
-    win.resize(1180, 760)
+    if shot_path:
+        win.resize(1180, 760)   # stały rozmiar = powtarzalne zrzuty
+    elif not restore_window_state(win, settings, win.splitter):
+        win.resize(1180, 760)
     win.show()
+    try:
+        set_windows_dark_titlebar(win, theme["mode"] == "dark")
+    except Exception:  # noqa: BLE001 — offscreen nie ma uchwytu okna
+        pass
+
+
+    if shot_path:
+        for _ in range(5):
+            app.processEvents()
+        ok = win.grab().save(shot_path)
+        print(("zapisano " if ok else "BŁĄD ") + shot_path)
+        area = win.findChild(QScrollArea)
+        if area is not None and area.widget() is not None:
+            root_name, ext = os.path.splitext(shot_path)
+            insp = root_name + "_inspector" + ext
+            inner = area.widget()
+            # QScrollArea ma przezroczyste tło (QSS), a `grab()` na przezroczystym
+            # płótnie gubi krycie tekstu etykiet — renderujemy na tło z tokenów.
+            pix = QPixmap(inner.size())
+            pix.fill(QColor(ui_theme.TOKENS[theme["mode"]]["bg"]))
+            inner.render(pix)
+            if pix.save(insp):
+                print("zapisano " + insp)
+        return 0 if ok else 1
+
+    app.aboutToQuit.connect(lambda: save_window_state(win, settings, win.splitter))
 
     checker = UpdateChecker()
     checker.update_available.connect(lambda v: _show_update_dialog(win, v))

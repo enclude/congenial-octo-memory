@@ -123,6 +123,26 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Motyw UI z tokenów (v0.44.0):** `ui_theme.py` (kopia `scripts/qt_theme.py` ze skilla
+  `python-desktop-ux`, bez sekcji demo) — Fusion + `QPalette` + QSS generowane z `TOKENS`
+  przez `apply_theme(app, mode)`; `setup_hidpi()` (PassThrough) PRZED `QApplication`,
+  `set_app_user_model_id("Piro.Overlay")`, `load_app_fonts(Path(resources.font_path()).parent)`,
+  `QSettings` (org „Piro", app „PiroOverlay"; klucze `ui/geometry`, `ui/splitter`, `ui/theme`
+  — NOWA przestrzeń, nie rusza `config.py`), ciemny pasek tytułu (`set_windows_dark_titlebar`
+  po `show()`, helper `gui._dark_titlebar` dla kolejki/wsadu/dialogu CLI). Splitter zapisany
+  jako `self.splitter` w `_build_ui`. Flaga dev: `python -m piro_overlay.gui --screenshot PATH
+  [--scale F] [--light]` — sama ustawia `QT_QPA_PLATFORM=offscreen`, `QT_QPA_FONTDIR` i
+  `QT_SCALE_FACTOR` PRZED `QApplication` (zmienne z powłoki WSL nie docierają pewnie do
+  procesu Windows), wymusza rozmiar 1180x760 i pomija restore geometrii (powtarzalne zrzuty),
+  zapisuje okno + `_inspector`; flagi są zdejmowane z `argv` (bo `app.py` przekazuje KAŻDY
+  argument do CLI, więc żyją wyłącznie w `gui.main()`). Zrzuty: `pictures/ui-refresh/`.
+  PUŁAPKI: (1) `QScrollArea` ma w QSS przezroczyste tło, a `widget.grab()` na przezroczystym
+  płótnie GUBI krycie tekstu etykiet (wyglądają na prawie czarne) — inspektor renderujemy
+  przez `QPixmap.fill(bg)` + `widget.render(pix)`; (2) kontrolki motywu są wyższe/szersze niż
+  domyślne Fusion, więc lewa kolumna (`minimumSizeHint` 478 px) dostawała poziomy pasek
+  przewijania — `left_scroll.setMinimumWidth` 360→500, `splitter.setSizes` [380,800]→[540,640];
+  (3) `QGroupBox::title` z szablonu maskuje linię sekcji tłem `surface` — na tle okna (`bg`)
+  wyglądało to jak szara plakietka, więc w `build_qss` tytuł ma `background: $bg`.
 - **Punkt wejścia .exe:** `app.py` (importuje `piro_overlay.gui`) — NIE pakuj `gui.py` jako
   entry, bo importy względne padną (`__main__` bez pakietu).
 - **Brak migającej konsoli (Windows):** `ffmpeg.CREATE_NO_WINDOW` w każdym `subprocess`
