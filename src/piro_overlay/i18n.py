@@ -81,6 +81,77 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "pos_bottom_center": {Lang.PL: "Dolny środek", Lang.EN: "Bottom centre"},
     "pos_bottom_right": {Lang.PL: "Prawy dolny", Lang.EN: "Bottom right"},
     "pos_clock_auto": {Lang.PL: "Nad nakładką (auto)", Lang.EN: "Above the overlay (auto)"},
+    # --- stany i feedback (GUI, iteracja IV) ---
+    "busy_fetch": {Lang.PL: "Pobieranie z API…", Lang.EN: "Fetching from the API…"},
+    "busy_detect_start": {Lang.PL: "Wykrywanie sygnału startu…",
+                          Lang.EN: "Detecting the start signal…"},
+    "busy_detect_anchor": {Lang.PL: "Wykrywanie kotwicy…", Lang.EN: "Detecting the anchor…"},
+    "busy_detect_id": {Lang.PL: "Wykrywanie ID z audio…", Lang.EN: "Detecting the ID from audio…"},
+    "op_cancel": {Lang.PL: "Anuluj", Lang.EN: "Cancel"},
+    "op_cancelled": {Lang.PL: "Operacja anulowana.", Lang.EN: "Operation cancelled."},
+    "op_busy": {Lang.PL: "Trwa inna operacja — poczekaj albo kliknij „Anuluj” w pasku stanu.",
+                Lang.EN: "Another operation is running — wait or click “Cancel” in the status bar."},
+    "op_failed": {Lang.PL: "Operacja nie powiodła się", Lang.EN: "The operation failed"},
+    "msg_no_video": {
+        Lang.PL: "Brak wideo. Detekcja i przycięcie czytają ścieżkę audio z pliku. "
+                 "Wybierz nagranie (Ctrl+O) albo przeciągnij je do okna.",
+        Lang.EN: "No video. Detection and trimming read the audio track from the file. "
+                 "Choose a recording (Ctrl+O) or drop it onto the window."},
+    "msg_no_start_signal": {
+        Lang.PL: "Nie wykryto sygnału startu. W analizowanym zakresie nie ma ciągłego tonu "
+                 "bzyczka (2000–4800 Hz). Ustaw T0 klikając na fali albo popraw zakres "
+                 "przycięcia i spróbuj ponownie.",
+        Lang.EN: "No start signal found. The analysed range has no continuous buzzer tone "
+                 "(2000–4800 Hz). Set T0 by clicking the waveform, or fix the trim range "
+                 "and try again."},
+    "msg_no_anchor": {
+        Lang.PL: "Nie wykryto kotwicy. W zakresie przycięcia nie ma wyraźnego onsetu. "
+                 "Poszerz zakres, użyj „Następny kandydat” albo kliknij na fali.",
+        Lang.EN: "No anchor found. The trim range has no clear onset. Widen the range, "
+                 "use “Next candidate”, or click on the waveform."},
+    "msg_no_candidates": {
+        Lang.PL: "Brak kandydatów na kotwicę. Analiza audio nie wyznaczyła jeszcze onsetów. "
+                 "Wczytaj wideo i poczekaj na koniec analizy ścieżki audio.",
+        Lang.EN: "No anchor candidates. The audio analysis has not produced onsets yet. "
+                 "Load a video and wait for the audio analysis to finish."},
+    "msg_no_timeline": {
+        Lang.PL: "Brak osi czasu. Auto-przycięcie liczy koniec od ostatniego strzału. "
+                 "Wklej oś czasu w polu „Oś czasu” albo pobierz sesję po ID.",
+        Lang.EN: "No timeline. Auto trim derives the end from the last shot. "
+                 "Paste a timeline into the “Timeline” field or fetch a session by ID."},
+    "msg_no_id_tone": {
+        Lang.PL: "Nie wykryto ID w audio. Sygnał tonowy gra dopiero po zapisaniu sesji "
+                 "w kalkulatorze, pod koniec nagrania. Wpisz ID ręcznie i kliknij „Pobierz”.",
+        Lang.EN: "No ID tone found. The tone is played only after the session is saved, "
+                 "near the end of the recording. Type the ID manually and click “Fetch”."},
+    "msg_t0_detected": {Lang.PL: "Wykryto T0 = {} s", Lang.EN: "Detected T0 = {} s"},
+    "msg_anchor_detected": {Lang.PL: "Wykryto kotwicę = {} s", Lang.EN: "Detected anchor = {} s"},
+    "msg_id_detected": {Lang.PL: "Wykryto ID z audio: {}", Lang.EN: "ID detected from audio: {}"},
+    "msg_session_fetched": {Lang.PL: "Pobrano sesję {} — strzałów: {}",
+                            Lang.EN: "Session {} fetched — shots: {}"},
+    "msg_trimmed": {Lang.PL: "Przycięto: {} s – {} s", Lang.EN: "Trimmed: {} s – {} s"},
+    "msg_trim_invalid": {
+        Lang.PL: "Początek przycięcia jest po końcu. Zakres to 0–{} s. "
+                 "Zmniejsz „od” albo zwiększ „do”.",
+        Lang.EN: "The trim start is after the end. The valid range is 0–{} s. "
+                 "Lower “from” or raise “to”."},
+    "msg_render_busy": {
+        Lang.PL: "Render już trwa (bezpośredni albo z kolejki). Poczekaj na koniec "
+                 "albo zatrzymaj go przyciskiem „Zatrzymaj”.",
+        Lang.EN: "A render is already running (direct or from the queue). Wait for it "
+                 "to finish or stop it with “Stop”."},
+    "msg_render_cancelled": {Lang.PL: "Renderowanie przerwane.", Lang.EN: "Rendering cancelled."},
+    "msg_render_done": {Lang.PL: "Gotowe: {}", Lang.EN: "Done: {}"},
+    "render_failed_title": {Lang.PL: "Błąd renderowania", Lang.EN: "Rendering error"},
+    "render_failed_text": {
+        Lang.PL: "Render nie został ukończony. FFmpeg zakończył się błędem — "
+                 "szczegóły techniczne są pod „Pokaż szczegóły”.",
+        Lang.EN: "The render did not finish. FFmpeg exited with an error — "
+                 "technical details are under “Show Details”."},
+    "act_open_folder": {Lang.PL: "Otwórz folder", Lang.EN: "Open folder"},
+    "empty_title": {Lang.PL: "Brak wideo", Lang.EN: "No video"},
+    "empty_hint": {Lang.PL: "Przeciągnij tu plik albo użyj Ctrl+O",
+                   Lang.EN: "Drop a file here or press Ctrl+O"},
 }
 
 _FALLBACK_LANG = Lang.EN

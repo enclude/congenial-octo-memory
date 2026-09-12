@@ -18,11 +18,13 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 import unicodedata
 import uuid
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
+from functools import partial
 from pathlib import Path
 
 import urllib.request
@@ -33,14 +35,14 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPen,
-    QPixmap,
+    QPixmap, QShortcut,
 )
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QComboBox, QCheckBox,
     QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton,
-    QScrollArea, QSizePolicy, QSpinBox, QSplitter, QPlainTextEdit, QToolBar, QToolButton,
-    QVBoxLayout, QWidget,
+    QScrollArea, QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QPlainTextEdit,
+    QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
 
 from PIL import Image
@@ -56,8 +58,8 @@ from .ui_theme import (
     save_window_state, set_app_user_model_id, set_windows_dark_titlebar, setup_hidpi,
 )
 from .ui_widgets import (
-    ColorSwatchButton, FormSection, PathField, SegmentedControl, StatusDot,
-    set_kind, set_role, status_message,
+    ColorSwatchButton, FormSection, InlineMessage, PathField, SegmentedControl, StatusDot,
+    set_busy, set_kind, set_role, status_message,
 )
 
 # GUI jest po polsku — teksty nowych elementów (pasek akcji, sekcje, pozycje)
@@ -253,30 +255,41 @@ class WaveformWorker(QThread):
             self.failed.emit(str(exc))
 
 
-class StartDetectWorker(QThread):
-    """Wykrywa bzyczek shot-timera (T0) w tle — FFT nie blokuje UI.
+class FuncWorker(QThread):
+    """Dowolne wywołanie domenowe (detekcja, API) w wątku — UI nie zamiera.
 
-    `gen` to token pokolenia — handler odrzuca wyniki starszych detekcji, żeby
-    wolniejsza, wcześniejsza detekcja nie nadpisała świeższej.
+    Jeden worker na WSZYSTKIE długie operacje okna głównego: detekcja bzyczka,
+    kotwicy, ID z audio i pobranie sesji z API. Argumenty domykaj przez
+    `functools.partial` — worker woła po prostu `fn()`.
+
+    `gen` to token pokolenia: handler odrzuca wyniki operacji anulowanej albo
+    starszej niż bieżący plik (patrz `MainWindow._op_gen`).
+
+    UWAGA (pułapka z CLAUDE.md): pola NIE mogą nazywać się `start`/`end` —
+    przesłoniłyby `QThread.start()`.
     """
-    done = Signal(int, object)   # (gen, detected_t0 lub None)
+    done = Signal(int, object)    # (gen, wynik)
+    failed = Signal(int, str)     # (gen, komunikat wyjątku)
 
-    def __init__(self, video_path: str, gen: int,
-                 win_start: float | None = None, win_end: float | None = None):
+    def __init__(self, fn, gen: int = 0):
         super().__init__()
-        self.video_path = video_path
+        self._fn = fn
         self.gen = gen
-        # UWAGA: NIE nazywać tych pól `start`/`end` — przesłaniają QThread.start()
-        # (worker.start() leciało wtedy jako None() → TypeError, detekcja T0 cicho padała).
-        self.win_start = win_start
-        self.win_end = win_end
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        """Flaga „wynik już nikogo nie interesuje" — biblioteka domenowa jest
+        jednym wywołaniem, więc nie da się jej przerwać w połowie; token
+        pokolenia i tak odrzuci wynik."""
+        self.cancelled = True
 
     def run(self):
         try:
-            t0 = audio_sync.detect_dji_start(self.video_path, start=self.win_start, end=self.win_end)
-        except Exception:  # noqa: BLE001
-            t0 = None
-        self.done.emit(self.gen, t0)
+            result = self._fn()
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(self.gen, str(exc))
+            return
+        self.done.emit(self.gen, result)
 
 
 # ----------------------------- kolejka renderów -----------------------------
@@ -566,6 +579,8 @@ class JobRowWidget(QWidget):
 class RenderQueueWindow(QWidget):
     def __init__(self, runner: RenderQueueRunner, parent=None):
         super().__init__(parent, Qt.Window)
+        # To QWidget, nie QDialog — Escape trzeba podpiąć samemu (skill, qt §8).
+        QShortcut(QKeySequence.Cancel, self, self.close)
         self.setWindowTitle("Kolejka renderów")
         self.setMinimumWidth(560)
         self._runner = runner
@@ -1008,6 +1023,7 @@ class BatchDialog(QWidget):
     def __init__(self, runner: "RenderQueueRunner", queue_window: "RenderQueueWindow",
                  base_style: OverlayStyle, parent=None):
         super().__init__(parent, Qt.Window)
+        QShortcut(QKeySequence.Cancel, self, self.close)   # jak w oknie kolejki
         self.setWindowTitle("Przetwarzanie wsadowe (auto + ID)")
         self.setMinimumSize(720, 460)
         self._runner = runner
@@ -1802,8 +1818,12 @@ class MainWindow(QMainWindow):
         self.lrf_path: str | None = None
         self.worker: RenderWorker | None = None
         self.wave_worker: WaveformWorker | None = None
-        self._detect_workers: list[StartDetectWorker] = []
-        self._detect_gen: int = 0
+        # Operacje w tle (detekcje, API): jeden worker naraz + token pokolenia.
+        self._op_workers: list[FuncWorker] = []
+        self._op_worker: FuncWorker | None = None
+        self._op_button: QPushButton | None = None
+        self._op_buttons: list[QPushButton] = []
+        self._op_gen: int = 0
         self._video_size: tuple[int, int] | None = None  # (w, h) — do skalowania podglądu
         # Zapisane ustawienia tego pliku, czekające na zastosowanie po analizie audio
         # (spiny czasu mają sensowny zakres dopiero po poznaniu długości nagrania).
@@ -1921,6 +1941,13 @@ class MainWindow(QMainWindow):
         self.act_render.setShortcut(QKeySequence("Ctrl+R"))
         self.act_render.setToolTip("Renderuj (Ctrl+R)")
         self.act_render.triggered.connect(self._start_render)
+        # „Otwórz folder" pojawia się dopiero po udanym renderze (jak `open_btn`).
+        self.act_open_folder = QAction(_TR("act_open_folder"), self)
+        self.act_open_folder.setToolTip("Otwórz folder z ostatnim wyrenderowanym plikiem")
+        self.act_open_folder.triggered.connect(self._open_output_folder)
+        self.act_open_folder.setVisible(False)
+        tb.addAction(self.act_open_folder)
+
         render_tb = QToolButton()
         render_tb.setDefaultAction(self.act_render)
         render_tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
@@ -1938,6 +1965,13 @@ class MainWindow(QMainWindow):
         self.nvenc_label = QLabel()
         self._refresh_nvenc_status()
         bar.addPermanentWidget(self.nvenc_label)
+        # „Anuluj" dotyczy operacji w tle (detekcje/API) — widoczny tylko w ich trakcie.
+        self.op_cancel_btn = QPushButton(_TR("op_cancel"))
+        set_kind(self.op_cancel_btn, "ghost")
+        self.op_cancel_btn.setToolTip("Przerywa trwającą detekcję/pobieranie")
+        self.op_cancel_btn.clicked.connect(self._cancel_operation)
+        self.op_cancel_btn.setVisible(False)
+        bar.addPermanentWidget(self.op_cancel_btn)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -2023,7 +2057,12 @@ class MainWindow(QMainWindow):
         self.preview_label.grabbed.connect(self._on_preview_grab)
         self.preview_label.dragged.connect(self._on_preview_drag)
         self.preview_label.dropped.connect(self._on_preview_drop)
-        right.addWidget(self.preview_label, 3)
+        # Stan pusty i podgląd żyją na dwóch stronach stosu — `preview_label`
+        # ZOSTAJE tym samym obiektem (używa go scrubber i przeciąganie pozycji).
+        self.preview_stack = QStackedWidget()
+        self.preview_stack.addWidget(self._empty_state_page())
+        self.preview_stack.addWidget(self.preview_label)
+        right.addWidget(self.preview_stack, 3)
 
         self.waveform = WaveformWidget()
         self.waveform.anchorChanged.connect(self._on_wave_anchor)
@@ -2055,7 +2094,44 @@ class MainWindow(QMainWindow):
         if last_style is not None:
             self._apply_style(last_style)
 
+        # Przyciski, które zmieniałyby wejście długiej operacji — blokowane na jej czas
+        # (nie cały inspektor: zmiana koloru panelu w trakcie detekcji nikomu nie szkodzi).
+        self._op_buttons = [self.fetch_btn, self.fetch_trim_btn, self.detect_id_btn,
+                            self.detect_btn, self.next_btn, self.start_sig_btn,
+                            self.autotrim_btn]
+        # Escape wychodzi z trybu „Edytuj pozycje" (skill §11: tryb zawsze z wyjściem).
+        QShortcut(QKeySequence.Cancel, self, self._escape_edit_pos)
+        self._set_render_enabled(True)   # bez wideo „Renderuj" jest wyłączone
+
         self.setCentralWidget(central)
+
+    def _empty_state_page(self) -> QWidget:
+        """Stan pusty podglądu: co to jest, co zrobić, czym to zrobić (skill §10)."""
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setSpacing(SPACING["sp_3"])
+        v.addStretch(1)
+        title = QLabel(_TR("empty_title"))
+        set_role(title, "title")
+        title.setAlignment(Qt.AlignCenter)
+        hint = QLabel(_TR("empty_hint"))
+        set_role(hint, "muted")
+        hint.setAlignment(Qt.AlignCenter)
+        btn = QPushButton(_TR("act_open_video"))
+        set_kind(btn, "primary")
+        btn.setToolTip(_TR("tip_choose_video"))
+        btn.clicked.connect(self.act_open.trigger)
+        brow = QHBoxLayout()
+        brow.addStretch(1); brow.addWidget(btn); brow.addStretch(1)
+        v.addWidget(title)
+        v.addWidget(hint)
+        v.addLayout(brow)
+        v.addStretch(1)
+        return page
+
+    def _escape_edit_pos(self) -> None:
+        if self.edit_pos_btn.isChecked():
+            self.edit_pos_btn.setChecked(False)
 
     def _anchor_mode(self) -> AnchorMode:
         """Bezpieczny odczyt trybu kotwicy — konwertuje wartość Qt z powrotem do AnchorMode."""
@@ -2176,13 +2252,15 @@ class MainWindow(QMainWindow):
         self.id_spin.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.id_spin.setFixedWidth(110)
         fetch = QPushButton("Pobierz")
-        fetch.setToolTip("Pobiera oś czasu i metadane z API (bez zmiany przycięcia). Ctrl+G")
+        fetch.setToolTip("Pobiera oś czasu i metadane z API, bez zmiany przycięcia (Ctrl+G)")
         fetch.clicked.connect(self.act_fetch.trigger)
+        self.fetch_btn = fetch
         fetch_trim = QPushButton("Pobierz i przytnij")
         fetch_trim.setToolTip(
             "Pobiera z API, wykrywa sygnał startu (T0) i przycina film:\n"
             "5 s przed T0 → ostatni strzał + 5 s.")
         fetch_trim.clicked.connect(self._fetch_id_and_trim)
+        self.fetch_trim_btn = fetch_trim
         idrow = QHBoxLayout(); idrow.setContentsMargins(0, 0, 0, 0)
         idrow.addWidget(self.id_spin)
         idrow.addWidget(fetch, 1)
@@ -2195,6 +2273,7 @@ class MainWindow(QMainWindow):
             "wpisuje wykryte ID i OD RAZU pobiera dane z API oraz przycina film\n"
             "(jak „Pobierz i przytnij”). Zawsze analizuje oryginalny plik (nie proxy LRF).")
         detect_id_tone.clicked.connect(self._detect_id_tone)
+        self.detect_id_btn = detect_id_tone
         # Paski przycisków idą na pełną szerokość wiersza (jak w `add_widget_row`
         # ze skilla) — w kolumnie kontrolek polskie etykiety byłyby ucinane.
         idbtns = QHBoxLayout(); idbtns.setContentsMargins(0, 0, 0, 0)
@@ -2214,6 +2293,9 @@ class MainWindow(QMainWindow):
                 key == "id" and bool(self.api_meta_label.text())
             )
         )
+        # Komunikaty dotyczące danych wejściowych (brak wideo, brak ID w audio…).
+        self.input_msg = InlineMessage()
+        sec.add_widget_row(self.input_msg)
         self._refresh_timeline_summary()
         return sec
 
@@ -2231,16 +2313,19 @@ class MainWindow(QMainWindow):
         detect = QPushButton("Wykryj kotwicę")
         detect.setToolTip("Szuka pierwszego wyraźnego onsetu w zaznaczonym fragmencie.")
         detect.clicked.connect(self._detect)
+        self.detect_btn = detect
         nextc = QPushButton("Następny kandydat")
         nextc.setToolTip("Przeskakuje do kolejnego wykrytego onsetu.")
         set_kind(nextc, "ghost")
         nextc.clicked.connect(self._next_candidate)
+        self.next_btn = nextc
         start_sig = QPushButton("Wykryj sygnał startu")
         start_sig.setToolTip(
             "Filtr pasmowy 2000–4800 Hz (pasmo buzzera shot-timera) + wybór\n"
             "najgłośniejszego bzyczka. Ustawia typ kotwicy na „Sygnał startu”\n"
             "i przelicza T0. Działa dobrze na nagraniach DJI Osmo. (Ctrl+D)")
         start_sig.clicked.connect(self.act_detect_start.trigger)
+        self.start_sig_btn = start_sig
         drow = QHBoxLayout(); drow.setContentsMargins(0, 0, 0, 0)
         drow.addWidget(detect, 1); drow.addWidget(nextc, 1)
         sec.add_widget_row(_wrap(drow))
@@ -2260,6 +2345,9 @@ class MainWindow(QMainWindow):
         self._elastic(self.trim_start_spin, self.trim_end_spin)
         self.trim_start_spin.valueChanged.connect(self._on_trim_spin)
         self.trim_end_spin.valueChanged.connect(self._on_trim_spin)
+        # Walidacja przy `editingFinished` (nie przy każdym znaku — skill, qt §8).
+        self.trim_start_spin.editingFinished.connect(self._validate_trim)
+        self.trim_end_spin.editingFinished.connect(self._validate_trim)
         sec.add_pair_row("Przytnij", self.trim_start_spin, self.trim_end_spin, "→")
 
         self.tail_spin = _dspin(0.0, 60.0, 0.5, " s", _TRIM_TAIL_S)
@@ -2272,7 +2360,11 @@ class MainWindow(QMainWindow):
         mrow = QHBoxLayout(); mrow.setContentsMargins(0, 0, 0, 0)
         mrow.addWidget(self.tail_spin, 1)
         mrow.addWidget(autotrim_btn, 2)
+        self.autotrim_btn = autotrim_btn
         sec.add_row("Margines końcowy", _wrap(mrow))
+        # Komunikaty synchronizacji (detekcja bez wyniku, zły zakres przycięcia).
+        self.sync_msg = InlineMessage()
+        sec.add_widget_row(self.sync_msg)
         return sec
 
     def _appearance_group(self):
@@ -2723,8 +2815,16 @@ class MainWindow(QMainWindow):
         if self.video_path and self._file_settings_ready:
             self._save_file_settings()
         self._file_settings_ready = False
+        # Detekcja dla POPRZEDNIEGO pliku jest już nieaktualna — przerwij po cichu
+        # (token pokolenia odrzuci wynik, gdyby zdążył dojść).
+        self._cancel_operation(silent=True)
         self.video_path = path
         self.video_field.set_path(path, emit=False)
+        self.setWindowTitle(f"{Path(path).name} — {_TR('app_title')}")
+        self.preview_stack.setCurrentWidget(self.preview_label)
+        self.input_msg.clear()
+        self.sync_msg.clear()
+        self._set_render_enabled(not self._render_busy)
         p = Path(path)
         out_ext = _FORMAT_EXT.get(self.format_combo.currentData(), ".mp4")
         self.out_field.set_path(str(p.with_name(p.stem + "_PiRoOverlay" + out_ext)), emit=False)
@@ -2774,28 +2874,24 @@ class MainWindow(QMainWindow):
         self._auto_detect_t0()
 
     def _auto_detect_t0(self) -> None:
-        """Startuje detekcję bzyczka (T0) w tle po imporcie pliku; po wykryciu
-        ustawia kotwicę + przycięcie: 5 s przed T0 → max 75 s po T0.
-        (Przycięcie po pobraniu z API robi synchronicznie „Pobierz i przytnij".)
+        """Startuje detekcję bzyczka (T0) po imporcie pliku; po wykryciu ustawia
+        kotwicę + przycięcie: 5 s przed T0 → max 75 s po T0.
+
+        Idzie tą samą drogą co ręczne detekcje (`_run_op`), więc jest widoczna
+        w pasku stanu i da się ją anulować.
         """
         if not self.video_path:
             return
         src = self.lrf_path or self.video_path
-        self._detect_gen += 1
-        worker = StartDetectWorker(src, self._detect_gen)
-        worker.done.connect(self._on_autodetect_t0)
-        # Trzymaj referencję dopóki wątek żyje — inaczej QThread może zostać
-        # zniszczony w trakcie działania (crash). Sprzątamy po zakończeniu.
-        self._detect_workers.append(worker)
-        worker.finished.connect(lambda w=worker: self._detect_workers.remove(w)
-                                if w in self._detect_workers else None)
-        worker.start()
+        self._run_op(partial(audio_sync.detect_dji_start, src),
+                     status_text=_TR("busy_detect_start"),
+                     on_result=self._on_autodetect_t0)
 
-    def _on_autodetect_t0(self, gen: int, detected) -> None:
-        if gen != self._detect_gen:
-            return  # przestarzały wynik (nowsza detekcja już w toku) — ignoruj
+    def _on_autodetect_t0(self, detected) -> None:
         if detected is None:
-            return  # nie wykryto — użytkownik ustawi ręcznie, bez komunikatu
+            # Kiedyś cicho; teraz KAŻDA operacja kończy się widocznym wynikiem.
+            self._notify("sync", _TR("msg_no_start_signal"))
+            return
         self._force_start_signal_mode()
         self.t0_spin.setValue(detected)
         dur = self.waveform.duration or None
@@ -2805,6 +2901,7 @@ class MainWindow(QMainWindow):
             end = min(end, dur)
         self.trim_start_spin.setValue(start)
         self.trim_end_spin.setValue(end)
+        self._ok(_TR("msg_t0_detected").format(_fmt_num(round(detected, 2))))
 
     def _force_start_signal_mode(self) -> None:
         """Wykryty bzyczek JEST sygnałem startu → wymuś tryb kotwicy START_SIGNAL."""
@@ -2847,80 +2944,193 @@ class MainWindow(QMainWindow):
             return replace(self.session, shots=shots)
         return Session(shots=shots)
 
-    def _fetch_id(self, silent: bool = False) -> bool:
-        """Pobiera dane sesji z API po ID. `silent=True` — bez modala przy błędzie
-        (status bar zamiast okna), używane przy automatycznym wczytaniu ustawień pliku."""
-        try:
-            self.session = api.fetch_session(self.id_spin.value())
-            self.timeline_edit.setPlainText(
-                " | ".join(self._shot_to_text(s) for s in self.session.shots))
-            parts = []
-            if self.session.nazwa_toru:
-                parts.append(f"Tor: {self.session.nazwa_toru}")
-            if self.session.uczestnik:
-                parts.append(f"Zawodnik: {self.session.uczestnik}")
-            self.api_meta_label.setText("  |  ".join(parts))
-            self.api_meta_label.setVisible(bool(parts))
-            self._update_preview()
-            return True
-        except Exception as exc:  # noqa: BLE001
-            if silent:
-                status_message(
-                    self.statusBar(),
-                    f"Nie udało się pobrać danych z API (ID {self.id_spin.value()}): {exc}",
-                    "warning", 8000)
-            else:
-                QMessageBox.critical(self, "Błąd API", str(exc))
+    # ---------- operacje w tle (detekcje, API) ----------
+    # Jeden mechanizm dla WSZYSTKICH długich operacji okna: worker + busy na
+    # przycisku + nieokreślony pasek postępu + „Anuluj" w pasku stanu.
+    # WYMÓG (powód, dla którego część z nich była kiedyś synchroniczna):
+    # każda ścieżka zakończenia — wynik, brak wyniku, błąd, anulowanie —
+    # kończy się widocznym komunikatem. Nie ma „cichej pustki".
+
+    def _run_op(self, fn, *, button: QPushButton | None = None,
+                busy_text: str = "", status_text: str = "",
+                on_result=None, on_error=None) -> bool:
+        """Startuje `fn()` w wątku. Zwraca False, gdy inna operacja już trwa."""
+        if self._op_worker is not None:
+            status_message(self.statusBar(), _TR("op_busy"), "warning", 6000)
             return False
+        self._op_gen += 1
+        self._op_button = button
+        if button is not None:
+            set_busy(button, True, busy_text or button.text())
+        self._set_ops_enabled(False)
+        self.progress.setRange(0, 0)       # nieokreślony — czasu nie znamy
+        self.op_cancel_btn.setVisible(True)
+        status_message(self.statusBar(), status_text, "info", 0)
+        worker = FuncWorker(fn, self._op_gen)
+        worker.done.connect(lambda gen, res, cb=on_result: self._on_op_done(gen, res, cb))
+        worker.failed.connect(lambda gen, msg, cb=on_error: self._on_op_failed(gen, msg, cb))
+        self._op_worker = worker
+        # Referencja żyje do `finished` — QThread zniszczony w trakcie = crash.
+        self._op_workers.append(worker)
+        worker.finished.connect(lambda w=worker: self._op_workers.remove(w)
+                                if w in self._op_workers else None)
+        worker.start()
+        return True
+
+    def _set_ops_enabled(self, on: bool) -> None:
+        """Blokuje TYLKO przyciski zmieniające wejście operacji (nie cały inspektor)."""
+        for btn in self._op_buttons:
+            btn.setEnabled(on)
+        for act in (self.act_fetch, self.act_detect_start, self.act_auto_trim):
+            act.setEnabled(on)
+
+    def _end_op(self) -> None:
+        self._op_worker = None
+        self.op_cancel_btn.setVisible(False)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self._set_ops_enabled(True)
+        if self._op_button is not None:
+            set_busy(self._op_button, False)   # po _set_ops_enabled: przywraca tekst
+            self._op_button = None
+
+    def _on_op_done(self, gen: int, result, callback) -> None:
+        if gen != self._op_gen:
+            return    # anulowane albo przestarzałe (zmiana pliku)
+        self._end_op()
+        if callback is not None:
+            callback(result)
+
+    def _on_op_failed(self, gen: int, msg: str, callback) -> None:
+        if gen != self._op_gen:
+            return
+        self._end_op()
+        if callback is not None:
+            callback(msg)
+        else:
+            status_message(self.statusBar(), f"{_TR('op_failed')}: {msg}", "danger", 10000)
+
+    def _cancel_operation(self, silent: bool = False) -> None:
+        worker = self._op_worker
+        if worker is None:
+            return
+        worker.cancel()
+        self._op_gen += 1   # wynik, który i tak nadejdzie, zostanie odrzucony
+        self._end_op()
+        if not silent:
+            status_message(self.statusBar(), _TR("op_cancelled"), "warning", 5000)
+
+    # ---------- komunikaty ----------
+    def _notify(self, where: str, text: str, kind: str = "warning") -> None:
+        """Komunikat trzyczęściowy: pełny pod sekcją, pierwsze zdanie w pasku stanu."""
+        widget = self.input_msg if where == "input" else self.sync_msg
+        widget.show_message(text, kind)
+        head = text.split(". ")[0].rstrip(".") + "."
+        status_message(self.statusBar(), head, kind, 8000)
+
+    def _ok(self, text: str) -> None:
+        """Sukces: pasek stanu + czyszczenie komunikatów sekcji."""
+        self.input_msg.clear()
+        self.sync_msg.clear()
+        status_message(self.statusBar(), text, "success", 8000)
+
+    def _require_video(self) -> bool:
+        if self.video_path:
+            return True
+        self._notify("input", _TR("msg_no_video"))
+        return False
+
+    # ---------- pobranie sesji z API ----------
+    def _fetch_id(self, silent: bool = False, then=None) -> None:
+        """Pobiera dane sesji z API po ID — w wątku (sieć potrafi wisieć).
+
+        `silent=True` — błąd tylko w pasku stanu (automatyczne wczytanie ustawień
+        pliku); inaczej modal, bo bez danych nie ma czego renderować.
+        `then` — kontynuacja po udanym pobraniu (łańcuch „Pobierz i przytnij").
+        """
+        sid = self.id_spin.value()
+
+        def failed(msg: str) -> None:
+            if silent:
+                status_message(self.statusBar(),
+                               f"Nie udało się pobrać danych z API (ID {sid}): {msg}",
+                               "warning", 8000)
+                return
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Critical)
+            box.setWindowTitle("Błąd API")
+            box.setText(f"Nie udało się pobrać sesji {sid} z API.\n"
+                        "Sprawdź numer ID i połączenie z siecią, potem spróbuj ponownie.")
+            box.setDetailedText(msg)
+            box.exec()
+
+        self._run_op(partial(api.fetch_session, sid), button=self.fetch_btn,
+                     busy_text=_TR("busy_fetch"), status_text=_TR("busy_fetch"),
+                     on_result=lambda sess: self._on_session_fetched(sess, then),
+                     on_error=failed)
+
+    def _on_session_fetched(self, session, then=None) -> None:
+        self.session = session
+        self.timeline_edit.setPlainText(
+            " | ".join(self._shot_to_text(s) for s in session.shots))
+        parts = []
+        if session.nazwa_toru:
+            parts.append(f"Tor: {session.nazwa_toru}")
+        if session.uczestnik:
+            parts.append(f"Zawodnik: {session.uczestnik}")
+        self.api_meta_label.setText("  |  ".join(parts))
+        self.api_meta_label.setVisible(bool(parts))
+        self._update_preview()
+        self._ok(_TR("msg_session_fetched").format(self.id_spin.value(), len(session.shots)))
+        if then is not None:
+            then()
 
     def _fetch_id_and_trim(self):
         """Pobiera dane z API, ustala T0 (wykrywa bzyczek jeśli trzeba) i przycina
         film: 5 s przed T0 → ostatni strzał + 5 s.
 
-        Działa synchronicznie (deterministycznie) — w przeciwieństwie do detekcji
-        w tle daje natychmiastowy, widoczny wynik i jasny komunikat przy problemie.
+        Łańcuch dwóch operacji w tle (API → detekcja bzyczka). Do v0.46.0 było to
+        celowo synchroniczne, bo detekcja w tle bywała „cicho pusta"; teraz każdy
+        krok melduje wynik w pasku stanu, więc ten powód zniknął, a okno nie zamiera.
         """
-        if not self.video_path:
-            QMessageBox.warning(self, "Brak wideo",
-                                "Najpierw wybierz plik wideo — przycięcie wymaga audio.")
+        if not self._require_video():
             return
-        if not self._fetch_id():
-            return
+        self._fetch_id(then=self._trim_after_fetch)
+
+    def _trim_after_fetch(self) -> None:
         session = self.session
         if not (session and session.shots):
-            QMessageBox.warning(self, "Brak osi czasu",
-                                "API nie zwróciło strzałów — nie mam czego przyciąć.")
+            self._notify("input", _TR("msg_no_timeline"))
             return
-
-        # T0 = już wykryty przy imporcie (t0_spin) albo wykryj teraz (na LRF — szybko).
         t0 = self.t0_spin.value()
-        if t0 <= 0:
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            try:
-                src = self.lrf_path or self.video_path
-                detected = audio_sync.detect_dji_start(src)
-            finally:
-                QApplication.restoreOverrideCursor()
-            if detected is None:
-                QMessageBox.warning(
-                    self, "Nie wykryto sygnału startu",
-                    "Nie udało się wykryć bzyczka. Ustaw T0 ręcznie (klik na waveformie "
-                    "lub „Wykryj sygnał startu”) i kliknij „Pobierz i przytnij” ponownie.")
-                return
-            t0 = detected
-            self._force_start_signal_mode()
-            self.t0_spin.setValue(t0)
+        if t0 > 0:
+            self._apply_trim_for_t0(t0)   # T0 wykryty przy imporcie — nie liczymy drugi raz
+            return
+        src = self.lrf_path or self.video_path
+        self._run_op(partial(audio_sync.detect_dji_start, src),
+                     button=self.fetch_trim_btn, busy_text=_TR("busy_detect_start"),
+                     status_text=_TR("busy_detect_start"),
+                     on_result=self._on_t0_for_trim)
 
+    def _on_t0_for_trim(self, detected) -> None:
+        if detected is None:
+            self._notify("sync", _TR("msg_no_start_signal"))
+            return
+        self._force_start_signal_mode()
+        self.t0_spin.setValue(detected)
+        self._apply_trim_for_t0(detected)
+
+    def _apply_trim_for_t0(self, t0: float) -> None:
+        session = self.session
         dur = self.waveform.duration or None
         start, end = render.auto_trim_window(
             t0, session.shots[-1].czas,
             tail=_TRIM_TAIL_S, lead_in=_LEAD_IN_S, duration=dur)
         self.trim_start_spin.setValue(start)
         self.trim_end_spin.setValue(end)
-        status_message(
-            self.statusBar(),
-            f"Przycięto: {start:.2f}s – {end:.2f}s (T0={t0:.2f}s, "
-            f"ostatni strzał {session.shots[-1].czas:.2f}s)", "success", 8000)
+        self._ok(_TR("msg_trimmed").format(_fmt_num(round(start, 2)), _fmt_num(round(end, 2)))
+                 + f" (T0={_fmt_num(round(t0, 2))} s, "
+                   f"ostatni strzał {_fmt_num(round(session.shots[-1].czas, 2))} s)")
 
     @staticmethod
     def _shot_to_text(shot):
@@ -2928,38 +3138,48 @@ class MainWindow(QMainWindow):
             return f"{shot.numer}: {shot.czas:.2f}s"
         return f"{shot.numer}: {shot.czas:.2f}s (+{shot.split:.2f}s)"
 
+    # ---------- detekcje ----------
     def _detect(self):
-        if not self.video_path:
-            QMessageBox.warning(self, "Brak wideo", "Najpierw wybierz plik wideo.")
+        if not self._require_video():
             return
         src = self.lrf_path or self.video_path
         s = self.trim_start_spin.value()
         e = self.trim_end_spin.value() or None
-        detected = audio_sync.detect_start(src, start=s, end=e)
+        self._run_op(partial(audio_sync.detect_start, src, start=s, end=e),
+                     button=self.detect_btn, busy_text=_TR("busy_detect_anchor"),
+                     status_text=_TR("busy_detect_anchor"),
+                     on_result=self._on_anchor_detected)
+
+    def _on_anchor_detected(self, detected) -> None:
         if detected is None:
-            QMessageBox.warning(self, "Detekcja", "Nie wykryto sygnału — ustaw ręcznie.")
+            self._notify("sync", _TR("msg_no_anchor"))
             return
         self.t0_spin.setValue(detected)  # wywoła _on_t0_spin → waveform + podgląd
+        self._ok(_TR("msg_anchor_detected").format(_fmt_num(round(detected, 2))))
 
     def _detect_start_signal(self):
-        """Wykrywa bzyczek shot-timera (filtr 2–4.5 kHz) i ustawia go jako T0.
+        """Wykrywa bzyczek shot-timera (filtr 2–4.8 kHz) i ustawia go jako T0.
 
         Wymusza tryb kotwicy „Sygnał startu” — wykryty bzyczek JEST sygnałem
         startu, więc T0 = czas bzyczka (bez przesunięcia o pierwszy strzał).
         """
-        if not self.video_path:
-            QMessageBox.warning(self, "Brak wideo", "Najpierw wybierz plik wideo.")
+        if not self._require_video():
             return
         src = self.lrf_path or self.video_path
         s = self.trim_start_spin.value()
         e = self.trim_end_spin.value() or None
-        detected = audio_sync.detect_dji_start(src, start=s, end=e)
+        self._run_op(partial(audio_sync.detect_dji_start, src, start=s, end=e),
+                     button=self.start_sig_btn, busy_text=_TR("busy_detect_start"),
+                     status_text=_TR("busy_detect_start"),
+                     on_result=self._on_start_signal_detected)
+
+    def _on_start_signal_detected(self, detected) -> None:
         if detected is None:
-            QMessageBox.warning(self, "Detekcja",
-                                "Nie wykryto sygnału startu — ustaw ręcznie.")
+            self._notify("sync", _TR("msg_no_start_signal"))
             return
         self._force_start_signal_mode()
-        self.t0_spin.setValue(detected)  # wywoła _on_t0_spin → waveform + podgląd
+        self.t0_spin.setValue(detected)
+        self._ok(_TR("msg_t0_detected").format(_fmt_num(round(detected, 2))))
 
     def _detect_id_tone(self):
         """Dekoduje ID sesji z sygnału tonowego (timer po zapisie w bazie),
@@ -2972,35 +3192,32 @@ class MainWindow(QMainWindow):
         pod koniec nagrania, poza oknem, na którym LRF jest zwykle używane
         do detekcji T0).
         """
-        if not self.video_path:
-            QMessageBox.warning(self, "Brak wideo", "Najpierw wybierz plik wideo.")
+        if not self._require_video():
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
-        try:
-            detected = audio_sync.decode_id_tone(self.video_path)
-        finally:
-            QApplication.restoreOverrideCursor()
+        self._run_op(partial(audio_sync.decode_id_tone, self.video_path),
+                     button=self.detect_id_btn, busy_text=_TR("busy_detect_id"),
+                     status_text=_TR("busy_detect_id"),
+                     on_result=self._on_id_tone_detected)
+
+    def _on_id_tone_detected(self, detected) -> None:
         if detected is None:
-            QMessageBox.warning(
-                self, "Detekcja",
-                "Nie znaleziono sygnału ID w audio — wpisz ID ręcznie.")
+            self._notify("input", _TR("msg_no_id_tone"))
             return
         self.id_spin.setValue(detected)
         self._set_source("id")  # render ma użyć sesji z API, nie pola tekstowego
-        status_message(self.statusBar(),
-                       f"Wykryto ID z audio: {detected}", "success", 8000)
+        self._ok(_TR("msg_id_detected").format(detected))
         self._fetch_id_and_trim()
 
     def _next_candidate(self):
         """Proponuje kolejny wykryty onset (po aktualnej kotwicy) jako kotwicę."""
         onsets = self.waveform.onsets
         if not onsets:
-            QMessageBox.warning(self, "Brak kandydatów",
-                                "Najpierw wczytaj wideo (analiza audio wyznaczy kandydatów).")
+            self._notify("sync", _TR("msg_no_candidates"))
             return
         cur = self.t0_spin.value()
         nxt = next((o for o in onsets if o > cur + 1e-3), onsets[0])  # wrap do pierwszego
         self.t0_spin.setValue(nxt)
+        self._ok(_TR("msg_anchor_detected").format(_fmt_num(round(nxt, 2))))
 
     # --- synchronizacja waveform <-> spinboxy ---
     def _on_wave_anchor(self, t: float):
@@ -3014,14 +3231,16 @@ class MainWindow(QMainWindow):
         self._request_frame()  # nowy czas → nowa klatka w tle (debounced)
 
     def _apply_auto_trim(self, *_):
-        """Przycisk: ustaw przycięcie od (T0 − 5 s) do (ostatni strzał + margines)."""
-        if not self.video_path:
-            QMessageBox.warning(self, "Brak wideo", "Najpierw wybierz plik wideo.")
+        """Przycisk: ustaw przycięcie od (T0 − 5 s) do (ostatni strzał + margines).
+
+        Zostaje SYNCHRONICZNE — to czysta arytmetyka na już znanych wartościach
+        (żadnego FFmpeg/FFT/sieci), więc wątek byłby tu tylko kosztem.
+        """
+        if not self._require_video():
             return
         session = self.session or self._safe_session()
         if session is None or not session.shots:
-            QMessageBox.warning(self, "Brak osi czasu",
-                                "Podaj oś czasu strzałów (tekst lub pobierz po ID).")
+            self._notify("sync", _TR("msg_no_timeline"))
             return
         mode = self._anchor_mode()
         real_t0 = audio_sync.resolve_t0(self.t0_spin.value(), mode, session.shots[0].czas)
@@ -3030,9 +3249,25 @@ class MainWindow(QMainWindow):
             real_t0, session.shots[-1].czas, tail=self.tail_spin.value(), duration=dur)
         self.trim_start_spin.setValue(start)
         self.trim_end_spin.setValue(end)
+        self._ok(_TR("msg_trimmed").format(_fmt_num(round(start, 2)), _fmt_num(round(end, 2))))
 
     def _on_trim_spin(self):
         self.waveform.set_trim(self.trim_start_spin.value(), self.trim_end_spin.value())
+
+    def _validate_trim(self) -> None:
+        """Od ≤ do — walidacja po zakończeniu edycji pola (nie przy każdym znaku)."""
+        start = self.trim_start_spin.value()
+        end = self.trim_end_spin.value()
+        bad = end > 0 and start >= end
+        for spin in (self.trim_start_spin, self.trim_end_spin):
+            spin.setProperty("invalid", "true" if bad else "false")
+            repolish(spin)
+        if bad:
+            dur = self.waveform.duration or self.trim_end_spin.maximum()
+            self.sync_msg.show_message(
+                _TR("msg_trim_invalid").format(_fmt_num(round(dur, 2))), "danger")
+        elif self.sync_msg.isVisible():
+            self.sync_msg.clear()
 
     def _on_preview_at(self, t: float) -> None:
         """Ctrl+klik na waveformie → pokaż klatkę z nakładką odpowiednią dla czasu t."""
@@ -3545,8 +3780,8 @@ class MainWindow(QMainWindow):
 
     def _start_render(self):
         if self._render_busy:
-            QMessageBox.warning(self, "Zajęty",
-                                "Render jest już w toku (kolejka lub bezpośredni)."); return
+            status_message(self.statusBar(), _TR("msg_render_busy"), "warning", 8000)
+            return
         kwargs = self._collect_render_kwargs()
         if kwargs is None:
             return
@@ -3554,6 +3789,8 @@ class MainWindow(QMainWindow):
         self._render_busy = True
         self._set_render_enabled(False)
         self.open_btn.setVisible(False)  # pokaż dopiero po udanym renderze
+        self.act_open_folder.setVisible(False)
+        status_message(self.statusBar(), "Renderowanie…", "info", 0)
         self.worker = RenderWorker(kwargs)
         self._used_encoder = None
         self._render_warn = None
@@ -3566,9 +3803,14 @@ class MainWindow(QMainWindow):
         self.worker.start()
 
     def _set_render_enabled(self, idle: bool) -> None:
-        """Stan „Renderuj"/„Zatrzymaj" w formularzu I w pasku akcji (jedno źródło prawdy)."""
-        self.render_btn.setEnabled(idle)
-        self.act_render.setEnabled(idle)
+        """Stan „Renderuj"/„Zatrzymaj" w formularzu I w pasku akcji (jedno źródło prawdy).
+
+        Bez wczytanego wideo „Renderuj" jest wyłączone — w stanie pustym jedynym
+        przyciskiem primary jest „Otwórz wideo…".
+        """
+        can_render = idle and bool(self.video_path)
+        self.render_btn.setEnabled(can_render)
+        self.act_render.setEnabled(can_render)
         self.cancel_btn.setEnabled(not idle)
         self.act_cancel.setEnabled(not idle)
         self.act_cancel.setVisible(not idle)
@@ -3589,7 +3831,7 @@ class MainWindow(QMainWindow):
     def _on_cancelled(self):
         self._reset_render_ui()
         self.progress.setValue(0)
-        QMessageBox.information(self, "Zatrzymano", "Renderowanie zostało przerwane.")
+        status_message(self.statusBar(), _TR("msg_render_cancelled"), "warning", 8000)
 
     def _on_encoder_used(self, enc: str):
         self._used_encoder = enc
@@ -3657,21 +3899,32 @@ class MainWindow(QMainWindow):
         self.appearance_box.setDisabled(bool(state))
 
     def _on_done(self, path: str):
+        """Sukces = pasek stanu + droga do pliku; modal TYLKO gdy jest ostrzeżenie
+        (np. fallback enkodera) — udany render nie wymaga decyzji użytkownika."""
         self._reset_render_ui()
         self.last_output = path
         self.open_btn.setVisible(True)
         self.open_btn.setEnabled(True)
+        self.act_open_folder.setVisible(True)
         enc = {"h264_nvenc": "GPU (NVENC)", "libx264": "CPU (x264)"}.get(self._used_encoder, "")
-        msg = f"Zapisano:\n{path}"
+        text = _TR("msg_render_done").format(Path(path).name)
         if enc:
-            msg += f"\n\nEnkoder: {enc}"
+            text += f" [{enc}]"
+        status_message(self.statusBar(), text, "success", 10000)
         if self._render_warn:
-            msg += f"\n\n⚠ {self._render_warn}"
-        QMessageBox.information(self, "Gotowe", msg)
+            QMessageBox.information(self, "Gotowe", f"Zapisano:\n{path}\n\n⚠ {self._render_warn}")
 
     def _on_fail(self, msg: str):
+        """Błąd blokujący → modal, ale bez ściany tekstu: zdanie + „Pokaż szczegóły"
+        z pełnym wyjściem FFmpeg (skill §10 — traceback nie idzie na front)."""
         self._reset_render_ui()
-        QMessageBox.critical(self, "Błąd renderowania", msg)
+        status_message(self.statusBar(), _TR("render_failed_title"), "danger", 10000)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Critical)
+        box.setWindowTitle(_TR("render_failed_title"))
+        box.setText(_TR("render_failed_text"))
+        box.setDetailedText(msg)
+        box.exec()
 
     def _add_to_queue(self):
         kwargs = self._collect_render_kwargs()
@@ -3719,7 +3972,7 @@ class MainWindow(QMainWindow):
             )
             self._queue_runner = runner
             runner.queue_finished.connect(
-                lambda: self.render_btn.setEnabled(True)
+                lambda: self._set_render_enabled(True)
             )
             self._queue_window = RenderQueueWindow(runner, parent=None)
         return self._queue_window
@@ -3737,6 +3990,10 @@ class MainWindow(QMainWindow):
             self._queue_runner.stop()  # pauzuje kolejkę + ubija biegnące rendery
             for w in self._queue_runner.active_workers():
                 w.wait(_THREAD_JOIN_MS)
+        # Operacje w tle (detekcje, API) — ta sama pułapka QThread co niżej.
+        for worker in list(self._op_workers):
+            worker.cancel()
+            worker.wait(_THREAD_JOIN_MS)
         # Poczekaj na workery przygotowania wsadu (QThread niszczony w trakcie = crash).
         if self._batch_window is not None:
             for worker in list(self._batch_window._workers.values()):
@@ -3972,6 +4229,7 @@ def main():
     # do CLI, więc te flagi żyją wyłącznie tutaj i są zdejmowane przed QApplication).
     argv = list(sys.argv)
     shot_path = _pop_option(argv, "--screenshot")
+    shot_video = _pop_option(argv, "--video")   # tylko z --screenshot (zrzut z nagraniem)
     scale = _pop_option(argv, "--scale")
     force_light = _pop_flag(argv, "--light")
     if shot_path:
@@ -4017,6 +4275,18 @@ def main():
 
 
     if shot_path:
+        if shot_video:
+            # WYJĄTEK od zakazu `processEvents` w pętli: tryb zrzutu nie ma pętli
+            # zdarzeń, a musi doczekać analizy audio i detekcji T0 w wątkach.
+            win._set_video(shot_video)
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                app.processEvents()
+                if win.waveform.duration and win._op_worker is None:
+                    break
+                time.sleep(0.05)
+            for _ in range(10):
+                app.processEvents()
         for _ in range(5):
             app.processEvents()
         ok = win.grab().save(shot_path)

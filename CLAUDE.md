@@ -398,6 +398,43 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   (bardziej przezroczysta), `start_banner_border_enabled=False`; pola stylu bez zmian
   (obramowanie nadal dostępne, tylko domyślnie wyłączone). Snapshot `start_banner_pl`
   zregenerowany.
+- **Operacje w tle + „wynik zawsze widoczny" (v0.47.0):** `gui.FuncWorker` (QThread
+  wołający domknięte `functools.partial`) zastąpił `StartDetectWorker` i jest JEDYNYM
+  mechanizmem długich operacji okna głównego: detekcja bzyczka, kotwicy, ID z audio,
+  pobranie sesji z API. Sterowanie w `MainWindow._run_op(fn, button=…, busy_text=…,
+  status_text=…, on_result=…, on_error=…)`: `set_busy` na przycisku, `progress.setRange(0,0)`
+  (nieokreślony), komunikat w pasku stanu i przycisk „Anuluj" (`op_cancel_btn`, ghost,
+  widoczny tylko w trakcie). Jeden worker naraz (`_op_worker`); kolejne żądanie dostaje
+  „Trwa inna operacja…". ZASADA (powód porzucenia synchroniczności, patrz wpis wyżej):
+  każda ścieżka zakończenia — wynik, brak wyniku, wyjątek, anulowanie — kończy się
+  `status_message` (+ `InlineMessage` przy braku wyniku) i odblokowaniem przycisków;
+  żadnej „cichej pustki". Token pokolenia `_op_gen` odrzuca wyniki po anulowaniu i po
+  zmianie pliku (`_set_video` woła `_cancel_operation(silent=True)`); workery żyją
+  w `_op_workers` do `finished`, `closeEvent` na nie czeka (QThread niszczony w trakcie
+  = crash). Łańcuchy operacji (ID z audio → API → detekcja T0 → przycięcie) to kolejne
+  `_run_op` wołane z `on_result`. SYNCHRONICZNE zostaje tylko `_apply_auto_trim`
+  (arytmetyka na znanych wartościach) i `_next_candidate` — wątek byłby tam kosztem
+  bez zysku; `_collect_render_kwargs` nadal woła `api.fetch_session` synchronicznie
+  przy starcie renderu (jedno szybkie żądanie tuż przed długim workerem).
+- **Komunikaty, stan pusty, walidacja inline (v0.47.0):** komunikaty trzyczęściowe
+  (co / dlaczego / co zrobić) są w `i18n._STRINGS` (`msg_*`) i idą przez
+  `MainWindow._notify(where, text, kind)` — pełny tekst w `InlineMessage` pod sekcją
+  (`input_msg` w „Wejście", `sync_msg` w „Synchronizacja"), pierwsze zdanie w pasku
+  stanu. `QMessageBox` ZOSTAJE tylko dla błędów blokujących: błąd API i błąd renderu
+  (krótkie zdanie + `setDetailedText` z wyjściem FFmpeg) oraz dla ostrzeżenia po
+  udanym renderze (fallback enkodera). Sukces renderu/anulowanie/„render już trwa"
+  to pasek stanu, nie modal. Walidacja przycięcia (`_validate_trim`, `editingFinished`
+  — NIE przy każdym znaku): `setProperty("invalid", …)` + repolish na obu spinach +
+  `InlineMessage` z zakresem 0–długość. Stan pusty podglądu: `preview_stack`
+  (`QStackedWidget`) — strona 0 to „Brak wideo" + podpowiedź + primary „Otwórz wideo…",
+  strona 1 to TEN SAM `preview_label` co dotąd (scrubber i przeciąganie pozycji
+  wymagają tego samego obiektu). Bez wideo `act_render`/`render_btn` są wyłączone
+  (`_set_render_enabled` sprawdza też `video_path`), więc primary na widoku jest jeden.
+  Tytuł okna: `"<plik> — Piro Overlay"` po wczytaniu, `"Piro Overlay v<wersja>"` bez pliku.
+  Klawiatura: Escape zamyka `RenderQueueWindow`/`BatchDialog` (to `QWidget`, nie
+  `QDialog` — `QShortcut(QKeySequence.Cancel, …)`) i wychodzi z trybu „Edytuj pozycje".
+  Tryb `--screenshot` przyjmuje `--video PATH` (wczytuje plik i czeka pętlą
+  `processEvents` na analizę audio — jedyne dopuszczalne użycie `processEvents`).
 - **Płynący zegar od T0:** `OverlayStyle.show_running_clock` (checkbox „Płynący czas od T0").
   Nad nakładką ze strzałami tyka „T+x.xs" liczone od sygnału startu, widoczne od STARTU
   (t ≥ T0). `render.prepare_clock(style)` zwraca bool: `_clock_drawtext_seg` (filtr `drawtext`,
@@ -428,17 +465,15 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   MUSZĄ być eskejpowane `\:` (przecinek w `%{…}`, np. `min(a,b)`/`mod(x,10)`, jest OK bez
   eskejpu), a wartości opcji (text/x/y/enable) w apostrofach; eif daje tylko int, więc
   sekundy i dziesiąte liczone osobno przez `trunc`.
-- **Auto-detekcja T0 + przycięcie:** `gui.StartDetectWorker` (QThread) odpala
-  `detect_dji_start` w tle. Po wczytaniu pliku (`_on_wave_done` → `_auto_detect_t0()`):
-  T0 + przycięcie 5 s przed → max 75 s po T0. Przycisk „Pobierz i przytnij"
-  (`_fetch_id_and_trim`): pobranie z API + T0 + przycięcie 5 s przed → ostatni strzał + 5 s.
-  Zwykły „Pobierz" (`_fetch_id`) tylko pobiera dane (bez detekcji i przycięcia).
-  WAŻNE: „Pobierz i przytnij" (`_fetch_id_and_trim`) działa SYNCHRONICZNIE — używa
-  T0 już wykrytego przy imporcie (`t0_spin`), a gdy go brak, wykrywa raz na LRF; zawsze
-  daje widoczny wynik/komunikat (asynchroniczna detekcja w tle bywała „cicho pusta" =
-  wyglądała jak brak działania). Detekcja po imporcie nadal w tle: token pokolenia
-  (`_detect_gen`) w `_on_autodetect_t0` odrzuca przestarzałe wyniki; workery trzymane
-  w `_detect_workers` do `finished` (inaczej QThread niszczony w trakcie = crash).
+- **Auto-detekcja T0 + przycięcie:** po wczytaniu pliku (`_on_wave_done` →
+  `_auto_detect_t0()`): T0 (`detect_dji_start`) + przycięcie 5 s przed → max 75 s po T0.
+  Przycisk „Pobierz i przytnij" (`_fetch_id_and_trim`): pobranie z API + T0 + przycięcie
+  5 s przed → ostatni strzał + 5 s. Zwykły „Pobierz" (`_fetch_id`) tylko pobiera dane.
+  HISTORIA DECYZJI: do v0.46.0 „Pobierz i przytnij" i wszystkie ręczne detekcje działały
+  SYNCHRONICZNIE (blokując UI), bo asynchroniczna detekcja bywała „cicho pusta" —
+  wyglądała jak brak działania. Od v0.47.0 wszystko idzie przez `FuncWorker` + `_run_op`,
+  a powód zniknął, bo KAŻDA ścieżka zakończenia melduje wynik (patrz wpis „Operacje
+  w tle" niżej).
 - **Przeciąganie pozycji w podglądzie:** `gui.PreviewLabel` (QLabel) w trybie edycji
   (`edit_pos_btn`) mapuje mysz → piksele klatki (uwzględnia wyśrodkowany pixmap z letterboxem)
   i emituje `grabbed/dragged/dropped`. `MainWindow` trafia w `_preview_rects` ('panel'/'clock',
