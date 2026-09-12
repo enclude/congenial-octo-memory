@@ -729,18 +729,23 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
 
 ## Promocja / domeny (decyzja z 2026-09-12)
 
-- **Marka międzynarodowa: `ShotHUD`** → `shothud.com` (główna domena one-pagera EN) oraz
-  `shothud.pifpaf.fun` (subdomena w istniejącym ekosystemie, obok `timer.pifpaf.fun` i
-  `piro-kalkulator.pifpaf.fun`). Dlaczego: HUD = heads-up display = dokładnie to, czym jest
-  nakładka; krótkie, zrozumiałe bez tłumaczenia; `.com` był wolny (rzadkość dla sensownej
-  angielskiej nazwy); brak istniejącego produktu ani znaku towarowego pod tą nazwą (w sieci
-  tylko mody do gier). Wolne były też `shothud.{pl,video,io,app,net,tv,fun,dev,tools,eu}`.
-- **Rynek polski: `splity.pl`** (żargon strzelecki, jedno słowo, każdy zawodnik zna).
-  Sprawdzone w rejestrze NASK trzema drogami (RDAP, WHOIS `whois.dns.pl:43`, strefa .pl
-  przez Google/Cloudflare DNS) — WOLNA. PUŁAPKA: lokalny resolver (Windows → WSL) mapuje
-  KAŻDĄ nieistniejącą nazwę na IP z sieci home.pl (188.128.234.120), więc przeglądarka
-  pokazuje stronę (301 → 403) i wolna domena WYGLĄDA na zajętą. Status domen sprawdzać
-  w rejestrze, nie w przeglądarce.
+- **Jedna marka na wszystkie rynki: `ShotHUD`** → `shothud.com` (główna domena
+  one-pagera) oraz `shothud.pifpaf.fun` (subdomena w istniejącym ekosystemie, obok
+  `timer.pifpaf.fun` i `piro-kalkulator.pifpaf.fun`). Osobnej domeny dla rynku polskiego
+  NIE MA (świadoma decyzja — patrz `splity.pl` niżej). Dlaczego ShotHUD: HUD = heads-up
+  display = dokładnie to, czym jest nakładka; krótkie, zrozumiałe bez tłumaczenia; `.com`
+  był wolny (rzadkość dla sensownej angielskiej nazwy); brak istniejącego produktu ani
+  znaku towarowego pod tą nazwą (w sieci tylko mody do gier). Wolne były też
+  `shothud.{pl,video,io,app,net,tv,fun,dev,tools,eu}`.
+- **`splity.pl` — rozważana jako domena PL, ODRZUCONA tego samego dnia** (najpierw
+  „bierzemy na pewno", potem rezygnacja — decyzja użytkownika, bez podanego powodu). Była
+  WOLNA w rejestrze NASK (sprawdzone trzema drogami: RDAP, WHOIS `whois.dns.pl:43`, strefa
+  .pl przez Google/Cloudflare DNS). Gdyby kiedyś zaszła potrzeba osobnej domeny PL,
+  `shothud.pl` też było wolne w dniu sprawdzenia.
+- **PUŁAPKA przy sprawdzaniu domen w przeglądarce:** lokalny resolver (Windows → WSL)
+  mapuje KAŻDĄ nieistniejącą nazwę na IP z sieci home.pl (188.128.234.120), więc
+  przeglądarka pokazuje stronę (301 → 403) i wolna domena WYGLĄDA na zajętą (tak było ze
+  splity.pl). Status domen sprawdzać w rejestrze, nie w przeglądarce.
 - **Odrzucone i dlaczego:** `pirooverlay.*` (wolne wszędzie, ale czysto techniczne —
   „nazwa aplikacji", nie marka); `splits.video`/`splity.video` (dla zagranicy chciano
   inne słowo niż „splity"); `makeready` (znak MAKEREADY™ na makeready.com);
