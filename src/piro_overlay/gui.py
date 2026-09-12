@@ -1737,10 +1737,28 @@ class WaveformWidget(QWidget):
             _focus_ring(p, QRectF(self.rect()), RADIUS["r_sm"], tokens)
 
     @staticmethod
-    def _tag_text_color(color: QColor, tokens: dict) -> str:
-        """Tekst pastylki wg kontrastu do jej tła (luminancja względna)."""
-        lum = (0.2126 * color.redF() + 0.7152 * color.greenF() + 0.0722 * color.blueF())
-        return tokens["bg"] if lum > 0.45 else tokens["text"]
+    def _rel_luminance(color: QColor) -> float:
+        """Luminancja względna sRGB (WCAG) — do wyboru koloru tekstu na pastylce."""
+        def lin(c: float) -> float:
+            return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+        return (0.2126 * lin(color.redF()) + 0.7152 * lin(color.greenF())
+                + 0.0722 * lin(color.blueF()))
+
+    @classmethod
+    def _tag_text_color(cls, color: QColor, tokens: dict) -> str:
+        """Tekst pastylki: ten z pary `text`/`bg`, który ma WIĘKSZY kontrast do tła.
+
+        Prosty próg luminancji tła tu nie wystarcza: marker podglądu ma tło w kolorze
+        `text`, więc w motywie jasnym „ciemne tło → tekst `text`" dawało czarny napis
+        na czarnej pastylce. Liczymy więc kontrast do obu kandydatów i bierzemy lepszy."""
+        bg_lum = cls._rel_luminance(color)
+
+        def ratio(token: str) -> float:
+            lum = cls._rel_luminance(QColor(tokens[token]))
+            hi, lo = max(bg_lum, lum), min(bg_lum, lum)
+            return (hi + 0.05) / (lo + 0.05)
+
+        return tokens["bg"] if ratio("bg") >= ratio("text") else tokens["text"]
 
     def _tag_rect(self, fm: QFontMetrics, x: int, text: str, align: str, row: int) -> QRect:
         pad = SPACING["sp_1"]
