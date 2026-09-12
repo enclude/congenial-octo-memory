@@ -123,6 +123,42 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Layout i sekcje UI (v0.45.0):** `ui_widgets.py` (kopia `scripts/qt_widgets.py` ze skilla
+  `python-desktop-ux`, import na `.ui_theme`, bez demo) + własna klasa `StatusDot` (kropka
+  statusu malowana kolorem roli z `current_tokens`). W `gui.py` ZERO `setStyleSheet` poza
+  `ColorButton._refresh` (pasek koloru bierze się z danych, nie ze zbioru ról — i tam kolory
+  też idą już z tokenów); reszta to `role`/`kind` + `set_role`/`set_kind`/`repolish`.
+  **Pasek akcji** (`QToolBar`, tekst bez ikon): Otwórz wideo (Ctrl+O), Pobierz z API (Ctrl+G),
+  Wykryj sygnał startu (Ctrl+D), Auto-przycięcie (Ctrl+T), Dodaj do kolejki, Kolejka, Wsadowo,
+  przełącznik motywu, po prawej „Renderuj" (Ctrl+R) jako `QToolButton` `kind=primary` —
+  jedyny primary na widoku. Przyciski w formularzu wołają TE SAME `QAction`
+  (`clicked → action.trigger()`), a `_set_render_enabled` trzyma stan Renderuj/Zatrzymaj
+  w obu miejscach naraz. **Pasek stanu**: `progress` + `nvenc_label` przez
+  `addPermanentWidget` (pasek zostaje widoczny z wartością 0 — ukrywanie przesuwałoby
+  etykietę NVENC), `showMessage` → `status_message(bar, text, kind, ms)` (kolor stanu).
+  **Sekcje**: `QGroupBox` → `FormSection` (nagłówek + chevron + `add_row/add_pair_row/
+  add_widget_row`); przeładowany „Wygląd nakładki" rozbity na Wygląd / Kolory / Nakładka
+  metadanych / Zegar / Plansza START (trzy ostatnie domyślnie zwinięte), stan zwinięcia w
+  `QSettings` `ui/section/<klucz>` (ta sama przestrzeń co geometria, `config.py` nietknięte).
+  `self.appearance_box` to teraz KONTENER wszystkich sekcji wyglądu — `setDisabled` w trybie
+  „bez nakładki" działa jak dotąd. Zależności kontrolek przez `_sync_dependencies()`
+  (WYŁĄCZANIE, nie ukrywanie) — wołane też na końcu `_apply_style`, bo tam sygnały są
+  zablokowane. PUŁAPKI: (1) **kombosy pozycji mają teraz polskie etykiety i klucz w
+  `userData`** — czytaj WYŁĄCZNIE `currentData()`; `currentText()` zwróciłby „Lewy dolny"
+  i wysadził walidację `OverlayStyle` (dotyczy `pos_combo`, `meta_pos_combo`,
+  `clock_pos_combo` w `current_style`, `_apply_style`, `_update_preview`); (2)
+  `FormSection` ze skilla ma `ExpandingFieldsGrow`, które rozciąga TYLKO pola z polityką
+  `Expanding` — wiersze z paskami przycisków (`QSizePolicy.Ignored`) kurczyły się do zera,
+  więc w `ui_widgets.py` jest `AllNonFixedFieldsGrow`; (3) `QSizePolicy.Ignored` na
+  przyciskach ucina tekst w środku („Wykryj kotwicę" → „kryj kotw") — paski przycisków idą
+  przez `add_widget_row` (pełna szerokość wiersza), a nie w kolumnie kontrolek; (4) minimalna
+  szerokość inspektora to suma najszerszego wiersza: długie etykiety checkboxów, combosy
+  (`setMinimumContentsLength`) i spinboxy (`Ignored` + `setMinimumWidth`) — po skróceniu
+  `minimumSizeHint` spadł 453→393 px, więc `left_scroll.setMinimumWidth(380)` i
+  `splitter.setSizes([420, 760])` wystarczają bez poziomego paska (tryb `--screenshot`
+  wypisuje zmierzoną wartość na stdout). Nowe teksty (akcje, sekcje, pozycje) w `i18n._STRINGS`
+  PL+EN, czytane przez `_TR = get_translator(Lang.PL)` — GUI jest po polsku.
+
 - **Motyw UI z tokenów (v0.44.0):** `ui_theme.py` (kopia `scripts/qt_theme.py` ze skilla
   `python-desktop-ux`, bez sekcji demo) — Fusion + `QPalette` + QSS generowane z `TOKENS`
   przez `apply_theme(app, mode)`; `setup_hidpi()` (PassThrough) PRZED `QApplication`,

@@ -182,7 +182,10 @@ class FormSection(QWidget):
         self.form.setVerticalSpacing(SPACING["sp_2"])
         self.form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.form.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
-        self.form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        # AllNonFixedFieldsGrow (zamiast ExpandingFieldsGrow ze skryptu skilla):
+        # ExpandingFieldsGrow rozciąga TYLKO pola z polityką Expanding, więc wiersze
+        # z paskami przycisków (QSizePolicy.Ignored) kurczyły się do zera.
+        self.form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.form.setRowWrapPolicy(QFormLayout.DontWrapRows)
         lay.addWidget(self.body)
         self.header.set_content(self.body)

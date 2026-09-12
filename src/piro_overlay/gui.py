@@ -52,7 +52,7 @@ from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session
 from .parser import parse_timeline
 from . import ui_theme
 from .ui_theme import (
-    apply_theme, current_tokens, load_app_fonts, repolish, restore_window_state,
+    SPACING, apply_theme, current_tokens, load_app_fonts, repolish, restore_window_state,
     save_window_state, set_app_user_model_id, set_windows_dark_titlebar, setup_hidpi,
 )
 from .ui_widgets import FormSection, StatusDot, set_kind, set_role, status_message
@@ -1985,6 +1985,16 @@ class MainWindow(QMainWindow):
         self.progress.setProperty("kind", "labeled")
         bar.addPermanentWidget(self.progress)
 
+    def sync_theme_action(self, mode: str) -> None:
+        """Ustawia stan przełącznika BEZ ponownego nakładania motywu.
+
+        Potrzebne dla dewelopreskiej flagi `--light`, która wymusza motyw pomijając
+        `QSettings` — inaczej pasek akcji pokazywałby „Motyw: ciemny" w jasnym oknie."""
+        self.act_theme.blockSignals(True)
+        self.act_theme.setChecked(mode == "light")
+        self.act_theme.blockSignals(False)
+        self._refresh_theme_action()
+
     def _refresh_theme_action(self) -> None:
         mode = "light" if self.act_theme.isChecked() else "dark"
         self.act_theme.setText(f"{_TR('act_theme')}: {_TR('theme_' + mode)}")
@@ -2015,6 +2025,9 @@ class MainWindow(QMainWindow):
         root = QHBoxLayout(central)
 
         left = QVBoxLayout()
+        left.setContentsMargins(SPACING["sp_4"], SPACING["sp_4"],
+                                SPACING["sp_4"], SPACING["sp_4"])
+        left.setSpacing(SPACING["sp_6"])
         left.addWidget(self._input_group())
         left.addWidget(self._sync_group())
         left.addWidget(self._appearance_group())
@@ -2026,7 +2039,8 @@ class MainWindow(QMainWindow):
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
         left_scroll.setWidget(left_container)
-        left_scroll.setMinimumWidth(500)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(380)
 
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
@@ -2066,7 +2080,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setChildrenCollapsible(False)   # nikt nie zgubi inspektora przypadkiem
         splitter.setHandleWidth(9)                # 1 px linii + margines = strefa chwytu
-        splitter.setSizes([540, 640])
+        splitter.setSizes([420, 760])
         self.splitter = splitter   # restore_window_state/save_window_state (QSettings)
         root.addWidget(splitter)
 
@@ -2091,42 +2105,107 @@ class MainWindow(QMainWindow):
         self.waveform.update()
         self._update_preview()
 
+    # ---------- sekcje inspektora ----------
+    def _section(self, key: str, title_key: str, collapsed: bool = False) -> FormSection:
+        """`FormSection` (nagłówek + chevron) ze stanem zwinięcia w `QSettings`.
+
+        Klucz `ui/section/<key>` żyje w tej samej przestrzeni co geometria okna —
+        NIE dotyka plików ustawień z `config.py`.
+        """
+        sec = FormSection(_TR(title_key), collapsible=True)
+        expanded = not collapsed
+        try:
+            saved = QSettings().value(f"ui/section/{key}")
+            if saved is not None:
+                expanded = str(saved) == "true"
+        except Exception:  # noqa: BLE001
+            pass
+        sec.header.set_expanded(expanded)
+        sec.header.toggled.connect(
+            lambda on, k=key: QSettings().setValue(
+                f"ui/section/{k}", "true" if on else "false"))
+        return sec
+
+    @staticmethod
+    def _fill_positions(combo: QComboBox) -> None:
+        """Etykiety po polsku, klucz techniczny w `userData`.
+
+        PUŁAPKA: po tej zmianie pozycję czyta się WYŁĄCZNIE przez `currentData()`
+        — `currentText()` zwróciłby „Lewy dolny" i wysadził walidację `OverlayStyle`.
+        """
+        for key in ANCHOR_POSITIONS:
+            combo.addItem(_TR("pos_" + key.replace("-", "_")), key)
+
+    @staticmethod
+    def _set_data(combo: QComboBox, value) -> None:
+        idx = combo.findData(value)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+
+    @staticmethod
+    def _elastic(*spins) -> None:
+        """Pole liczy minimalną szerokość z najdłuższego tekstu zakresu
+        („100000,00 s") i rozpycha inspektor — pozwalamy mu się zwężać.
+        `Ignored` sprawia, że minimum bierze się z `setMinimumWidth`, nie z tekstu."""
+        for sp in spins:
+            sp.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            sp.setMinimumWidth(84)   # mieści „0,00 s" + strzałki
+
+    @staticmethod
+    def _narrow(width: int, *spins) -> None:
+        """Pole na 1–4 cyfry nie musi wypełniać kolumny kontrolek."""
+        for sp in spins:
+            sp.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            sp.setMinimumWidth(min(76, width))
+            sp.setMaximumWidth(width)
+
+    @staticmethod
+    def _compact(*combos, chars: int = 14) -> None:
+        """Combo NIE wymusza szerokości najdłuższej pozycji (rozpychała inspektor);
+        lista rozwijana pokazuje pełny tekst mimo to."""
+        for c in combos:
+            c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            c.setMinimumContentsLength(chars)
+
     def _input_group(self):
-        box = QGroupBox("Wejście")
-        form = QFormLayout(box)
+        sec = self._section("input", "sec_input")
         self.video_edit = QLineEdit()
         browse = QPushButton("…")
-        browse.clicked.connect(self._choose_video)
-        row = QHBoxLayout(); row.addWidget(self.video_edit); row.addWidget(browse)
-        form.addRow("Wideo", _wrap(row))
+        browse.setFixedWidth(36)
+        browse.clicked.connect(self.act_open.trigger)
+        row = QHBoxLayout(); row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.video_edit); row.addWidget(browse)
+        sec.add_row("Wideo", _wrap(row))
 
         self.rb_text = QRadioButton("Tekst")
         self.rb_id = QRadioButton("ID (API)")
         self.rb_id.setChecked(True)
         grp = QButtonGroup(self); grp.addButton(self.rb_text); grp.addButton(self.rb_id)
-        srow = QHBoxLayout(); srow.addWidget(self.rb_text); srow.addWidget(self.rb_id)
-        form.addRow("Źródło", _wrap(srow))
+        srow = QHBoxLayout(); srow.setContentsMargins(0, 0, 0, 0)
+        srow.addWidget(self.rb_text); srow.addWidget(self.rb_id); srow.addStretch(1)
+        sec.add_row("Źródło", _wrap(srow))
 
         self.timeline_edit = QPlainTextEdit()
         self.timeline_edit.setPlaceholderText("1: 2.81s | 2: 4.63s (+1.82s) | ...")
         self.timeline_edit.setMaximumHeight(80)
+        self.timeline_edit.setTabChangesFocus(True)
         self.timeline_edit.textChanged.connect(self._update_preview)
-        form.addRow("Oś czasu", self.timeline_edit)
+        sec.add_row("Oś czasu", self.timeline_edit)
 
         self.id_spin = QSpinBox(); self.id_spin.setRange(1, _SESSION_ID_MAX)
+        self._narrow(110, self.id_spin)
         fetch = QPushButton("Pobierz")
-        fetch.setToolTip("Pobiera oś czasu i metadane z API (bez zmiany przycięcia).")
-        fetch.clicked.connect(self._fetch_id)
+        fetch.setToolTip("Pobiera oś czasu i metadane z API (bez zmiany przycięcia). Ctrl+G")
+        fetch.clicked.connect(self.act_fetch.trigger)
         fetch_trim = QPushButton("Pobierz i przytnij")
         fetch_trim.setToolTip(
             "Pobiera z API, wykrywa sygnał startu (T0) i przycina film:\n"
             "5 s przed T0 → ostatni strzał + 5 s.")
         fetch_trim.clicked.connect(self._fetch_id_and_trim)
-        for b in (fetch, fetch_trim):
-            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        idrow = QHBoxLayout(); idrow.addWidget(self.id_spin)
-        idrow.addWidget(fetch); idrow.addWidget(fetch_trim)
-        form.addRow("ID", _wrap(idrow))
+        idrow = QHBoxLayout(); idrow.setContentsMargins(0, 0, 0, 0)
+        idrow.addWidget(self.id_spin)
+        idrow.addWidget(fetch, 1)
+        sec.add_row("ID", _wrap(idrow))
 
         detect_id_tone = QPushButton("Wykryj ID z audio")
         detect_id_tone.setToolTip(
@@ -2134,104 +2213,131 @@ class MainWindow(QMainWindow):
             "sesji w bazie (marker 5000 Hz + 4 cyfry + cyfra kontrolna, 5200–7000 Hz),\n"
             "wpisuje wykryte ID i OD RAZU pobiera dane z API oraz przycina film\n"
             "(jak „Pobierz i przytnij”). Zawsze analizuje oryginalny plik (nie proxy LRF).")
-        detect_id_tone.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         detect_id_tone.clicked.connect(self._detect_id_tone)
-        detect_row = QHBoxLayout(); detect_row.addWidget(detect_id_tone)
-        form.addRow("", _wrap(detect_row))
+        # Paski przycisków idą na pełną szerokość wiersza (jak w `add_widget_row`
+        # ze skilla) — w kolumnie kontrolek polskie etykiety byłyby ucinane.
+        idbtns = QHBoxLayout(); idbtns.setContentsMargins(0, 0, 0, 0)
+        idbtns.addWidget(fetch_trim, 1); idbtns.addWidget(detect_id_tone, 1)
+        sec.add_widget_row(_wrap(idbtns))
 
         self.api_meta_label = QLabel()
         self.api_meta_label.setProperty("role", "muted")
+        self.api_meta_label.setWordWrap(True)
         self.api_meta_label.hide()
-        form.addRow("", self.api_meta_label)
+        # Pusta etykieta wiersza też znika — inaczej ukryte metadane zostawiają
+        # w formularzu pusty wiersz.
+        meta_lab = sec.add_row("", self.api_meta_label)
+        meta_lab.hide()
         self.rb_id.toggled.connect(
             lambda checked: self.api_meta_label.setVisible(
                 checked and bool(self.api_meta_label.text())
             )
         )
-        return box
+        return sec
 
     def _sync_group(self):
-        box = QGroupBox("Synchronizacja i przycięcie")
-        form = QFormLayout(box)
+        sec = self._section("sync", "sec_sync")
 
         self.anchor_combo = QComboBox()
         # Przechowujemy .value (czysty str) — PySide6 konwertuje str-subclassy
         # (enum dziedziczący po str) do plain str w QVariant, co łamie porównania is.
         self.anchor_combo.addItem("Sygnał startu", AnchorMode.START_SIGNAL.value)
         self.anchor_combo.addItem("Pierwszy strzał", AnchorMode.FIRST_SHOT.value)
-        form.addRow("Typ kotwicy", self.anchor_combo)
+        self._compact(self.anchor_combo)
+        sec.add_row("Typ kotwicy", self.anchor_combo)
 
         detect = QPushButton("Wykryj kotwicę")
         detect.setToolTip("Szuka pierwszego wyraźnego onsetu w zaznaczonym fragmencie.")
         detect.clicked.connect(self._detect)
         nextc = QPushButton("Następny kandydat")
         nextc.setToolTip("Przeskakuje do kolejnego wykrytego onsetu.")
+        set_kind(nextc, "ghost")
         nextc.clicked.connect(self._next_candidate)
         start_sig = QPushButton("Wykryj sygnał startu")
         start_sig.setToolTip(
-            "Filtr pasmowy 2000–4500 Hz (pasmo buzzera shot-timera) + wybór\n"
+            "Filtr pasmowy 2000–4800 Hz (pasmo buzzera shot-timera) + wybór\n"
             "najgłośniejszego bzyczka. Ustawia typ kotwicy na „Sygnał startu”\n"
-            "i przelicza T0. Działa dobrze na nagraniach DJI Osmo.")
-        start_sig.clicked.connect(self._detect_start_signal)
-        # Przyciski nie wymuszają minimalnej szerokości tekstu — mogą się zwężać,
-        # by lewy panel nie rozpychał się przez długie etykiety.
-        for b in (detect, nextc, start_sig):
-            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        drow = QHBoxLayout()
-        drow.addWidget(detect); drow.addWidget(nextc); drow.addWidget(start_sig)
-        form.addRow(_wrap(drow))
+            "i przelicza T0. Działa dobrze na nagraniach DJI Osmo. (Ctrl+D)")
+        start_sig.clicked.connect(self.act_detect_start.trigger)
+        drow = QHBoxLayout(); drow.setContentsMargins(0, 0, 0, 0)
+        drow.addWidget(detect, 1); drow.addWidget(nextc, 1)
+        sec.add_widget_row(_wrap(drow))
+        srow2 = QHBoxLayout(); srow2.setContentsMargins(0, 0, 0, 0)
+        srow2.addWidget(start_sig, 1)
+        sec.add_widget_row(_wrap(srow2))
 
         self.t0_spin = _dspin(0, 100000, 0.05, " s")
+        self._elastic(self.t0_spin)
         self.t0_spin.valueChanged.connect(self._on_t0_spin)
-        form.addRow("Kotwica (czas)", self.t0_spin)
+        sec.add_row("Kotwica (czas)", self.t0_spin)
 
         self.trim_start_spin = _dspin(0, 100000, 0.1, " s")
         self.trim_end_spin = _dspin(0, 100000, 0.1, " s")
+        self.trim_start_spin.setToolTip("Początek przycięcia (od)")
+        self.trim_end_spin.setToolTip("Koniec przycięcia (do)")
+        self._elastic(self.trim_start_spin, self.trim_end_spin)
         self.trim_start_spin.valueChanged.connect(self._on_trim_spin)
         self.trim_end_spin.valueChanged.connect(self._on_trim_spin)
-        trow = QHBoxLayout(); trow.addWidget(self.trim_start_spin); trow.addWidget(self.trim_end_spin)
-        form.addRow("Przytnij od / do", _wrap(trow))
+        sec.add_pair_row("Przytnij", self.trim_start_spin, self.trim_end_spin, "→")
 
         self.tail_spin = _dspin(0.0, 60.0, 0.5, " s", _TRIM_TAIL_S)
         self.tail_spin.setToolTip("Margines (s) doliczany po ostatnim strzale przy auto-przycięciu.")
-        self.tail_spin.setMaximumWidth(120)  # węższe pole, ale bez ucinania sufiksu „ s"
+        self._elastic(self.tail_spin)
         autotrim_btn = QPushButton("Auto-przycięcie")
         autotrim_btn.setToolTip(
-            "Ustaw zakres przycięcia: 5 s przed startem → ostatni strzał + margines.")
-        autotrim_btn.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        autotrim_btn.clicked.connect(self._apply_auto_trim)
-        # Margines i przycisk w jednej linii (przycisk wypełnia resztę szerokości).
-        mrow = QHBoxLayout()
-        mrow.addWidget(self.tail_spin)
-        mrow.addWidget(autotrim_btn, 1)
-        form.addRow("Margines końcowy", _wrap(mrow))
-        return box
+            "Ustaw zakres przycięcia: 5 s przed startem → ostatni strzał + margines. (Ctrl+T)")
+        autotrim_btn.clicked.connect(self.act_auto_trim.trigger)
+        mrow = QHBoxLayout(); mrow.setContentsMargins(0, 0, 0, 0)
+        mrow.addWidget(self.tail_spin, 1)
+        mrow.addWidget(autotrim_btn, 2)
+        sec.add_row("Margines końcowy", _wrap(mrow))
+        return sec
 
     def _appearance_group(self):
-        box = QGroupBox("Wygląd nakładki")
-        form = QFormLayout(box)
+        """Kontener wszystkich sekcji wyglądu — `self.appearance_box` (wyłączany
+        w trybie „bez nakładki"), więc semantyka `setDisabled` zostaje jak dotąd."""
+        box = QWidget()
+        v = QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(SPACING["sp_6"])
+        v.addWidget(self._overlay_look_section())
+        v.addWidget(self._colors_section())
+        v.addWidget(self._meta_section())
+        v.addWidget(self._clock_section())
+        v.addWidget(self._banner_section())
+        self.appearance_box = box
+        return box
+
+    def _overlay_look_section(self):
+        sec = self._section("appearance", "appearance")
 
         self.lang_combo = QComboBox()
         self.lang_combo.addItem("Polski", Lang.PL)
         self.lang_combo.addItem("English", Lang.EN)
+        self._compact(self.lang_combo)
         self.lang_combo.currentIndexChanged.connect(self._update_preview)
-        form.addRow("Język", self.lang_combo)
+        sec.add_row("Język", self.lang_combo)
 
         self.scale_spin = _dspin(0.3, 5.0, 0.1, "", 1.0)
+        self._narrow(90, self.scale_spin)
         self.scale_spin.valueChanged.connect(self._update_preview)
-        form.addRow("Rozmiar (skala)", self.scale_spin)
+        sec.add_row("Rozmiar (skala)", self.scale_spin)
 
-        self.pos_combo = QComboBox(); self.pos_combo.addItems(list(ANCHOR_POSITIONS))
-        self.pos_combo.setCurrentText("bottom-left")
+        self.pos_combo = QComboBox()
+        self._fill_positions(self.pos_combo)
+        self._compact(self.pos_combo)
+        self._set_data(self.pos_combo, "bottom-left")
         self.pos_combo.currentIndexChanged.connect(self._update_preview)
-        form.addRow("Pozycja", self.pos_combo)
+        sec.add_row("Pozycja", self.pos_combo)
 
         self.off_x = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
         self.off_y = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
+        self.off_x.setPrefix("X ")
+        self.off_y.setPrefix("Y ")
+        self._narrow(110, self.off_x, self.off_y)
         self.off_x.valueChanged.connect(self._update_preview)
         self.off_y.valueChanged.connect(self._update_preview)
-        orow = QHBoxLayout(); orow.addWidget(self.off_x); orow.addWidget(self.off_y)
-        form.addRow("Offset X / Y", _wrap(orow))
+        sec.add_pair_row("Offset", self.off_x, self.off_y, "/")
 
         self.panel_mode_combo = QComboBox()
         self.panel_mode_combo.addItem("Klasyczny (jeden strzał)", "classic")
@@ -2240,136 +2346,181 @@ class MainWindow(QMainWindow):
             "Klasyczny: pojedynczy panel „Strzał x z yy” z metadanymi.\n"
             "Lista: ostatnie strzały jako wiersze (numer | czas | split) — nowy strzał\n"
             "pojawia się na dole i przesuwa starsze w górę (starsze są wygaszane).")
+        self._compact(self.panel_mode_combo)
         self.panel_mode_combo.currentIndexChanged.connect(self._update_preview)
-        form.addRow("Styl panelu", self.panel_mode_combo)
+        self.panel_mode_combo.currentIndexChanged.connect(self._sync_dependencies)
+        sec.add_row("Styl panelu", self.panel_mode_combo)
 
         self.list_rows_spin = _ispin(2, 10, 5)
+        self._narrow(90, self.list_rows_spin)
         self.list_rows_spin.setToolTip("Ile ostatnich strzałów pokazuje lista (tryb „Lista”).")
         self.list_rows_spin.valueChanged.connect(self._update_preview)
-        form.addRow("Wiersze listy", self.list_rows_spin)
+        sec.add_row("Wiersze listy", self.list_rows_spin)
 
-        self.list_progress_chk = QCheckBox("Numer aktywnego wiersza jako „x/yy”")
+        self.list_progress_chk = QCheckBox("Numer jako „x/yy”")
         self.list_progress_chk.setChecked(True)
         self.list_progress_chk.setToolTip(
             "W trybie „Lista” najnowszy wiersz pokazuje numer jako postęp przebiegu\n"
             "(np. „6/9” = szósty strzał z dziewięciu).")
         self.list_progress_chk.stateChanged.connect(self._update_preview)
-        form.addRow(self.list_progress_chk)
+        sec.add_row("", self.list_progress_chk)
 
-        self.list_pin_chk = QCheckBox("Przypnij pierwszy strzał na górze listy")
+        self.list_pin_chk = QCheckBox("Przypnij pierwszy strzał")
         self.list_pin_chk.setChecked(True)
         self.list_pin_chk.setToolTip(
             "W trybie „Lista” strzał nr 1 zostaje w górnym slocie (z odstępem od\n"
             "reszty), gdy wypadłby z okna ostatnich strzałów — czas pierwszego\n"
             "strzału jest widoczny przez cały przebieg.")
         self.list_pin_chk.stateChanged.connect(self._update_preview)
-        form.addRow(self.list_pin_chk)
+        sec.add_row("", self.list_pin_chk)
 
-        self.meta_chk = QCheckBox("Nakładka toru/uczestnika")
-        self.meta_chk.setToolTip(
-            "Osobna nakładka z nazwą toru i uczestnikiem („Jaro — 9 strzałów”),\n"
-            "widoczna od T0 do końca filmu; pozycjonowana niezależnie (róg + offset\n"
-            "poniżej), można ją też przeciągać w trybie edycji pozycji.")
-        self.meta_chk.stateChanged.connect(self._update_preview)
-        form.addRow(self.meta_chk)
+        # Presety dotyczą CAŁEGO stylu (kolory, zegar, plansza), ale własna sekcja
+        # na dwa przyciski byłaby szumem — wiersz zamyka pierwszą sekcję wyglądu.
+        preset_row = QHBoxLayout(); preset_row.setContentsMargins(0, 0, 0, 0)
+        load_preset_btn = QPushButton("Wczytaj preset…")
+        save_preset_btn = QPushButton("Zapisz preset…")
+        for b in (load_preset_btn, save_preset_btn):
+            set_kind(b, "ghost")
+        load_preset_btn.clicked.connect(self._load_preset)
+        save_preset_btn.clicked.connect(self._save_preset)
+        preset_row.addWidget(load_preset_btn, 1)
+        preset_row.addWidget(save_preset_btn, 1)
+        sec.add_widget_row(_wrap(preset_row))
+        return sec
 
-        self.meta_pos_combo = QComboBox()
-        for p in ANCHOR_POSITIONS:
-            self.meta_pos_combo.addItem(p, p)
-        self.meta_pos_combo.setCurrentText("top-left")
-        self.meta_pos_combo.currentIndexChanged.connect(self._update_preview)
-        form.addRow("Pozycja metadanych", self.meta_pos_combo)
-
-        self.meta_off_x = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
-        self.meta_off_y = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
-        self.meta_off_x.valueChanged.connect(self._update_preview)
-        self.meta_off_y.valueChanged.connect(self._update_preview)
-        mrow = QHBoxLayout(); mrow.addWidget(self.meta_off_x); mrow.addWidget(self.meta_off_y)
-        form.addRow("Offset metadanych X / Y", _wrap(mrow))
-
+    def _colors_section(self):
+        sec = self._section("colors", "sec_colors")
         self.bg_btn = ColorButton((0, 0, 0, 170))
         self.text_btn = ColorButton((255, 255, 255, 255))
         self.accent_btn = ColorButton((255, 196, 0, 255))
         self.border_btn = ColorButton((255, 255, 255, 220))
         for b in (self.bg_btn, self.text_btn, self.accent_btn, self.border_btn):
             b.changed.connect(self._update_preview)
-        form.addRow("Tło", self.bg_btn)
-        form.addRow("Tekst", self.text_btn)
-        form.addRow("Akcent", self.accent_btn)
-        form.addRow("Obramowanie", self.border_btn)
+        sec.add_row("Tło", self.bg_btn)
+        sec.add_row("Tekst", self.text_btn)
+        sec.add_row("Akcent", self.accent_btn)
+        sec.add_row("Obramowanie", self.border_btn)
 
         self.border_chk = QCheckBox("Włącz obramowanie"); self.border_chk.setChecked(True)
         self.border_chk.stateChanged.connect(self._update_preview)
-        form.addRow(self.border_chk)
+        self.border_chk.stateChanged.connect(self._sync_dependencies)
+        sec.add_row("", self.border_chk)
         self.border_w = _ispin(1, 30, 3)
+        self._narrow(90, self.border_w)
         self.border_w.valueChanged.connect(self._update_preview)
-        form.addRow("Grubość obramowania", self.border_w)
+        sec.add_row("Grubość", self.border_w, unit="px")
+        return sec
 
-        self.clock_chk = QCheckBox("Płynący czas od T0 (nad nakładką, od STARTU)")
+    def _meta_section(self):
+        sec = self._section("meta", "sec_meta", collapsed=True)
+        self.meta_chk = QCheckBox("Pokaż nakładkę")
+        self.meta_chk.setToolTip(
+            "Osobna nakładka z nazwą toru i uczestnikiem („Jaro — 9 strzałów”),\n"
+            "widoczna od T0 do końca filmu; pozycjonowana niezależnie (róg + offset\n"
+            "poniżej), można ją też przeciągać w trybie edycji pozycji.")
+        self.meta_chk.stateChanged.connect(self._update_preview)
+        self.meta_chk.stateChanged.connect(self._sync_dependencies)
+        sec.add_row("", self.meta_chk)
+
+        self.meta_pos_combo = QComboBox()
+        self._fill_positions(self.meta_pos_combo)
+        self._compact(self.meta_pos_combo)
+        self._set_data(self.meta_pos_combo, "top-left")
+        self.meta_pos_combo.currentIndexChanged.connect(self._update_preview)
+        sec.add_row("Pozycja", self.meta_pos_combo)
+
+        self.meta_off_x = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
+        self.meta_off_y = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
+        self.meta_off_x.setPrefix("X ")
+        self.meta_off_y.setPrefix("Y ")
+        self._narrow(110, self.meta_off_x, self.meta_off_y)
+        self.meta_off_x.valueChanged.connect(self._update_preview)
+        self.meta_off_y.valueChanged.connect(self._update_preview)
+        sec.add_pair_row("Offset", self.meta_off_x, self.meta_off_y, "/")
+        return sec
+
+    def _clock_section(self):
+        sec = self._section("clock", "sec_clock", collapsed=True)
+        self.clock_chk = QCheckBox("Płynący czas od T0")
         self.clock_chk.setToolTip(
             "Nad nakładką ze strzałami pokazuje płynący zegar „T+x.xs” liczony od\n"
             "sygnału startu (T0). Widoczny już od STARTU, jeszcze przed pierwszym strzałem.")
         self.clock_chk.stateChanged.connect(self._update_preview)
-        form.addRow(self.clock_chk)
+        self.clock_chk.stateChanged.connect(self._sync_dependencies)
+        sec.add_row("", self.clock_chk)
 
         self.clock_pos_combo = QComboBox()
-        self.clock_pos_combo.addItem("Nad nakładką (auto)", "auto")
-        for p in ANCHOR_POSITIONS:
-            self.clock_pos_combo.addItem(p, p)
+        self.clock_pos_combo.addItem(_TR("pos_clock_auto"), "auto")
+        self._fill_positions(self.clock_pos_combo)
+        self._compact(self.clock_pos_combo)
         self.clock_pos_combo.setToolTip(
             "Gdzie umieścić zegar. „Nad nakładką (auto)” trzyma go tuż nad panelem\n"
             "strzału; pozostałe opcje pozycjonują go niezależnie (róg + offset poniżej).")
         self.clock_pos_combo.currentIndexChanged.connect(self._update_preview)
-        form.addRow("Pozycja zegara", self.clock_pos_combo)
+        sec.add_row("Pozycja", self.clock_pos_combo)
 
         self.clock_off_x = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
         self.clock_off_y = _ispin(0, 8000, _DEFAULT_OFFSET_PX)
+        self.clock_off_x.setPrefix("X ")
+        self.clock_off_y.setPrefix("Y ")
+        self._narrow(110, self.clock_off_x, self.clock_off_y)
         self.clock_off_x.setToolTip("Offset zegara X (używany, gdy pozycja ≠ „auto”).")
         self.clock_off_y.setToolTip("Offset zegara Y (używany, gdy pozycja ≠ „auto”).")
         self.clock_off_x.valueChanged.connect(self._update_preview)
         self.clock_off_y.valueChanged.connect(self._update_preview)
-        crow = QHBoxLayout(); crow.addWidget(self.clock_off_x); crow.addWidget(self.clock_off_y)
-        form.addRow("Offset zegara X / Y", _wrap(crow))
+        sec.add_pair_row("Offset", self.clock_off_x, self.clock_off_y, "/")
+        return sec
 
+    def _banner_section(self):
+        # Słowo „START" jest w tytule sekcji — etykiety wierszy go nie powtarzają.
+        sec = self._section("banner", "sec_banner", collapsed=True)
         self.banner_spin = _dspin(0.0, 10.0, 0.5, " s", 1.0)
-        form.addRow("Czas planszy START", self.banner_spin)
+        self._narrow(100, self.banner_spin)
+        sec.add_row("Czas", self.banner_spin)
 
         self.banner_scale_spin = _dspin(0.3, 5.0, 0.1, "", 1.0)
+        self._narrow(90, self.banner_scale_spin)
         self.banner_scale_spin.valueChanged.connect(self._update_preview)
-        form.addRow("Rozmiar planszy START (skala)", self.banner_scale_spin)
+        sec.add_row("Rozmiar (skala)", self.banner_scale_spin)
 
         self.banner_bg_btn = ColorButton((0, 0, 0, 150))
         self.banner_bg_btn.changed.connect(self._update_preview)
-        form.addRow("Tło / przezroczystość START", self.banner_bg_btn)
+        sec.add_row("Tło", self.banner_bg_btn)
 
         self.banner_text_btn = ColorButton((255, 196, 0, 255))
         self.banner_text_btn.changed.connect(self._update_preview)
-        form.addRow("Kolor tekstu START", self.banner_text_btn)
+        sec.add_row("Tekst", self.banner_text_btn)
 
         self.banner_border_btn = ColorButton((255, 196, 0, 220))
         self.banner_border_btn.changed.connect(self._update_preview)
-        form.addRow("Obramowanie START", self.banner_border_btn)
+        sec.add_row("Obramowanie", self.banner_border_btn)
 
-        self.banner_border_chk = QCheckBox("Włącz obramowanie START")
+        self.banner_border_chk = QCheckBox("Włącz obramowanie")
         self.banner_border_chk.setChecked(False)
         self.banner_border_chk.stateChanged.connect(self._update_preview)
-        form.addRow(self.banner_border_chk)
+        self.banner_border_chk.stateChanged.connect(self._sync_dependencies)
+        sec.add_row("", self.banner_border_chk)
 
         self.banner_border_w = _ispin(1, 30, 3)
+        self._narrow(90, self.banner_border_w)
         self.banner_border_w.valueChanged.connect(self._update_preview)
-        form.addRow("Grubość obramowania START", self.banner_border_w)
+        sec.add_row("Grubość", self.banner_border_w, unit="px")
+        return sec
 
-        preset_row = QHBoxLayout()
-        load_preset_btn = QPushButton("Wczytaj preset…")
-        save_preset_btn = QPushButton("Zapisz preset…")
-        load_preset_btn.clicked.connect(self._load_preset)
-        save_preset_btn.clicked.connect(self._save_preset)
-        preset_row.addWidget(load_preset_btn)
-        preset_row.addWidget(save_preset_btn)
-        form.addRow(_wrap(preset_row))
-
-        self.appearance_box = box
-        return box
+    def _sync_dependencies(self, *_) -> None:
+        """Kontrolki zależne są WYŁĄCZANE (nie ukrywane) — układ nie skacze,
+        a użytkownik widzi, że opcja istnieje."""
+        self.border_w.setEnabled(self.border_chk.isChecked())
+        clock_on = self.clock_chk.isChecked()
+        for w in (self.clock_pos_combo, self.clock_off_x, self.clock_off_y):
+            w.setEnabled(clock_on)
+        meta_on = self.meta_chk.isChecked()
+        for w in (self.meta_pos_combo, self.meta_off_x, self.meta_off_y):
+            w.setEnabled(meta_on)
+        list_on = self.panel_mode_combo.currentData() == "list"
+        for w in (self.list_rows_spin, self.list_progress_chk, self.list_pin_chk):
+            w.setEnabled(list_on)
+        self.banner_border_w.setEnabled(self.banner_border_chk.isChecked())
 
     def _apply_style(self, style: OverlayStyle) -> None:
         """Ustawia wszystkie widgety wyglądu z podanego OverlayStyle (bez pośrednich preview)."""
@@ -2392,7 +2543,7 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self.lang_combo.setCurrentIndex(idx)
         self.scale_spin.setValue(style.scale)
-        self.pos_combo.setCurrentText(style.position)
+        self._set_data(self.pos_combo, style.position)
         self.off_x.setValue(style.offset_x)
         self.off_y.setValue(style.offset_y)
         pidx = self.panel_mode_combo.findData(style.panel_mode)
@@ -2429,6 +2580,9 @@ class MainWindow(QMainWindow):
 
         for w in widgets:
             w.blockSignals(False)
+        # Stan „wyszarzenia" musi odpowiadać WCZYTANEMU stylowi, nie domyślnym
+        # wartościom widgetów — sygnały były zablokowane, więc wołamy jawnie.
+        self._sync_dependencies()
         self._update_preview()
 
     def _save_preset(self) -> None:
@@ -2460,42 +2614,48 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Błąd wczytywania presetu", str(exc))
 
     def _output_group(self):
-        box = QGroupBox("Wyjście")
-        v = QVBoxLayout(box)
+        sec = self._section("output", "sec_output")
         self.out_edit = QLineEdit()
-        out_browse = QPushButton("…"); out_browse.clicked.connect(self._choose_output)
-        orow = QHBoxLayout(); orow.addWidget(self.out_edit); orow.addWidget(out_browse)
-        v.addLayout(orow)
+        out_browse = QPushButton("…")
+        out_browse.setFixedWidth(36)
+        out_browse.clicked.connect(self._choose_output)
+        orow = QHBoxLayout(); orow.setContentsMargins(0, 0, 0, 0)
+        orow.addWidget(self.out_edit); orow.addWidget(out_browse)
+        sec.add_row("Plik wyjściowy", _wrap(orow))
 
         self.format_combo = QComboBox()
         self.format_combo.addItem("MP4 (H.264)", "mp4")
         self.format_combo.addItem("WebM (VP9)", "webm")
         self.format_combo.addItem("GIF (animowany)", "gif")
+        self._compact(self.format_combo)
         self.format_combo.currentIndexChanged.connect(self._on_format_changed)
-        frow = QHBoxLayout()
-        frow.addWidget(QLabel("Format wyjścia:"))
-        frow.addWidget(self.format_combo)
-        v.addLayout(frow)
+        sec.add_row("Format", self.format_combo)
 
-        self.no_overlay_chk = QCheckBox("Bez nakładki (tylko przycięcie)")
+        self.no_overlay_chk = QCheckBox("Bez nakładki (tylko przytnij)")
         self.no_overlay_chk.stateChanged.connect(self._on_no_overlay_toggled)
-        v.addWidget(self.no_overlay_chk)
-        self.gpu_chk = QCheckBox("Akceleracja GPU (NVENC, jeśli dostępna)")
+        sec.add_row("", self.no_overlay_chk)
+
+        self.gpu_chk = QCheckBox("Akceleracja GPU (NVENC)")
         self.gpu_chk.setChecked(True)
-        v.addWidget(self.gpu_chk)
+        sec.add_row("", self.gpu_chk)
+
         diag = QPushButton("Diagnostyka NVENC")
         diag.setToolTip("Pokazuje status NVENC, użytą binarkę FFmpeg "
                         "i szczegóły błędu, gdy test kodowania nie przeszedł")
-        diag.clicked.connect(self._show_nvenc_diag)
-        v.addWidget(diag)
         cli_btn = QPushButton("Pokaż komendę CLI")
         cli_btn.setToolTip(
             "Buduje równoważne wywołanie bezgłowe (PiroOverlay.exe …) z bieżących\n"
             "ustawień — do skryptów/automatyzacji. Można je skopiować do schowka.")
+        for b in (diag, cli_btn):
+            set_kind(b, "ghost")
+        diag.clicked.connect(self._show_nvenc_diag)
         cli_btn.clicked.connect(self._show_cli_command)
-        v.addWidget(cli_btn)
-        # Wiersz 1: Renderuj / Zatrzymaj — w jednej linii, mniejsze (nie rozciągają się).
-        brow = QHBoxLayout()
+        hrow = QHBoxLayout(); hrow.setContentsMargins(0, 0, 0, 0)
+        hrow.addWidget(diag, 1); hrow.addWidget(cli_btn, 1)
+        sec.add_widget_row(_wrap(hrow))
+
+        # Wiersz: Renderuj / Zatrzymaj (te same QAction co pasek akcji).
+        brow = QHBoxLayout(); brow.setContentsMargins(0, 0, 0, 0)
         self.render_btn = QPushButton(_TR("render"))
         set_kind(self.render_btn, "primary")
         self.render_btn.setToolTip("Renderuj (Ctrl+R)")
@@ -2509,10 +2669,10 @@ class MainWindow(QMainWindow):
         brow.addWidget(self.render_btn)
         brow.addWidget(self.cancel_btn)
         brow.addStretch(1)
-        v.addLayout(brow)
+        sec.add_widget_row(_wrap(brow))
 
-        # Wiersz 2: kolejka renderów.
-        qrow = QHBoxLayout()
+        # Wiersz: kolejka renderów + wsad.
+        qrow = QHBoxLayout(); qrow.setContentsMargins(0, 0, 0, 0)
         self.queue_add_btn = QPushButton("Dodaj do kolejki")
         self.queue_add_btn.setToolTip(
             "Dodaje render z bieżącymi ustawieniami jako zadanie kolejki")
@@ -2520,36 +2680,29 @@ class MainWindow(QMainWindow):
         self.queue_show_btn = QPushButton("Kolejka")
         self.queue_show_btn.setToolTip("Otwiera okno kolejki renderów")
         self.queue_show_btn.clicked.connect(self.act_queue.trigger)
-        qrow.addWidget(self.queue_add_btn)
-        qrow.addWidget(self.queue_show_btn)
-        qrow.addStretch(1)
-        v.addLayout(qrow)
-
-        # Wiersz 3: przetwarzanie wsadowe.
-        bbrow = QHBoxLayout()
         self.batch_btn = QPushButton("Wsadowo…")
         self.batch_btn.setToolTip("Przetwarzanie wielu plików (tryb auto + ID)")
         self.batch_btn.clicked.connect(self.act_batch.trigger)
-        bbrow.addWidget(self.batch_btn)
-        bbrow.addStretch(1)
-        v.addLayout(bbrow)
+        qrow.addWidget(self.queue_add_btn, 2)
+        qrow.addWidget(self.queue_show_btn, 1)
+        qrow.addWidget(self.batch_btn, 1)
+        sec.add_widget_row(_wrap(qrow))
 
-        # Wiersz 4: otwarcie wyniku — widoczne dopiero PO zakończeniu renderu.
-        orow2 = QHBoxLayout()
+        # Wiersz: otwarcie wyniku — widoczne dopiero PO zakończeniu renderu.
         self.open_btn = QPushButton("Otwórz folder z wynikiem")
         self.open_btn.setVisible(False)
         self.open_btn.clicked.connect(self._open_output_folder)
-        orow2.addWidget(self.open_btn)
-        orow2.addStretch(1)
-        v.addLayout(orow2)
-        return box
+        orow2 = QHBoxLayout(); orow2.setContentsMargins(0, 0, 0, 0)
+        orow2.addWidget(self.open_btn); orow2.addStretch(1)
+        sec.add_widget_row(_wrap(orow2))
+        return sec
 
     # ---------- logika ----------
     def current_style(self):
         return OverlayStyle(
             lang=self.lang_combo.currentData(),
             scale=self.scale_spin.value(),
-            position=self.pos_combo.currentText(),
+            position=self.pos_combo.currentData(),
             offset_x=self.off_x.value(), offset_y=self.off_y.value(),
             panel_mode=self.panel_mode_combo.currentData(),
             list_max_rows=self.list_rows_spin.value(),
@@ -3128,7 +3281,7 @@ class MainWindow(QMainWindow):
         ny = max(0, min(g["y0"] + (fy - g["fy"]), fh - g["h"]))
         scale = self._preview_scale(fh) or 1.0
         if g["key"] == "panel":
-            pos = self.pos_combo.currentText()
+            pos = self.pos_combo.currentData()
             ox, oy, _ = self._invert_offset(pos, (nx, ny), (g["w"], g["h"]), (fw, fh))
             if ox is not None:
                 self.off_x.setValue(int(round(ox / scale)))
@@ -3143,7 +3296,7 @@ class MainWindow(QMainWindow):
             cp = self.clock_pos_combo.currentData()
             if cp == "auto":
                 # Przeciąganie wymaga konkretnego rogu — przejdź na róg panelu.
-                cp = self.pos_combo.currentText()
+                cp = self.pos_combo.currentData()
                 cidx = self.clock_pos_combo.findData(cp)
                 if cidx >= 0:
                     self.clock_pos_combo.setCurrentIndex(cidx)
@@ -3814,6 +3967,7 @@ def main():
     settings = QSettings()
     win = MainWindow()
     win.setMinimumSize(960, 600)   # inspektor + podgląd bez ucinania
+    win.sync_theme_action(theme["mode"])
     if shot_path:
         win.resize(1180, 760)   # stały rozmiar = powtarzalne zrzuty
     elif not restore_window_state(win, settings, win.splitter):
@@ -3832,6 +3986,16 @@ def main():
         print(("zapisano " if ok else "BŁĄD ") + shot_path)
         area = win.findChild(QScrollArea)
         if area is not None and area.widget() is not None:
+            inner_w = area.widget()
+            print(f"inspektor minimumSizeHint: {inner_w.minimumSizeHint().width()} px, "
+                  f"viewport: {area.viewport().width()} px")
+            if os.environ.get("PIRO_UI_DEBUG"):
+                for child in inner_w.findChildren(QWidget):
+                    mw = child.minimumSizeHint().width()
+                    if mw > 120:
+                        print(f"  {type(child).__name__} "
+                              f"{child.objectName() or child.accessibleName() or ''} "
+                              f"min={mw} text={getattr(child, 'text', lambda: '')()!r:.40}")
             root_name, ext = os.path.splitext(shot_path)
             insp = root_name + "_inspector" + ext
             inner = area.widget()

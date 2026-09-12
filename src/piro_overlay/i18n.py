@@ -53,6 +53,22 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "act_theme": {Lang.PL: "Motyw", Lang.EN: "Theme"},
     "theme_dark": {Lang.PL: "ciemny", Lang.EN: "dark"},
     "theme_light": {Lang.PL: "jasny", Lang.EN: "light"},
+    # --- sekcje inspektora (GUI) ---
+    "sec_input": {Lang.PL: "Wejście", Lang.EN: "Input"},
+    "sec_sync": {Lang.PL: "Synchronizacja i przycięcie", Lang.EN: "Sync and trim"},
+    "sec_colors": {Lang.PL: "Kolory", Lang.EN: "Colours"},
+    "sec_meta": {Lang.PL: "Nakładka metadanych", Lang.EN: "Metadata overlay"},
+    "sec_clock": {Lang.PL: "Zegar", Lang.EN: "Clock"},
+    "sec_banner": {Lang.PL: "Plansza START", Lang.EN: "START banner"},
+    "sec_output": {Lang.PL: "Wyjście", Lang.EN: "Output"},
+    # --- wartości list: pozycja nakładki (klucz techniczny zostaje bez zmian) ---
+    "pos_top_left": {Lang.PL: "Lewy górny", Lang.EN: "Top left"},
+    "pos_top_center": {Lang.PL: "Górny środek", Lang.EN: "Top centre"},
+    "pos_top_right": {Lang.PL: "Prawy górny", Lang.EN: "Top right"},
+    "pos_bottom_left": {Lang.PL: "Lewy dolny", Lang.EN: "Bottom left"},
+    "pos_bottom_center": {Lang.PL: "Dolny środek", Lang.EN: "Bottom centre"},
+    "pos_bottom_right": {Lang.PL: "Prawy dolny", Lang.EN: "Bottom right"},
+    "pos_clock_auto": {Lang.PL: "Nad nakładką (auto)", Lang.EN: "Above the overlay (auto)"},
 }
 
 _FALLBACK_LANG = Lang.EN
