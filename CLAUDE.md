@@ -726,3 +726,36 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   trybie tekstowym musi zawsze wywołać `replace(self.session, shots=shots)` gdy `self.session`
   nie jest `None` — inaczej render dostaje `Session` bez metadanych a podgląd je pokazuje.
   Zasada: podgląd i render muszą korzystać z tej samej sesji (te same metadane).
+
+## Promocja / domeny (decyzja z 2026-09-12)
+
+- **Marka międzynarodowa: `ShotHUD`** → `shothud.com` (główna domena one-pagera EN) oraz
+  `shothud.pifpaf.fun` (subdomena w istniejącym ekosystemie, obok `timer.pifpaf.fun` i
+  `piro-kalkulator.pifpaf.fun`). Dlaczego: HUD = heads-up display = dokładnie to, czym jest
+  nakładka; krótkie, zrozumiałe bez tłumaczenia; `.com` był wolny (rzadkość dla sensownej
+  angielskiej nazwy); brak istniejącego produktu ani znaku towarowego pod tą nazwą (w sieci
+  tylko mody do gier). Wolne były też `shothud.{pl,video,io,app,net,tv,fun,dev,tools,eu}`.
+- **Rynek polski: `splity.pl`** (żargon strzelecki, jedno słowo, każdy zawodnik zna).
+  Sprawdzone w rejestrze NASK trzema drogami (RDAP, WHOIS `whois.dns.pl:43`, strefa .pl
+  przez Google/Cloudflare DNS) — WOLNA. PUŁAPKA: lokalny resolver (Windows → WSL) mapuje
+  KAŻDĄ nieistniejącą nazwę na IP z sieci home.pl (188.128.234.120), więc przeglądarka
+  pokazuje stronę (301 → 403) i wolna domena WYGLĄDA na zajętą. Status domen sprawdzać
+  w rejestrze, nie w przeglądarce.
+- **Odrzucone i dlaczego:** `pirooverlay.*` (wolne wszędzie, ale czysto techniczne —
+  „nazwa aplikacji", nie marka); `splits.video`/`splity.video` (dla zagranicy chciano
+  inne słowo niż „splity"); `makeready` (znak MAKEREADY™ na makeready.com);
+  `stagereplay` (działający produkt); `overshot` (firma); `timerlay.com` (spekulant,
+  „for sale"); `afterthebeep` (najlepsza historia, ale .com/.app/.net/.tv zajęte);
+  `splitstamp`/`beepsplit` (wolne wszędzie, zapas gdyby ShotHUD nie wypalił).
+- **Konkurent** do obejrzenia przed pisaniem tekstów na one-pager: „Shooting Cut"
+  (App Store) — edytor wideo dla USPSA/IPSC/IDPA/3-Gun.
+- **Jak sprawdzać dostępność hurtowo (bez `whois` w systemie):** RDAP — mapa serwerów
+  per TLD `https://data.iana.org/rdap/dns.json`; `.com`/`.net`
+  `rdap.verisign.com/{com,net}/v1/domain/X`, `.pl` `rdap.dns.pl/domain/X`, `.app`/`.dev`
+  `pubapi.registry.google/rdap/domain/X`, `.video`/`.io`/`.tools` (Identity Digital)
+  `rdap.identitydigital.services/rdap/domain/X`, `.fun` `rdap.radix.host/rdap/domain/X`;
+  HTTP 404 = wolna, 200 = zajęta. `.eu` bez RDAP — WHOIS `whois.eu:43`
+  („Status: AVAILABLE"). `.co` nie odpowiadał (niesprawdzone). RDAP NIE pokazuje ceny
+  premium (krótkie słowa ze słownika w .video/.tv/.app bywają wielokrotnie droższe, także
+  przy odnowieniu) — cenę sprawdzać w koszyku rejestratora. `.app`/`.dev` wymuszają HTTPS
+  (HSTS preload), `.eu` wymaga siedziby/obywatelstwa w UE.
