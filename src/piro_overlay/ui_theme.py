@@ -319,6 +319,14 @@ QPushButton[kind="primary"]:hover   { background: $accent_hover; }
 QPushButton[kind="primary"]:pressed { background: $accent_pressed; }
 QPushButton[kind="primary"]:focus   { border: 2px solid $focus; padding: 0 ${sp_4_minus_2}px; }
 QPushButton[kind="primary"]:disabled { background: $surface_alt; color: $text_disabled; }
+QToolButton[kind="primary"] {
+    background: $accent; color: $accent_text; border: none; font-weight: bold;
+    padding: 0 ${sp_4}px;
+}
+QToolButton[kind="primary"]:hover   { background: $accent_hover; }
+QToolButton[kind="primary"]:pressed { background: $accent_pressed; }
+QToolButton[kind="primary"]:focus   { border: 2px solid $focus; padding: 0 ${sp_4_minus_2}px; }
+QToolButton[kind="primary"]:disabled { background: $surface_alt; color: $text_disabled; }
 QPushButton[kind="ghost"], QToolButton[kind="ghost"] {
     background: transparent; border: 1px solid transparent;
 }
@@ -432,6 +440,8 @@ QProgressBar {
     border: none; border-radius: ${r_sm}px;
     min-height: 8px; max-height: 8px; text-align: center;
 }
+/* pasek z widocznym „%p%" musi być wyższy niż 8 px, inaczej tekst jest ucięty */
+QProgressBar[kind="labeled"] { min-height: 18px; max-height: 18px; }
 QProgressBar::chunk { background: $accent; border-radius: ${r_sm}px; }
 QProgressBar[role="danger"]::chunk  { background: $danger; }
 QProgressBar[role="success"]::chunk { background: $success; }
@@ -514,6 +524,8 @@ QDialogButtonBox QPushButton { min-width: 80px; }
 QFrame[role="panel"] { background: $surface; border: 1px solid $border; border-radius: ${r_lg}px; }
 QFrame[role="separator"] { background: $border; max-height: 1px; min-height: 1px; border: none; }
 QWidget[role="inspector"] { background: $surface; }
+/* podgląd wideo: ciemne/neutralne płótno pod letterboxem, tekst zastępczy muted */
+QLabel[role="preview"] { background: $bg; color: $text_muted; }
 """
 
 

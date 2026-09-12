@@ -41,6 +41,18 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "language": {Lang.PL: "Język", Lang.EN: "Language"},
     "output": {Lang.PL: "Plik wyjściowy", Lang.EN: "Output file"},
     "done": {Lang.PL: "Gotowe", Lang.EN: "Done"},
+    # --- pasek akcji (GUI) ---
+    "act_open_video": {Lang.PL: "Otwórz wideo…", Lang.EN: "Open video…"},
+    "act_fetch_api": {Lang.PL: "Pobierz z API", Lang.EN: "Fetch from API"},
+    "act_detect_start": {Lang.PL: "Wykryj sygnał startu", Lang.EN: "Detect start signal"},
+    "act_auto_trim": {Lang.PL: "Auto-przycięcie", Lang.EN: "Auto trim"},
+    "act_add_queue": {Lang.PL: "Dodaj do kolejki", Lang.EN: "Add to queue"},
+    "act_queue": {Lang.PL: "Kolejka…", Lang.EN: "Queue…"},
+    "act_batch": {Lang.PL: "Wsadowo…", Lang.EN: "Batch…"},
+    "act_cancel": {Lang.PL: "Zatrzymaj", Lang.EN: "Stop"},
+    "act_theme": {Lang.PL: "Motyw", Lang.EN: "Theme"},
+    "theme_dark": {Lang.PL: "ciemny", Lang.EN: "dark"},
+    "theme_light": {Lang.PL: "jasny", Lang.EN: "light"},
 }
 
 _FALLBACK_LANG = Lang.EN

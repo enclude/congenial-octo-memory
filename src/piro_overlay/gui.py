@@ -31,25 +31,35 @@ import json
 from PySide6.QtCore import (
     QEvent, QObject, QRect, QSettings, Qt, QThread, QTimer, QUrl, Signal,
 )
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import (
+    QAction, QColor, QDesktopServices, QIcon, QImage, QKeySequence, QPainter, QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QApplication, QButtonGroup, QColorDialog, QComboBox, QCheckBox,
     QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton, QRadioButton,
-    QScrollArea, QSizePolicy, QSpinBox, QSplitter, QPlainTextEdit, QVBoxLayout, QWidget,
+    QScrollArea, QSizePolicy, QSpinBox, QSplitter, QPlainTextEdit, QToolBar, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 from PIL import Image
 from PIL.ImageQt import ImageQt
 
 from . import __version__, api, audio_sync, config, ffmpeg, overlay, render, resources
+from .i18n import get_translator
 from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session
 from .parser import parse_timeline
 from . import ui_theme
 from .ui_theme import (
-    apply_theme, load_app_fonts, restore_window_state, save_window_state,
-    set_app_user_model_id, set_windows_dark_titlebar, setup_hidpi,
+    apply_theme, current_tokens, load_app_fonts, repolish, restore_window_state,
+    save_window_state, set_app_user_model_id, set_windows_dark_titlebar, setup_hidpi,
 )
+from .ui_widgets import FormSection, StatusDot, set_kind, set_role, status_message
+
+# GUI jest po polsku — teksty nowych elementów (pasek akcji, sekcje, pozycje)
+# idą przez istniejący mechanizm i18n, żeby nie powstał drugi słownik.
+_TR = get_translator(Lang.PL)
 
 PREVIEW_HEIGHT = 360  # obniżona jakość podglądu — szybciej i lżej dla dużych plików
 _HANDLE_PX = 8        # tolerancja trafienia uchwytu przycięcia (px)
@@ -486,11 +496,11 @@ class RenderQueueRunner(QObject):
 class JobRowWidget(QWidget):
     remove_requested = Signal(str)
 
-    _STATUS_COLORS = {
-        JobStatus.PENDING: "#6688aa",
-        JobStatus.RUNNING: "#f0c040",
-        JobStatus.DONE:    "#44cc88",
-        JobStatus.FAILED:  "#e05555",
+    _STATUS_ROLES = {
+        JobStatus.PENDING: "info",
+        JobStatus.RUNNING: "warning",
+        JobStatus.DONE:    "success",
+        JobStatus.FAILED:  "danger",
     }
 
     def __init__(self, job: RenderJob, parent=None):
@@ -499,8 +509,7 @@ class JobRowWidget(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(4, 2, 4, 2)
 
-        self._status_icon = QLabel()
-        self._status_icon.setFixedSize(14, 14)
+        self._status_icon = StatusDot()
         lay.addWidget(self._status_icon)
 
         self._label = QLabel(job.label)
@@ -512,6 +521,7 @@ class JobRowWidget(QWidget):
         self._progress.setValue(0)
         self._progress.setTextVisible(True)   # pokazuj liczbowy % postępu
         self._progress.setFormat("%p%")
+        self._progress.setProperty("kind", "labeled")
         self._progress.setFixedWidth(120)
         lay.addWidget(self._progress)
 
@@ -536,18 +546,15 @@ class JobRowWidget(QWidget):
         self._progress.setToolTip(tip)
 
     def _apply_status(self, status: JobStatus) -> None:
-        color = self._STATUS_COLORS.get(status, "#888888")
-        self._status_icon.setStyleSheet(
-            f"background:{color}; border-radius:7px;"
-        )
+        self._status_icon.set_role(self._STATUS_ROLES.get(status, "muted"))
         self._del_btn.setVisible(status == JobStatus.PENDING)
         if status == JobStatus.FAILED:
             self._progress.setFormat("błąd")
-            self._progress.setStyleSheet("QProgressBar::chunk { background: #e05555; }")
+            set_role(self._progress, "danger")
             return
         # Powrót z FAILED (retry przez „Start kolejki") musi zdjąć czerwony pasek.
         self._progress.setFormat("%p%")
-        self._progress.setStyleSheet("")
+        set_role(self._progress, "")
         if status == JobStatus.DONE:
             self._progress.setValue(100)
 
@@ -875,13 +882,13 @@ class BatchRowWidget(QWidget):
     play_requested   = Signal(str)
     id_changed       = Signal(str, int)
 
-    _STATUS_COLORS = {
-        BatchRowStatus.NEEDS_ID:  "#aa7733",
-        BatchRowStatus.DETECTING: "#f0c040",
-        BatchRowStatus.PENDING:   "#6688aa",
-        BatchRowStatus.PREPARING: "#f0c040",
-        BatchRowStatus.READY:     "#44cc88",
-        BatchRowStatus.FAILED:    "#e05555",
+    _STATUS_ROLES = {
+        BatchRowStatus.NEEDS_ID:  "warning",
+        BatchRowStatus.DETECTING: "warning",
+        BatchRowStatus.PENDING:   "info",
+        BatchRowStatus.PREPARING: "warning",
+        BatchRowStatus.READY:     "success",
+        BatchRowStatus.FAILED:    "danger",
     }
 
     def __init__(self, row: BatchRow, parent=None):
@@ -890,8 +897,7 @@ class BatchRowWidget(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(4, 2, 4, 2)
 
-        self._status_icon = QLabel()
-        self._status_icon.setFixedSize(14, 14)
+        self._status_icon = StatusDot()
         lay.addWidget(self._status_icon)
 
         self._name = QLabel(Path(row.video_path).name)
@@ -910,7 +916,7 @@ class BatchRowWidget(QWidget):
 
         self._info = QLabel("")
         self._info.setMinimumWidth(190)
-        self._info.setStyleSheet("color:#aaaaaa;")
+        self._info.setProperty("role", "muted")
         lay.addWidget(self._info, 2)
 
         self._play_btn = QPushButton("▶")
@@ -931,8 +937,7 @@ class BatchRowWidget(QWidget):
         self._id_spin.setValue(value)
 
     def update_row(self, row: BatchRow) -> None:
-        color = self._STATUS_COLORS.get(row.status, "#888888")
-        self._status_icon.setStyleSheet(f"background:{color}; border-radius:7px;")
+        self._status_icon.set_role(self._STATUS_ROLES.get(row.status, "muted"))
         busy = row.status in _BATCH_BUSY
         self._id_spin.setEnabled(not busy)
         self._del_btn.setEnabled(not busy)
@@ -940,25 +945,25 @@ class BatchRowWidget(QWidget):
             p = row.prep
             self._info.setText(
                 f"T0={p['t0']:.2f}s · przyc. {p['trim_start']:.1f}–{p['trim_end']:.1f}s")
-            self._info.setStyleSheet("color:#44cc88;")
+            set_role(self._info, "success")
             self._info.setToolTip("")
         elif row.status == BatchRowStatus.FAILED:
             self._info.setText(f"błąd: {row.error}")
-            self._info.setStyleSheet("color:#e05555;")
+            set_role(self._info, "danger")
             self._info.setToolTip(row.error)
         elif row.status == BatchRowStatus.PREPARING:
             self._info.setText("przygotowuję…")
-            self._info.setStyleSheet("color:#f0c040;")
+            set_role(self._info, "warning")
         elif row.status == BatchRowStatus.DETECTING:
             self._info.setText("wykrywam ID z audio…")
-            self._info.setStyleSheet("color:#f0c040;")
+            set_role(self._info, "warning")
         elif row.status == BatchRowStatus.NEEDS_ID:
             # po nieudanej detekcji `row.error` niesie „nie wykryto ID — podaj ręcznie"
             self._info.setText(row.error or "podaj ID")
-            self._info.setStyleSheet("color:#aa7733;")
+            set_role(self._info, "warning")
         else:
             self._info.setText("gotowe do przygotowania")
-            self._info.setStyleSheet("color:#aaaaaa;")
+            set_role(self._info, "muted")
 
 
 _POLISH_MAP = str.maketrans({
@@ -1098,7 +1103,7 @@ class BatchDialog(QWidget):
             "z głównego okna (zmień go tam przed otwarciem). Plansza START zawsze (auto). "
             "„Wykryj ID z audio” próbuje odczytać ID z sygnału tonowego timera dla "
             "plików bez ID.")
-        note.setStyleSheet("color:#aaaaaa;")
+        note.setProperty("role", "muted")
         note.setWordWrap(True)
         root.addWidget(note)
 
@@ -1806,14 +1811,22 @@ class ColorButton(QPushButton):
             self.changed.emit()
 
     def _refresh(self):
+        # Jedyny `setStyleSheet` w gui.py: pasek koloru po lewej NIE da się wyrazić
+        # właściwością dynamiczną (wartość jest z danych, nie ze skończonego zbioru
+        # ról). Pozostałe barwy bierzemy z tokenów motywu, żeby przycisk nie był
+        # ciemną wyspą w jasnym motywie. Docelowo → `ui_widgets.ColorSwatchButton`.
         r, g, b, a = self._rgba
         self.setText(f"RGBA {r},{g},{b},{a}")
+        tokens = current_tokens(QApplication.instance())
         self.setStyleSheet(
             f"QPushButton {{"
-            f"background-color: #3c3c3c;"
-            f"color: #e0e0e0;"
+            f"background-color: {tokens['surface']};"
+            f"color: {tokens['text']};"
             f"border-left: 20px solid rgba({r},{g},{b},{a});"
-            f"border-top: 1px solid #555; border-bottom: 1px solid #555; border-right: 1px solid #555;"
+            f"border-top: 1px solid {tokens['border_strong']};"
+            f"border-bottom: 1px solid {tokens['border_strong']};"
+            f"border-right: 1px solid {tokens['border_strong']};"
+            f"border-radius: 4px;"
             f"padding: 3px 8px;"
             f"}}"
         )
@@ -1880,7 +1893,124 @@ class MainWindow(QMainWindow):
                 break
 
     # ---------- UI ----------
+    # ---------- pasek akcji, pasek stanu, motyw ----------
+    def _build_toolbar(self) -> None:
+        """Główne akcje jako `QAction` — skrót, tooltip i stan `enabled` w jednym miejscu.
+
+        Przyciski w formularzu zostają jako drugie wejście do TYCH SAMYCH akcji
+        (`clicked → action.trigger()`), więc nic nie rozjeżdża się przy zmianie stanu.
+        Bez ikon — repo nie ma zestawu SVG, a tekst jest jednoznaczny.
+        """
+        tb = QToolBar("Główny")
+        tb.setMovable(False)
+        tb.setFloatable(False)
+        tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.addToolBar(tb)
+        self.toolbar = tb
+
+        def act(key: str, shortcut: str | None, slot, tip: str) -> QAction:
+            a = QAction(_TR(key), self)
+            if shortcut:
+                a.setShortcut(QKeySequence(shortcut))
+                a.setToolTip(f"{_TR(key)} ({shortcut})")
+            else:
+                a.setToolTip(tip or _TR(key))
+            if tip and shortcut:
+                a.setToolTip(f"{tip} ({shortcut})")
+            a.triggered.connect(slot)
+            tb.addAction(a)
+            return a
+
+        self.act_open = act("act_open_video", "Ctrl+O", self._choose_video,
+                            "Wybierz plik wideo do obróbki")
+        self.act_fetch = act("act_fetch_api", "Ctrl+G", self._fetch_id,
+                             "Pobierz oś czasu i metadane sesji z API (po ID)")
+        self.act_detect_start = act("act_detect_start", "Ctrl+D", self._detect_start_signal,
+                                    "Znajdź bzyczek shot-timera i ustaw go jako T0")
+        self.act_auto_trim = act("act_auto_trim", "Ctrl+T", self._apply_auto_trim,
+                                 "Przytnij: 5 s przed startem → ostatni strzał + margines")
+        tb.addSeparator()
+        self.act_queue_add = act("act_add_queue", None, self._add_to_queue,
+                                 "Dodaj render z bieżącymi ustawieniami do kolejki")
+        self.act_queue = act("act_queue", None, self._show_queue_window,
+                             "Otwórz okno kolejki renderów")
+        self.act_batch = act("act_batch", None, self._show_batch_window,
+                             "Przetwarzanie wielu plików (tryb auto + ID)")
+
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(spacer)
+
+        self.act_theme = QAction(_TR("act_theme"), self)
+        self.act_theme.setCheckable(True)
+        self.act_theme.setChecked(_theme_mode() == "light")
+        self.act_theme.toggled.connect(self._on_theme_toggled)
+        tb.addAction(self.act_theme)
+        self._refresh_theme_action()
+
+        # „Zatrzymaj" widoczne wyłącznie w trakcie renderu (akcja destrukcyjna).
+        self.act_cancel = QAction(_TR("act_cancel"), self)
+        self.act_cancel.setToolTip("Przerwij render i usuń niedokończony plik")
+        self.act_cancel.triggered.connect(self._cancel_render)
+        self.act_cancel.setVisible(False)
+        tb.addAction(self.act_cancel)
+
+        self.act_render = QAction(_TR("render"), self)
+        self.act_render.setShortcut(QKeySequence("Ctrl+R"))
+        self.act_render.setToolTip("Renderuj (Ctrl+R)")
+        self.act_render.triggered.connect(self._start_render)
+        render_tb = QToolButton()
+        render_tb.setDefaultAction(self.act_render)
+        render_tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        set_kind(render_tb, "primary")
+        tb.addWidget(render_tb)
+
+    def _build_statusbar(self) -> None:
+        """Postęp renderu i status NVENC na stałe w pasku stanu (`addPermanentWidget`).
+
+        Pasek postępu ZOSTAJE widoczny z wartością 0 także poza renderem — ukrywanie
+        przesuwałoby etykietę NVENC przy każdym starcie/końcu renderu (skaczący układ),
+        a zerowy pasek czytelnie mówi „nic się teraz nie renderuje".
+        """
+        bar = self.statusBar()
+        self.nvenc_label = QLabel()
+        self._refresh_nvenc_status()
+        bar.addPermanentWidget(self.nvenc_label)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(True)
+        self.progress.setFormat("%p%")
+        self.progress.setFixedWidth(180)
+        self.progress.setProperty("kind", "labeled")
+        bar.addPermanentWidget(self.progress)
+
+    def _refresh_theme_action(self) -> None:
+        mode = "light" if self.act_theme.isChecked() else "dark"
+        self.act_theme.setText(f"{_TR('act_theme')}: {_TR('theme_' + mode)}")
+
+    def _on_theme_toggled(self, light: bool) -> None:
+        mode = "light" if light else "dark"
+        app = QApplication.instance()
+        apply_theme(app, mode)
+        QSettings().setValue("ui/theme", mode)
+        self._refresh_theme_action()
+        for win in (self, self._queue_window, self._batch_window):
+            if win is None:
+                continue
+            repolish(win)
+            try:
+                set_windows_dark_titlebar(win, mode == "dark")
+            except Exception:  # noqa: BLE001 — offscreen nie ma uchwytu okna
+                pass
+        # ColorButton maluje się własnym arkuszem z tokenów — przerysuj po zmianie.
+        for btn in self.findChildren(ColorButton):
+            btn._refresh()
+        self._update_preview()
+
     def _build_ui(self):
+        self._build_toolbar()
+        self._build_statusbar()
         central = QWidget()
         root = QHBoxLayout(central)
 
@@ -1913,7 +2043,7 @@ class MainWindow(QMainWindow):
         self.preview_label = PreviewLabel("Przeciągnij tu plik wideo lub użyj „…”")
         self.preview_label.setMinimumSize(480, 270)
         self.preview_label.setAlignment(Qt.AlignCenter)
-        self.preview_label.setStyleSheet("background:#222;color:#aaa;")
+        self.preview_label.setProperty("role", "preview")
         self.preview_label.grabbed.connect(self._on_preview_grab)
         self.preview_label.dragged.connect(self._on_preview_drag)
         self.preview_label.dropped.connect(self._on_preview_drop)
@@ -1934,6 +2064,8 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_container)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
+        splitter.setChildrenCollapsible(False)   # nikt nie zgubi inspektora przypadkiem
+        splitter.setHandleWidth(9)                # 1 px linii + margines = strefa chwytu
         splitter.setSizes([540, 640])
         self.splitter = splitter   # restore_window_state/save_window_state (QSettings)
         root.addWidget(splitter)
@@ -2008,7 +2140,7 @@ class MainWindow(QMainWindow):
         form.addRow("", _wrap(detect_row))
 
         self.api_meta_label = QLabel()
-        self.api_meta_label.setStyleSheet("color: #aaaaaa;")
+        self.api_meta_label.setProperty("role", "muted")
         self.api_meta_label.hide()
         form.addRow("", self.api_meta_label)
         self.rb_id.toggled.connect(
@@ -2351,9 +2483,6 @@ class MainWindow(QMainWindow):
         self.gpu_chk = QCheckBox("Akceleracja GPU (NVENC, jeśli dostępna)")
         self.gpu_chk.setChecked(True)
         v.addWidget(self.gpu_chk)
-        self.nvenc_label = QLabel()
-        self._refresh_nvenc_status()
-        v.addWidget(self.nvenc_label)
         diag = QPushButton("Diagnostyka NVENC")
         diag.setToolTip("Pokazuje status NVENC, użytą binarkę FFmpeg "
                         "i szczegóły błędu, gdy test kodowania nie przeszedł")
@@ -2365,14 +2494,16 @@ class MainWindow(QMainWindow):
             "ustawień — do skryptów/automatyzacji. Można je skopiować do schowka.")
         cli_btn.clicked.connect(self._show_cli_command)
         v.addWidget(cli_btn)
-        self.progress = QProgressBar(); v.addWidget(self.progress)
         # Wiersz 1: Renderuj / Zatrzymaj — w jednej linii, mniejsze (nie rozciągają się).
         brow = QHBoxLayout()
-        self.render_btn = QPushButton("Renderuj"); self.render_btn.clicked.connect(self._start_render)
-        self.cancel_btn = QPushButton("Zatrzymaj")
+        self.render_btn = QPushButton(_TR("render"))
+        set_kind(self.render_btn, "primary")
+        self.render_btn.setToolTip("Renderuj (Ctrl+R)")
+        self.render_btn.clicked.connect(self.act_render.trigger)
+        self.cancel_btn = QPushButton(_TR("act_cancel"))
         self.cancel_btn.setToolTip("Przerywa trwające renderowanie i usuwa niedokończony plik.")
         self.cancel_btn.setEnabled(False)
-        self.cancel_btn.clicked.connect(self._cancel_render)
+        self.cancel_btn.clicked.connect(self.act_cancel.trigger)
         self.render_btn.setMaximumWidth(120)
         self.cancel_btn.setMaximumWidth(120)
         brow.addWidget(self.render_btn)
@@ -2385,10 +2516,10 @@ class MainWindow(QMainWindow):
         self.queue_add_btn = QPushButton("Dodaj do kolejki")
         self.queue_add_btn.setToolTip(
             "Dodaje render z bieżącymi ustawieniami jako zadanie kolejki")
-        self.queue_add_btn.clicked.connect(self._add_to_queue)
+        self.queue_add_btn.clicked.connect(self.act_queue_add.trigger)
         self.queue_show_btn = QPushButton("Kolejka")
         self.queue_show_btn.setToolTip("Otwiera okno kolejki renderów")
-        self.queue_show_btn.clicked.connect(self._show_queue_window)
+        self.queue_show_btn.clicked.connect(self.act_queue.trigger)
         qrow.addWidget(self.queue_add_btn)
         qrow.addWidget(self.queue_show_btn)
         qrow.addStretch(1)
@@ -2398,7 +2529,7 @@ class MainWindow(QMainWindow):
         bbrow = QHBoxLayout()
         self.batch_btn = QPushButton("Wsadowo…")
         self.batch_btn.setToolTip("Przetwarzanie wielu plików (tryb auto + ID)")
-        self.batch_btn.clicked.connect(self._show_batch_window)
+        self.batch_btn.clicked.connect(self.act_batch.trigger)
         bbrow.addWidget(self.batch_btn)
         bbrow.addStretch(1)
         v.addLayout(bbrow)
@@ -2501,8 +2632,8 @@ class MainWindow(QMainWindow):
         if pending:
             self._apply_file_settings(pending)
             self._file_settings_ready = True  # wolno zapisywać (mamy komplet)
-            self.statusBar().showMessage(
-                "Wczytano zapisane ustawienia dla tego pliku.", 6000)
+            status_message(self.statusBar(),
+                           "Wczytano zapisane ustawienia dla tego pliku.", "info", 6000)
             return
         # Pierwszy raz dla tego pliku → wykryj T0 (buzzer) i ustaw przycięcie.
         self._file_settings_ready = True
@@ -2600,8 +2731,10 @@ class MainWindow(QMainWindow):
             return True
         except Exception as exc:  # noqa: BLE001
             if silent:
-                self.statusBar().showMessage(
-                    f"Nie udało się pobrać danych z API (ID {self.id_spin.value()}): {exc}", 8000)
+                status_message(
+                    self.statusBar(),
+                    f"Nie udało się pobrać danych z API (ID {self.id_spin.value()}): {exc}",
+                    "warning", 8000)
             else:
                 QMessageBox.critical(self, "Błąd API", str(exc))
             return False
@@ -2650,9 +2783,10 @@ class MainWindow(QMainWindow):
             tail=_TRIM_TAIL_S, lead_in=_LEAD_IN_S, duration=dur)
         self.trim_start_spin.setValue(start)
         self.trim_end_spin.setValue(end)
-        self.statusBar().showMessage(
+        status_message(
+            self.statusBar(),
             f"Przycięto: {start:.2f}s – {end:.2f}s (T0={t0:.2f}s, "
-            f"ostatni strzał {session.shots[-1].czas:.2f}s)", 8000)
+            f"ostatni strzał {session.shots[-1].czas:.2f}s)", "success", 8000)
 
     @staticmethod
     def _shot_to_text(shot):
@@ -2719,7 +2853,8 @@ class MainWindow(QMainWindow):
             return
         self.id_spin.setValue(detected)
         self.rb_id.setChecked(True)  # render ma użyć sesji z API, nie pola tekstowego
-        self.statusBar().showMessage(f"Wykryto ID z audio: {detected}", 8000)
+        status_message(self.statusBar(),
+                       f"Wykryto ID z audio: {detected}", "success", 8000)
         self._fetch_id_and_trim()
 
     def _next_candidate(self):
@@ -2950,9 +3085,10 @@ class MainWindow(QMainWindow):
         self.preview_label.setCursor(Qt.OpenHandCursor if on else Qt.ArrowCursor)
         self._grab = None
         if on:
-            self.statusBar().showMessage(
+            status_message(
+                self.statusBar(),
                 "Tryb edycji pozycji: przeciągnij panel strzału, metadane lub zegar "
-                "w podglądzie.", 6000)
+                "w podglądzie.", "info", 6000)
         self._update_preview()
 
     @staticmethod
@@ -3223,14 +3359,15 @@ class MainWindow(QMainWindow):
             "przycięcie, enkoder, płynący zegar i tryb „bez nakładki”. Szczegóły wyglądu\n"
             "nakładki (kolory, skala, pozycja panelu, offsety, plansza START) NIE są\n"
             "obsługiwane w CLI i zostały pominięte.")
-        note.setStyleSheet("color:#aaaaaa;")
+        note.setProperty("role", "muted")
         note.setWordWrap(True)
         lay.addWidget(note)
         btns = QHBoxLayout()
         copy_btn = QPushButton("Kopiuj do schowka")
         copy_btn.clicked.connect(
             lambda: (QApplication.clipboard().setText(cmd),
-                     self.statusBar().showMessage("Skopiowano komendę CLI do schowka.", 4000)))
+                     status_message(self.statusBar(),
+                                    "Skopiowano komendę CLI do schowka.", "success", 4000)))
         close_btn = QPushButton("Zamknij")
         close_btn.clicked.connect(dlg.accept)
         btns.addStretch(1); btns.addWidget(copy_btn); btns.addWidget(close_btn)
@@ -3248,8 +3385,7 @@ class MainWindow(QMainWindow):
             return
         self._save_file_settings()  # zapamiętaj parametry tego pliku
         self._render_busy = True
-        self.render_btn.setEnabled(False)
-        self.cancel_btn.setEnabled(True)
+        self._set_render_enabled(False)
         self.open_btn.setVisible(False)  # pokaż dopiero po udanym renderze
         self.worker = RenderWorker(kwargs)
         self._used_encoder = None
@@ -3262,18 +3398,26 @@ class MainWindow(QMainWindow):
         self.worker.cancelled.connect(self._on_cancelled)
         self.worker.start()
 
+    def _set_render_enabled(self, idle: bool) -> None:
+        """Stan „Renderuj"/„Zatrzymaj" w formularzu I w pasku akcji (jedno źródło prawdy)."""
+        self.render_btn.setEnabled(idle)
+        self.act_render.setEnabled(idle)
+        self.cancel_btn.setEnabled(not idle)
+        self.act_cancel.setEnabled(not idle)
+        self.act_cancel.setVisible(not idle)
+
     def _cancel_render(self):
         if self.worker is not None and self.worker.isRunning():
             self.worker.cancel()
             self.cancel_btn.setEnabled(False)
+            self.act_cancel.setEnabled(False)
             self.cancel_btn.setText("Zatrzymywanie…")
 
     def _reset_render_ui(self) -> None:
         """Przywraca przyciski renderu po zakończeniu (sukces/błąd/anulowanie)."""
         self._render_busy = False
-        self.render_btn.setEnabled(True)
-        self.cancel_btn.setEnabled(False)
-        self.cancel_btn.setText("Zatrzymaj")
+        self._set_render_enabled(True)
+        self.cancel_btn.setText(_TR("act_cancel"))
 
     def _on_cancelled(self):
         self._reset_render_ui()
@@ -3319,14 +3463,16 @@ class MainWindow(QMainWindow):
         self.nvenc_label.setToolTip("")
         if ok:
             self.nvenc_label.setText("NVENC: działa ✓ (render na GPU)")
-            self.nvenc_label.setStyleSheet("color:#3ad17a;")
+            set_role(self.nvenc_label, "success")
         elif ffmpeg.has_nvenc():
-            self.nvenc_label.setText("NVENC: wykryty, ale test nie przeszedł — render na CPU (najedź, by zobaczyć powód)")
-            self.nvenc_label.setStyleSheet("color:#e0a030;")
+            self.nvenc_label.setText("NVENC: wykryty, ale test nie przeszedł — "
+                                     "render na CPU (najedź, by zobaczyć powód)")
+            set_role(self.nvenc_label, "warning")
             self.nvenc_label.setToolTip(render.nvenc_diagnostic() or "")
         else:
-            self.nvenc_label.setText("NVENC: niedostępny — render na CPU (zainstaluj pełny FFmpeg)")
-            self.nvenc_label.setStyleSheet("color:#e0a030;")
+            self.nvenc_label.setText("NVENC: niedostępny — render na CPU "
+                                     "(zainstaluj pełny FFmpeg)")
+            set_role(self.nvenc_label, "warning")
 
     def _on_format_changed(self, *_):
         """Aktualizuje rozszerzenie pliku wyjściowego gdy zmienia się format."""
@@ -3667,6 +3813,7 @@ def main():
 
     settings = QSettings()
     win = MainWindow()
+    win.setMinimumSize(960, 600)   # inspektor + podgląd bez ucinania
     if shot_path:
         win.resize(1180, 760)   # stały rozmiar = powtarzalne zrzuty
     elif not restore_window_state(win, settings, win.splitter):
