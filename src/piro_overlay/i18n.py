@@ -168,8 +168,12 @@ _STRINGS: dict[str, dict[Lang, str]] = {
                  "+/− = zoom, 0 = reset · Shift+O = onset markers · "
                  "I/O = in/out at the current time · T = anchor · M = add shot"},
     # --- podgląd w ruchu: pasek transportu (iteracja VI) ---
-    # Przyciski transportu są glifowe (skill §9: ikony + tooltip ze skrótem) —
-    # pasek nad podglądem musi zmieścić je obok „Edytuj pozycje" i widoku osi.
+    # Przyciski transportu są ikonowe (v0.51.0, `assets/icons/*.svg` przez
+    # `ui_theme.icon`, `gui._apply_icon`) — te klucze `tr_*` (stare glify)
+    # ZOSTAJĄ jako fallback, gdy SVG nie da się załadować (brak `Qt6Svg` w
+    # bundlu): `_apply_icon` wtedy przełącza przycisk na `ToolButtonTextOnly`
+    # i wpisuje ten tekst. Tooltip ze skrótem (`tip_tr_*`) opisuje przycisk
+    # w obu przypadkach.
     "tr_t0": {Lang.PL: "|◀", Lang.EN: "|◀"},
     "tr_back": {Lang.PL: "◀◀", Lang.EN: "◀◀"},
     "tr_play": {Lang.PL: "▶", Lang.EN: "▶"},
@@ -183,6 +187,8 @@ _STRINGS: dict[str, dict[Lang, str]] = {
                     Lang.EN: "Back one second (J) · comma = one frame back"},
     "tip_tr_play": {Lang.PL: "Odtwórz / pauza podglądu z nakładką (Spacja) · K = pauza",
                     Lang.EN: "Play / pause the overlay preview (Space) · K = pause"},
+    "tip_tr_pause": {Lang.PL: "Pauza podglądu z nakładką (Spacja) · K = pauza",
+                     Lang.EN: "Pause the overlay preview (Space) · K = pause"},
     "tip_tr_fwd": {Lang.PL: "Do przodu o sekundę (L) · kropka = klatka w przód",
                    Lang.EN: "Forward one second (L) · period = one frame forward"},
     "tip_tr_to": {Lang.PL: "Przeskocz do końca zakresu („Do”)",

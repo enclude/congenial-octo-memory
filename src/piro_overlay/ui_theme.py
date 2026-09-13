@@ -498,8 +498,16 @@ QStatusBar::item { border: none; }
 QStatusBar QLabel[role="danger"]  { color: $danger; }
 QStatusBar QLabel[role="success"] { color: $success; }
 QStatusBar QLabel[role="warning"] { color: $warning; }
-QToolBar { background: $surface; border: none; border-bottom: 1px solid $border; spacing: ${sp_2}px; padding: ${sp_1}px ${sp_3}px; }
+/* spacing sp_1 (nie sp_2): pasek akcji ma teraz ikonę + tekst na każdym
+   przycisku (v0.51.0) — przy sp_2 overflow'ował o ~10 px przy oknie 1180 px
+   i Fusion ucinał tekst WSZYSTKICH przycisków elipsą (nie tylko „Edytuj
+   pozycje"); zmierzone `sizeHint()` (patrz CLAUDE.md „Ikona”). */
+QToolBar { background: $surface; border: none; border-bottom: 1px solid $border; spacing: ${sp_1}px; padding: ${sp_1}px ${sp_2}px; }
 QToolBar::separator { width: 1px; background: $border; margin: ${sp_1}px ${sp_2}px; }
+/* przyciski paska akcji ciaśniej niż gdzie indziej — ikona + tekst na KAŻDYM
+   z ~9 przycisków (v0.51.0) inaczej nie mieści się w oknie 1180 px (zmierzone
+   `sizeHint()`: ~1172 px z domyślnym paddingiem QToolButton, zero zapasu). */
+QToolBar QToolButton { padding: 0 ${sp_1}px; }
 
 /* ---- lists / tables --------------------------------------------------- */
 QListView, QTreeView, QTableView {
@@ -636,6 +644,90 @@ def build_qss(tokens: dict[str, str], spacing: dict[str, int] | None = None,
 # ---------------------------------------------------------------------------
 # Applying the theme
 # ---------------------------------------------------------------------------
+
+_ICON_CACHE: dict[tuple[str, str, int], Any] = {}
+
+
+def _icon_svg_path(name: str) -> Any:
+    from . import resources
+
+    return resources.icons_dir() / f"{name}.svg"
+
+
+def icon(name: str, color: str | None = None, size: int = 16) -> Any:
+    """Load ``assets/icons/<name>.svg``, tint it and cache the resulting QIcon.
+
+    ``currentColor`` in the file is swapped for ``color`` (default: the applied
+    theme's ``text`` token) via plain text replace — SVG attributes vs. plain
+    text both match, so a stroke or a filled shape work the same way. Renders
+    at 16/20/24 px times the primary screen's device pixel ratio (HiDPI stays
+    crisp) and composes ``Normal``/``Disabled`` states so a plain
+    ``btn.setIcon(icon("play"))`` dims correctly when the button is disabled.
+
+    Falls back to an empty ``QIcon()`` when the SVG plugin or the file is
+    missing (PyInstaller build without ``Qt6Svg`` / a bundle missing
+    ``assets/icons``) — callers must not assume a non-empty icon (§7 checklist:
+    switch that button to ``ToolButtonTextOnly`` when ``icon.isNull()``).
+    """
+    from PySide6.QtCore import QByteArray, QRectF, Qt
+    from PySide6.QtGui import QIcon, QImage, QPainter, QPixmap
+    from PySide6.QtSvg import QSvgRenderer
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    tokens = current_tokens(app) if app is not None else TOKENS["dark"]
+    resolved_color = color or tokens["text"]
+    key = (name, resolved_color, size)
+    cached = _ICON_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    if not ensure_svg_support():
+        _ICON_CACHE[key] = QIcon()
+        return _ICON_CACHE[key]
+
+    path = _icon_svg_path(name)
+    try:
+        svg_text = path.read_text(encoding="utf-8")
+    except OSError:
+        _ICON_CACHE[key] = QIcon()
+        return _ICON_CACHE[key]
+
+    dpr = app.devicePixelRatio() if app is not None and hasattr(app, "devicePixelRatio") else 1.0
+    dpr = dpr or 1.0
+
+    def _render(colored_svg: str) -> QPixmap:
+        # Render onto a plain QImage at the PHYSICAL pixel size with an
+        # explicit target rect: QSvgRenderer.render(painter) with no rect
+        # scales to the painter's viewport, and stacking that with
+        # QPixmap.setDevicePixelRatio() set BEFORE painting double-applies
+        # the ratio under a non-1 Qt scale factor (QT_SCALE_FACTOR / HiDPI) —
+        # verified with a 150 % screenshot: icons came out cropped/tiled.
+        # Painting on a bare QImage (dpr always 1) sidesteps that; the ratio
+        # is set only on the QPixmap handed to Qt for display.
+        renderer = QSvgRenderer(QByteArray(colored_svg.encode("utf-8")))
+        px = max(1, int(round(size * dpr)))
+        img = QImage(px, px, QImage.Format.Format_ARGB32_Premultiplied)
+        img.fill(Qt.GlobalColor.transparent)
+        p = QPainter(img)
+        renderer.render(p, QRectF(0, 0, px, px))
+        p.end()
+        pm = QPixmap.fromImage(img)
+        pm.setDevicePixelRatio(dpr)
+        return pm
+
+    result = QIcon()
+    result.addPixmap(_render(svg_text.replace("currentColor", resolved_color)), QIcon.Mode.Normal)
+    result.addPixmap(_render(svg_text.replace("currentColor", tokens["text_disabled"])),
+                      QIcon.Mode.Disabled)
+    _ICON_CACHE[key] = result
+    return result
+
+
+def clear_icon_cache() -> None:
+    """Drop cached tinted icons — call after a theme switch (colors changed)."""
+    _ICON_CACHE.clear()
+
 
 def ensure_svg_support() -> bool:
     """Make the SVG image-format plugin loadable (QSS ``image: url(x.svg)``,

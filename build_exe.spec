@@ -44,6 +44,10 @@ datas = [
     (os.path.join(_root, "assets", "fonts", "DejaVuSans-Bold.ttf"), "assets/fonts"),
     (os.path.join(_root, "assets", "icon.png"),                      "assets"),
     (os.path.join(_root, "assets", "icon.ico"),                      "assets"),
+    # Zestaw ikon paska akcji/transportu (v0.51.0) — `resources.icons_dir()` czyta
+    # je przez `sys._MEIPASS`, jak fonty; cały katalog na raz (Analysis nie widzi
+    # nazw plików, bo `ui_theme.icon()` składa ścieżkę dynamicznie z parametru).
+    (os.path.join(_root, "assets", "icons"),                         "assets/icons"),
 ]
 
 # Opcjonalny pełny FFmpeg (z NVENC) dołączany przez `build.ps1 -WithFfmpeg`.
@@ -61,8 +65,12 @@ a = Analysis(
     # QtMultimedia* (podgląd w ruchu) — hook PySide6 dokłada pluginy
     # multimediów, ale same moduły importujemy warunkowo (try/except),
     # więc analiza ich nie widzi: wymieniamy je JAWNIE.
+    # QtSvg — `ui_theme.ensure_svg_support()`/`icon()` importują go leniwie (try/except),
+    # więc analiza bytecode'u go nie widzi; bez tego wpisu ikony SVG cicho nie
+    # renderują się w .exe (fallback tekstowy w `_apply_icon` wciąż działa, ale
+    # zestaw ikon byłby po prostu nieobecny — patrz CLAUDE.md „Ikona”).
     hiddenimports=["imageio_ffmpeg", "PySide6.QtMultimedia",
-                   "PySide6.QtMultimediaWidgets",
+                   "PySide6.QtMultimediaWidgets", "PySide6.QtSvg",
                    *collect_submodules("piro_overlay")],
     hookspath=[],
     runtime_hooks=[],

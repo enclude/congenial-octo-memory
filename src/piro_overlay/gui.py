@@ -31,7 +31,7 @@ import urllib.request
 import json
 
 from PySide6.QtCore import (
-    QEvent, QLocale, QObject, QPoint, QPointF, QRect, QRectF, QSettings, QSizeF, Qt,
+    QEvent, QLocale, QObject, QPoint, QPointF, QRect, QRectF, QSettings, QSize, QSizeF, Qt,
     QThread, QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
@@ -170,6 +170,26 @@ def _nice_tick_step(span: float, width: int, target_px: int = 100) -> float:
         if step >= raw - 1e-9:
             return step
     return _TICK_STEPS[-1]
+
+
+def _apply_icon(btn: QAbstractButton, name: str, size: int = 16,
+                 fallback_text: str | None = None) -> None:
+    """`btn.setIcon(ui_theme.icon(name, size=size))` with a text/glyph fallback.
+
+    Bez zestawu SVG (`Qt6Svg` brak w bundlu, albo plik ikony nie istnieje)
+    `ui_theme.icon` zwraca pusty `QIcon` — bez tego fallbacku przycisk
+    icon-only (transport, „Dopasuj”/„Zoom Od–Do”, ✕/▶ w kolejce/wsadzie)
+    zostałby CAŁKOWICIE pusty. `fallback_text` przywraca stary glif/tekst i
+    (dla `QToolButton`) przełącza styl na `ToolButtonTextOnly`, żeby coś było
+    widać. `ensure_svg_support()` nie zmienia się w trakcie działania procesu,
+    więc to jednorazowa decyzja — nie trzeba cofać przełączenia stylu.
+    """
+    ic = ui_theme.icon(name, size=size)
+    btn.setIcon(ic)
+    if ic.isNull() and fallback_text is not None:
+        btn.setText(fallback_text)
+        if isinstance(btn, QToolButton):
+            btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
 
 
 # ----------------------------- wątki robocze -----------------------------
@@ -592,7 +612,9 @@ class JobRowWidget(QWidget):
         lay.addWidget(self._progress)
 
         self._del_btn = QToolButton()
-        self._del_btn.setText("✕")
+        self._del_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self._del_btn.setIconSize(QSize(16, 16))
+        _apply_icon(self._del_btn, "close", 16, "✕")
         self._del_btn.setToolTip("Usuń zadanie z kolejki")
         set_kind(self._del_btn, "ghost")
         self._del_btn.clicked.connect(lambda: self.remove_requested.emit(self._job_id))
@@ -600,6 +622,9 @@ class JobRowWidget(QWidget):
 
         self._apply_status(job.status)
         self._update_elided_label()
+
+    def refresh_icon(self) -> None:
+        _apply_icon(self._del_btn, "close", 16, "✕")
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -739,6 +764,10 @@ class RenderQueueWindow(QWidget):
 
     def _update_empty_state(self) -> None:
         self._empty_label.setVisible(not self._rows)
+
+    def refresh_icons(self) -> None:
+        for row in self._rows.values():
+            row.refresh_icon()
 
     def add_job(self, job: RenderJob) -> None:
         row = JobRowWidget(job)
@@ -1055,14 +1084,18 @@ class BatchRowWidget(QWidget):
         lay.addWidget(self._info, 2)
 
         self._play_btn = QToolButton()
-        self._play_btn.setText("▶")
+        self._play_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self._play_btn.setIconSize(QSize(16, 16))
+        _apply_icon(self._play_btn, "play-file", 16, "▶")
         set_kind(self._play_btn, "ghost")
         self._play_btn.setToolTip("Otwórz plik źródłowy w odtwarzaczu")
         self._play_btn.clicked.connect(lambda: self.play_requested.emit(self._row_id))
         lay.addWidget(self._play_btn)
 
         self._del_btn = QToolButton()
-        self._del_btn.setText("✕")
+        self._del_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self._del_btn.setIconSize(QSize(16, 16))
+        _apply_icon(self._del_btn, "close", 16, "✕")
         set_kind(self._del_btn, "ghost")
         self._del_btn.setToolTip("Usuń plik z listy wsadowej")
         self._del_btn.clicked.connect(lambda: self.remove_requested.emit(self._row_id))
@@ -1070,6 +1103,10 @@ class BatchRowWidget(QWidget):
 
         self.update_row(row)
         self._update_elided_name()
+
+    def refresh_icon(self) -> None:
+        _apply_icon(self._play_btn, "play-file", 16, "▶")
+        _apply_icon(self._del_btn, "close", 16, "✕")
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -1360,6 +1397,10 @@ class BatchDialog(QWidget):
 
     def _update_empty_state(self) -> None:
         self._empty_label.setVisible(not self._rows)
+
+    def refresh_icons(self) -> None:
+        for w in self._row_widgets.values():
+            w.refresh_icon()
 
     def _export_clipboard(self) -> None:
         """Kopiuje całą listę do schowka — po jednym pliku w wierszu „<ścieżka>;<ID>”."""
@@ -2460,6 +2501,10 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(resources.icon_path()))
         self.setAcceptDrops(True)  # drag&drop pliku
         self._build_ui()
+        # `_build_toolbar` (wołane wewnątrz `_build_ui`) barwi ikony toolbara przed
+        # tym, jak transport/edit_pos_btn/fit_btn/zoom_range_btn w ogóle istnieją —
+        # domalowanie tamtych czeka na koniec konstrukcji.
+        self._refresh_icons()
 
     # ---------- drag & drop ----------
     def dragEnterEvent(self, e):
@@ -2480,16 +2525,20 @@ class MainWindow(QMainWindow):
 
         Przyciski w formularzu zostają jako drugie wejście do TYCH SAMYCH akcji
         (`clicked → action.trigger()`), więc nic nie rozjeżdża się przy zmianie stanu.
-        Bez ikon — repo nie ma zestawu SVG, a tekst jest jednoznaczny.
+        Ikony (`ui_theme.icon`) barwione tokenem `text` (primary „Renderuj" —
+        `accent_text`, bo tło przycisku jest już akcentem); `_icon_actions` trzyma
+        listę do przebarwienia po zmianie motywu (`_refresh_icons`).
         """
         tb = QToolBar("Główny")
         tb.setMovable(False)
         tb.setFloatable(False)
-        tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        tb.setIconSize(QSize(16, 16))
         self.addToolBar(tb)
         self.toolbar = tb
+        self._icon_actions: list[tuple[QAction, str]] = []
 
-        def act(key: str, shortcut: str | None, slot, tip: str) -> QAction:
+        def act(key: str, shortcut: str | None, slot, tip: str, icon_name: str) -> QAction:
             a = QAction(_TR(key), self)
             if shortcut:
                 a.setShortcut(QKeySequence(shortcut))
@@ -2500,23 +2549,26 @@ class MainWindow(QMainWindow):
                 a.setToolTip(f"{tip} ({shortcut})")
             a.triggered.connect(slot)
             tb.addAction(a)
+            self._icon_actions.append((a, icon_name))
             return a
 
         self.act_open = act("act_open_video", "Ctrl+O", self._choose_video,
-                            "Wybierz plik wideo do obróbki")
+                            "Wybierz plik wideo do obróbki", "open")
         self.act_fetch = act("act_fetch_api", "Ctrl+G", self._fetch_id,
-                             "Pobierz oś czasu i metadane sesji z API (po ID)")
+                             "Pobierz oś czasu i metadane sesji z API (po ID)", "download")
         self.act_detect_start = act("act_detect_start", "Ctrl+D", self._detect_start_signal,
-                                    "Znajdź bzyczek shot-timera i ustaw go jako T0")
+                                    "Znajdź bzyczek shot-timera i ustaw go jako T0", "detect")
         self.act_auto_trim = act("act_auto_trim", "Ctrl+T", self._apply_auto_trim,
-                                 "Przytnij: 5 s przed startem → ostatni strzał + margines")
+                                 "Przytnij: 5 s przed startem → ostatni strzał + margines",
+                                 "trim")
         tb.addSeparator()
         self.act_queue_add = act("act_add_queue", None, self._add_to_queue,
-                                 "Dodaj render z bieżącymi ustawieniami do kolejki")
+                                 "Dodaj render z bieżącymi ustawieniami do kolejki",
+                                 "queue-add")
         self.act_queue = act("act_queue", None, self._show_queue_window,
-                             "Otwórz okno kolejki renderów")
+                             "Otwórz okno kolejki renderów", "queue")
         self.act_batch = act("act_batch", None, self._show_batch_window,
-                             "Przetwarzanie wielu plików (tryb auto + ID)")
+                             "Przetwarzanie wielu plików (tryb auto + ID)", "batch")
 
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -2535,6 +2587,7 @@ class MainWindow(QMainWindow):
         self.act_cancel.triggered.connect(self._cancel_render)
         self.act_cancel.setVisible(False)
         tb.addAction(self.act_cancel)
+        self._icon_actions.append((self.act_cancel, "cancel"))
 
         self.act_render = QAction(_TR("render"), self)
         self.act_render.setShortcut(QKeySequence("Ctrl+R"))
@@ -2546,12 +2599,46 @@ class MainWindow(QMainWindow):
         self.act_open_folder.triggered.connect(self._open_output_folder)
         self.act_open_folder.setVisible(False)
         tb.addAction(self.act_open_folder)
+        self._icon_actions.append((self.act_open_folder, "folder-open"))
 
         render_tb = QToolButton()
         render_tb.setDefaultAction(self.act_render)
-        render_tb.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        render_tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        render_tb.setIconSize(QSize(16, 16))
         set_kind(render_tb, "primary")
         tb.addWidget(render_tb)
+        self._render_tb = render_tb
+
+        self._refresh_icons()
+
+    def _refresh_icons(self) -> None:
+        """Retint every icon after a theme switch (colors baked into pixmaps).
+
+        Single place for the whole app: toolbar actions, „Renderuj" (accent_text —
+        its background is already the accent, `text` would be nearly invisible),
+        transport buttons and the two helper windows' rows.
+        """
+        tokens = current_tokens(QApplication.instance())
+        for a, name in getattr(self, "_icon_actions", []):
+            a.setIcon(ui_theme.icon(name, size=16))
+        if getattr(self, "act_render", None) is not None:
+            self.act_render.setIcon(ui_theme.icon("render", color=tokens["accent_text"], size=16))
+        if getattr(self, "act_theme", None) is not None:
+            mode = "light" if self.act_theme.isChecked() else "dark"
+            self.act_theme.setIcon(ui_theme.icon("sun" if mode == "light" else "moon", size=16))
+        self._refresh_transport_icons()
+        if getattr(self, "edit_pos_btn", None) is not None:
+            _apply_icon(self.edit_pos_btn, "move", 18, None)
+        if getattr(self, "fit_btn", None) is not None:
+            _apply_icon(self.fit_btn, "fit", 18, _TR("preview_fit"))
+        if getattr(self, "zoom_range_btn", None) is not None:
+            _apply_icon(self.zoom_range_btn, "zoom-range", 18, _TR("preview_zoom_range"))
+        if getattr(self, "op_cancel_btn", None) is not None:
+            self.op_cancel_btn.setIcon(ui_theme.icon("cancel", size=16))
+        if getattr(self, "_queue_window", None) is not None:
+            self._queue_window.refresh_icons()
+        if getattr(self, "_batch_window", None) is not None:
+            self._batch_window.refresh_icons()
 
     def _build_statusbar(self) -> None:
         """Postęp renderu i status NVENC na stałe w pasku stanu (`addPermanentWidget`).
@@ -2566,6 +2653,7 @@ class MainWindow(QMainWindow):
         bar.addPermanentWidget(self.nvenc_label)
         # „Anuluj" dotyczy operacji w tle (detekcje/API) — widoczny tylko w ich trakcie.
         self.op_cancel_btn = QPushButton(_TR("op_cancel"))
+        self.op_cancel_btn.setIcon(ui_theme.icon("cancel", size=16))
         set_kind(self.op_cancel_btn, "ghost")
         self.op_cancel_btn.setToolTip("Przerywa trwającą detekcję/pobieranie")
         self.op_cancel_btn.clicked.connect(self._cancel_operation)
@@ -2595,6 +2683,7 @@ class MainWindow(QMainWindow):
         self.act_theme.setChecked(mode == "light")
         self.act_theme.blockSignals(False)
         self._refresh_theme_action()
+        self._refresh_icons()
 
     def _refresh_theme_action(self) -> None:
         mode = "light" if self.act_theme.isChecked() else "dark"
@@ -2604,8 +2693,10 @@ class MainWindow(QMainWindow):
         mode = "light" if light else "dark"
         app = QApplication.instance()
         apply_theme(app, mode)
+        ui_theme.clear_icon_cache()   # tokens changed — cached tints are stale
         QSettings().setValue("ui/theme", mode)
         self._refresh_theme_action()
+        self._refresh_icons()
         for win in (self, self._queue_window, self._batch_window):
             if win is None:
                 continue
@@ -2658,22 +2749,32 @@ class MainWindow(QMainWindow):
         bar.setContentsMargins(0, 0, 0, SPACING["sp_2"])
         bar.setSpacing(SPACING["sp_2"])
         self._build_transport(bar)
+        # „Edytuj pozycje" ma ikonę + tekst (jest przełącznikiem trybu, nazwa musi
+        # być czytelna); „Dopasuj"/„Zoom Od–Do" są sam-ikonowe z tooltipem — to
+        # odchudziło pasek na tyle, że „Edytuj pozycje" już się nie ucina przy 1180 px
+        # (wcześniej trzy pełnotekstowe przyciski + glify transportu przepełniały bar).
         self.edit_pos_btn = QToolButton()
-        self.edit_pos_btn.setText("✥ " + _TR("act_edit_pos"))
-        self.edit_pos_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.edit_pos_btn.setText(_TR("act_edit_pos"))
+        self.edit_pos_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.edit_pos_btn.setIconSize(QSize(18, 18))
         self.edit_pos_btn.setCheckable(True)
         self.edit_pos_btn.setToolTip(f"{_TR('tip_edit_pos')} (E)")
         self.edit_pos_btn.toggled.connect(self._on_edit_pos_toggled)
         bar.addWidget(self.edit_pos_btn)
         bar.addStretch(1)
-        self.fit_btn = QPushButton(_TR("preview_fit"))
+        self.fit_btn = QToolButton()
+        self.fit_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.fit_btn.setIconSize(QSize(18, 18))
         set_kind(self.fit_btn, "ghost")
-        self.fit_btn.setToolTip(f"{_TR('tip_preview_fit')} (0)")
+        self.fit_btn.setToolTip(f"{_TR('preview_fit')} — {_TR('tip_preview_fit')} (0)")
         self.fit_btn.clicked.connect(self._on_fit_view)
         bar.addWidget(self.fit_btn)
-        self.zoom_range_btn = QPushButton(_TR("preview_zoom_range"))
+        self.zoom_range_btn = QToolButton()
+        self.zoom_range_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.zoom_range_btn.setIconSize(QSize(18, 18))
         set_kind(self.zoom_range_btn, "ghost")
-        self.zoom_range_btn.setToolTip(_TR("tip_preview_zoom_range"))
+        self.zoom_range_btn.setToolTip(f"{_TR('preview_zoom_range')} — "
+                                       f"{_TR('tip_preview_zoom_range')}")
         self.zoom_range_btn.clicked.connect(self._on_zoom_range)
         bar.addWidget(self.zoom_range_btn)
         # Etykieta trybu edycji nie może się skracać do „Ed…ycje" — to przełącznik
@@ -4227,30 +4328,45 @@ class MainWindow(QMainWindow):
             self._on_video_frame)
 
     def _build_transport(self, bar: QHBoxLayout) -> None:
-        """Pasek transportu: skok do T0, ±1 s, play/pauza, skok do „Do", pętla."""
-        self.transport_btns: list[QToolButton] = []
+        """Pasek transportu: skok do T0, ±1 s, play/pauza, skok do „Do", pętla.
 
-        def tbtn(key: str, tip_key: str, slot, checkable: bool = False,
+        Ikony ZAMIAST unikodowych glifów (`|◀`/`◀◀`/…) — glify jako sam tekst
+        ucinały „Edytuj pozycje" przy 1180 px; `ToolButtonIconOnly` 20 px trzyma
+        skróty w tooltipie (`_TR(tip_key)` ma już „(J)"/„(L)"/…).
+        """
+        self.transport_btns: list[QToolButton] = []
+        # (button, icon name, fallback glyph key) — the `tr_*` string is the OLD
+        # unicode glyph (`_apply_icon` falls back to it when the SVG plugin is
+        # missing), not shown when the icon loads.
+        self._transport_icon_btns: list[tuple[QToolButton, str, str]] = []
+
+        def tbtn(key: str, tip_key: str, icon_name: str, slot, checkable: bool = False,
                  kind: str = "ghost") -> QToolButton:
             btn = QToolButton()
-            btn.setText(_TR(key))
-            btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            btn.setIconSize(QSize(20, 20))
             btn.setCheckable(checkable)
             btn.setToolTip(_TR(tip_key))
             set_kind(btn, kind)
             (btn.toggled if checkable else btn.clicked).connect(slot)
             bar.addWidget(btn)
             self.transport_btns.append(btn)
+            self._transport_icon_btns.append((btn, icon_name, key))
             return btn
 
-        tbtn("tr_t0", "tip_tr_t0", self._seek_t0)
-        tbtn("tr_back", "tip_tr_back", partial(self._seek_by, -_SEEK_STEP_S))
-        self.play_btn = tbtn("tr_play", "tip_tr_play", self._on_play_toggled,
+        tbtn("tr_t0", "tip_tr_t0", "skip-start", self._seek_t0)
+        tbtn("tr_back", "tip_tr_back", "step-back", partial(self._seek_by, -_SEEK_STEP_S))
+        self.play_btn = tbtn("tr_play", "tip_tr_play", "play", self._on_play_toggled,
                              checkable=True, kind="secondary")
-        tbtn("tr_fwd", "tip_tr_fwd", partial(self._seek_by, _SEEK_STEP_S))
-        tbtn("tr_to", "tip_tr_to", self._seek_out)
-        self.loop_btn = tbtn("tr_loop", "tip_tr_loop", lambda *_: None, checkable=True)
+        tbtn("tr_fwd", "tip_tr_fwd", "step-forward", partial(self._seek_by, _SEEK_STEP_S))
+        tbtn("tr_to", "tip_tr_to", "skip-end", self._seek_out)
+        self.loop_btn = tbtn("tr_loop", "tip_tr_loop", "loop", lambda *_: None, checkable=True)
         self._refresh_transport()
+        self._refresh_transport_icons()
+
+    def _refresh_transport_icons(self) -> None:
+        for btn, name, key in getattr(self, "_transport_icon_btns", []):
+            _apply_icon(btn, name, 20, _TR(key))
 
     def _refresh_transport(self) -> None:
         enabled = self._player_active()
@@ -4371,7 +4487,9 @@ class MainWindow(QMainWindow):
         self.play_btn.blockSignals(True)
         self.play_btn.setChecked(playing)
         self.play_btn.blockSignals(False)
-        self.play_btn.setText(_TR("tr_pause") if playing else _TR("tr_play"))
+        self.play_btn.setToolTip(_TR("tip_tr_pause") if playing else _TR("tip_tr_play"))
+        _apply_icon(self.play_btn, "pause" if playing else "play", 20,
+                    _TR("tr_pause") if playing else _TR("tr_play"))
 
     def _on_player_error(self, error, msg: str = "") -> None:
         if error == QMediaPlayer.NoError:

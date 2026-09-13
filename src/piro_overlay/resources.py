@@ -31,6 +31,11 @@ def icon_path(ico: bool = False) -> str:
     return str(_assets_root() / ("icon.ico" if ico else "icon.png"))
 
 
+def icons_dir() -> Path:
+    """Katalog z zestawem ikon SVG paska akcji/transportu (`ui_theme.icon`)."""
+    return _assets_root() / "icons"
+
+
 def bundled_ffmpeg_path() -> str | None:
     """Ścieżka do dołączonego FFmpeg, jeśli istnieje.
 

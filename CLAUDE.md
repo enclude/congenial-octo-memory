@@ -679,6 +679,62 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   `_cli_quote` (cudzysłów przy spacji) i `_fmt_num` (bez zer końcowych).
 - **Ikona:** `assets/icon.png` (okno) + `assets/icon.ico` (.exe, w `build_exe.spec`),
   `resources.icon_path()`.
+- **Zestaw ikon SVG paska akcji/transportu (v0.51.0):** `assets/icons/*.svg` (24 pliki,
+  własne, minimalne, liniowe — `viewBox="0 0 24 24"`, `stroke="currentColor"`,
+  `stroke-width="2"`, zaokrąglone końce; kilka używa `fill="currentColor"` dla
+  wypełnionych kształtów jak trójkąt play). `resources.icons_dir()` (obsługa
+  `sys._MEIPASS`) + `ui_theme.icon(name, color=None, size=16) -> QIcon` — wczytuje plik,
+  podmienia `currentColor` (zwykły `str.replace`, działa niezależnie od atrybutu:
+  `stroke` czy `fill`) na `color` albo domyślnie token `text` (dla primary „Renderuj"
+  wołający jawnie podaje `accent_text` — tło przycisku jest już akcentem, `text` byłby
+  prawie niewidoczny), renderuje `QSvgRenderer` i cachuje wynikowy `QIcon` po
+  `(name, color, size)` — motyw ciemny/jasny mają różne tokeny, więc klucz cache
+  rozjeżdża się sam; `ui_theme.clear_icon_cache()` (wołane z `_on_theme_toggled`) to
+  tylko higiena pamięci, nie warunek poprawności. Stany `Normal`/`Disabled` (drugi kolor: `text_disabled`) —
+  zwykłe `btn.setIcon(icon("play"))` przygasza się poprawnie przy `setEnabled(False)`.
+  **PUŁAPKA — DPR × QT_SCALE_FACTOR renderuje pocięte/duplikowane ikony:** pierwsza
+  wersja tworzyła `QPixmap(size*dpr)`, wołała `pm.setDevicePixelRatio(dpr)` PRZED
+  `QPainter(pm)`, i renderowała `QSvgRenderer.render(painter)` bez jawnego rect —
+  przy 100% skalowania wyglądało OK, ale zrzut `--scale 1.5` pokazał ikony
+  pocięte/zduplikowane (dpr aplikowany dwa razy: raz przez `QT_SCALE_FACTOR`, raz przez
+  ręczne `setDevicePixelRatio` na pixmapie, w którą się maluje). Fix: malować na gołym
+  `QImage` (dpr zawsze 1) w rozmiarze FIZYCZNYM z jawnym `renderer.render(painter,
+  QRectF(0,0,px,px))`, dopiero `QPixmap.fromImage(img)` dostaje `setDevicePixelRatio`
+  — dpr wpływa tylko na to, jak Qt WYŚWIETLA gotową pixmapę, nigdy na to, jak się do
+  niej maluje. Zweryfikowane zrzutem `pictures/ui-refresh/09-icons-150.png`.
+  **Fallback bez `QtSvg`/pliku:** `icon()` zwraca pusty `QIcon()` (nie wyjątek) — SAM
+  pusty `QIcon` nie robi nic złego na `QAction`/przycisku z widocznym tekstem
+  (`ToolButtonTextBesideIcon`), ale przycisk **icon-only** (transport, „Dopasuj”/„Zoom
+  Od–Do”, ✕/▶ w kolejce/wsadzie) zostałby całkiem pusty — stąd `gui._apply_icon(btn,
+  name, size, fallback_text)`: gdy `icon.isNull()`, wpisuje `fallback_text` (stare glify
+  `tr_t0`/`tr_play`/… albo zwykłe „✕”/„▶”) i przełącza `QToolButton` na
+  `ToolButtonTextOnly`. `ensure_svg_support()` nie zmienia się w trakcie procesu, więc to
+  jednorazowa decyzja bez potrzeby cofania.
+  **Pasek akcji:** `ToolButtonTextBesideIcon`, ikony 16 px (nie 18 — zmierzone
+  `sizeHint()` pokazało overflow ~10–50 px przy oknie 1180 px z 18 px ikonami: Fusion
+  wtedy ucina tekst ELIPSĄ na WSZYSTKICH przyciskach naraz, nie tylko na najdłuższym).
+  Dodatkowo `QToolBar` dostał ciaśniejszy `spacing` (`sp_1` zamiast `sp_2`) i własną
+  regułę `QToolBar QToolButton { padding: 0 sp_1px; }` węższą niż gdzie indziej — bez
+  obu zmian pasek z 9 przyciskami (ikona+tekst każdy) nie mieścił się w 1180 px wcale.
+  „Motyw" pokazuje `sun`/`moon` zależnie od trybu. `MainWindow._refresh_icons()` jest
+  JEDNYM miejscem przebarwienia po zmianie motywu — woła się z `_on_theme_toggled`,
+  `sync_theme_action` i raz na końcu `__init__` (bo `_build_toolbar()` biegnie PRZED
+  budową transportu/`edit_pos_btn`/`fit_btn`/`zoom_range_btn`, więc pierwsze wywołanie
+  wewnątrz `_build_toolbar` jeszcze ich nie widzi) i deleguje do
+  `RenderQueueWindow.refresh_icons()`/`BatchDialog.refresh_icons()` dla wierszy tych
+  okien. **Pasek transportu** jest teraz icon-only (`ToolButtonIconOnly`, 20 px) zamiast
+  glifów unicode wprost jako tekst przycisku — skrót w tooltipie (`tip_tr_*`, już miał
+  „(J)"/„(L)"/…) jest jedynym opisem. Play↔pauza podmienia ikonę (`_on_player_state`).
+  Bundle: `build_exe.spec` dokłada CAŁY katalog `assets/icons` do `datas` (nazwy plików
+  są dynamiczne — `Analysis` ich nie widzi) i `PySide6.QtSvg` do `hiddenimports` (import
+  jest w `try/except` w `ui_theme`, więc analiza bytecode'u by go pominęła — ta sama
+  pułapka co przy `QtMultimedia`, v0.50.0). Po buildzie sprawdź w `dist/`:
+  `PySide6/plugins/imageformats/qsvg.dll`, `PySide6/plugins/iconengines/qsvgicon.dll`,
+  `PySide6/Qt6Svg.dll` — ich brak nie wywala aplikacji (fallback tekstowy działa), ale
+  ikony po prostu nigdzie się nie pojawią. Strażnik bez PySide6: `tests/test_icons.py`
+  (każdy SVG jest poprawnym XML-em z `viewBox="0 0 24 24"` i `currentColor`; nazwy
+  użyte w `gui.py` przez `ui_theme.icon("x"...)`/`_apply_icon(btn, "x", ...)` — regex,
+  nie import — mają odpowiadający plik na dysku).
 - **Szybkie iterowanie:** do testów zmian NIE buduj .exe — uruchom ze źródła
   (`python app.py`). Build .exe rób tylko do dystrybucji; nie używaj `-Clean` bez potrzeby
   (cache `build/` przyspiesza kolejne buildy), UPX wyłączony (`upx=False`).
