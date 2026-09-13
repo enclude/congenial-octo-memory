@@ -36,7 +36,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction, QColor, QDesktopServices, QFontMetrics, QIcon, QImage, QKeySequence,
-    QPainter, QPen, QPixmap, QPolygon, QShortcut,
+    QPainter, QPainterPath, QPen, QPixmap, QPolygon, QShortcut,
 )
 from PySide6.QtWidgets import (
     QAbstractButton, QAbstractSpinBox, QApplication, QComboBox, QCheckBox,
@@ -618,6 +618,12 @@ class JobRowWidget(QWidget):
         lay.setContentsMargins(4, 2, 4, 2)
         lay.setSpacing(SPACING["sp_2"])
 
+        self._thumb_anchor_t: float | None = None
+        self._thumb_label = QLabel()
+        self._thumb_label.setFixedSize(_QUEUE_THUMB_W, _QUEUE_THUMB_H)
+        self._thumb_label.setPixmap(_queue_thumb_pixmap(None))
+        lay.addWidget(self._thumb_label)
+
         self._status_icon = StatusDot()
         lay.addWidget(self._status_icon)
 
@@ -649,6 +655,17 @@ class JobRowWidget(QWidget):
 
     def refresh_icon(self) -> None:
         _apply_icon(self._del_btn, "close", 16, "✕")
+        if self._thumb_anchor_t is None:
+            # Klatka jeszcze nie wyciągnięta (albo padła) — placeholder niesie
+            # ikonę/kolor tokenu, więc trzeba go przemalować po zmianie motywu.
+            self._thumb_label.setPixmap(_queue_thumb_pixmap(None))
+
+    def set_thumb_frame(self, frame: "Image.Image", anchor_t: float) -> None:
+        """Ustawia miniaturę na WYCIĄGNIĘTĄ klatkę (cache na wierszu — bez
+        ponownej ekstrakcji przy zmianie statusu/postępu)."""
+        self._thumb_anchor_t = anchor_t
+        self._thumb_label.setPixmap(_queue_thumb_pixmap(frame))
+        self._refresh_tooltips()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -676,6 +693,11 @@ class JobRowWidget(QWidget):
         self.setToolTip(tip)
         self._label.setToolTip(tip)
         self._progress.setToolTip(tip)
+        if self._thumb_anchor_t is not None:
+            self._thumb_label.setToolTip(
+                _TR("queue_thumb_tooltip").format(_fmt_time_s(round(self._thumb_anchor_t, 1))))
+        else:
+            self._thumb_label.setToolTip(tip)
 
     def _apply_status(self, status: JobStatus) -> None:
         self._status_icon.set_role(self._STATUS_ROLES.get(status, "muted"))
@@ -702,6 +724,10 @@ class RenderQueueWindow(QWidget):
         self._rows: dict[str, JobRowWidget] = {}
         self._progress: dict[str, float] = {}   # job_id → ostatni postęp (0–1)
         self._geometry_restored = False
+        # Miniatury: jeden `QueueThumbWorker` naraz (kolejka FIFO żądań) — 20
+        # zadań dodanych naraz NIE mają odpalać 20 równoległych FFmpegów.
+        self._thumb_pending: list[tuple[str, str, float]] = []
+        self._thumb_worker: "QueueThumbWorker | None" = None
 
         root = QVBoxLayout(self)
         root.setSpacing(SPACING["sp_3"])
@@ -804,6 +830,43 @@ class RenderQueueWindow(QWidget):
         self._refresh_start_btn()
         self._autosave_queue()
         self._update_empty_state()
+        self._request_thumb(job)
+
+    # --- miniatury (jeden `QueueThumbWorker` naraz, kolejka FIFO) ---
+    def _request_thumb(self, job: RenderJob) -> None:
+        video_path = str(job.kwargs.get("video_path") or "")
+        if not video_path:
+            return
+        self._thumb_pending.append((job.id, video_path, _job_thumb_anchor(job)))
+        self._advance_thumb_queue()
+
+    def _advance_thumb_queue(self) -> None:
+        if self._thumb_worker is not None:
+            return   # ekstrakcja już w toku — ten wpis poczeka w kolejce
+        while self._thumb_pending:
+            job_id, video_path, anchor_t = self._thumb_pending.pop(0)
+            if job_id not in self._rows:
+                continue   # wiersz usunięty, zanim doszła kolej
+            src = _job_thumb_source(video_path)
+            worker = QueueThumbWorker(job_id, src, anchor_t)
+            worker.done.connect(self._on_thumb_done)
+            worker.failed.connect(self._on_thumb_failed)
+            worker.finished.connect(self._on_thumb_worker_finished)
+            self._thumb_worker = worker
+            worker.start()
+            return
+
+    def _on_thumb_done(self, job_id: str, frame: "Image.Image") -> None:
+        if row := self._rows.get(job_id):
+            anchor_t = self._thumb_worker.anchor_t if self._thumb_worker else 0.0
+            row.set_thumb_frame(frame, anchor_t)
+
+    def _on_thumb_failed(self, job_id: str, msg: str) -> None:
+        pass   # placeholder zostaje — brak klatki to nie błąd renderu
+
+    def _on_thumb_worker_finished(self) -> None:
+        self._thumb_worker = None
+        self._advance_thumb_queue()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -816,6 +879,8 @@ class RenderQueueWindow(QWidget):
             self.hide()
             event.ignore()
         else:
+            if self._thumb_worker is not None:
+                self._thumb_worker.wait(_THREAD_JOIN_MS)
             save_window_state(self, QSettings(), prefix="ui/queue")
             event.accept()
 
@@ -854,6 +919,9 @@ class RenderQueueWindow(QWidget):
             if row:
                 self._list_layout.removeWidget(row)
                 row.deleteLater()
+            # Nie ma sensu wyciągać klatki dla wiersza, który już nie istnieje —
+            # `_advance_thumb_queue` i tak by to sprawdziło, ale czemu czekać.
+            self._thumb_pending = [p for p in self._thumb_pending if p[0] != job_id]
             self._update_empty_state()
 
     def _on_parallel_changed(self, n: int) -> None:
@@ -2285,6 +2353,105 @@ def _pil_to_pixmap(img: "Image.Image") -> QPixmap:
     """Pillow RGBA → QPixmap. WOLNO wołać wyłącznie z wątku GUI (Qt tak wymaga)."""
     qim = ImageQt(img.convert("RGBA"))
     return QPixmap.fromImage(QImage(qim))
+
+
+# Miniatura klatki w wierszu kolejki renderów (v0.53.0): rozmiar logiczny stały,
+# ekstrakcja idzie w niskiej rozdzielczości (`_QUEUE_THUMB_EXTRACT_H`) — miniatura
+# i tak ją pomniejsza dalej.
+_QUEUE_THUMB_W = 96
+_QUEUE_THUMB_H = 54
+_QUEUE_THUMB_EXTRACT_H = 108
+
+
+def _queue_thumb_pixmap(frame: "Image.Image | None") -> QPixmap:
+    """Miniatura wiersza kolejki: klatka wyśrodkowana (letterbox w tle `surface`,
+    rogi zaokrąglone `RADIUS['r_sm']`) albo — gdy `frame` to None (jeszcze nie
+    wyciągnięta / ekstrakcja się nie powiodła) — placeholder ikony „play-file"
+    w kolorze `text_muted`. WOLNO wołać wyłącznie z wątku GUI (jak `_pil_to_pixmap`)."""
+    app = QApplication.instance()
+    tokens = current_tokens(app)
+    dpr = app.devicePixelRatio() if app is not None else 1.0
+    w, h = _QUEUE_THUMB_W, _QUEUE_THUMB_H
+    img = QImage(max(1, round(w * dpr)), max(1, round(h * dpr)), QImage.Format_ARGB32_Premultiplied)
+    img.setDevicePixelRatio(dpr)
+    img.fill(Qt.transparent)
+    painter = QPainter(img)
+    painter.setRenderHint(QPainter.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, w, h), RADIUS["r_sm"], RADIUS["r_sm"])
+    painter.setClipPath(path)
+    painter.fillRect(QRectF(0, 0, w, h), QColor(tokens["surface"]))
+    if frame is not None:
+        src = _pil_to_pixmap(frame)
+        scaled = src.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        x = (w - scaled.width()) / 2
+        y = (h - scaled.height()) / 2
+        painter.drawPixmap(QPointF(x, y), scaled)
+    else:
+        ic = ui_theme.icon("play-file", color=tokens["text_muted"], size=20)
+        pm = ic.pixmap(20, 20)
+        x = (w - pm.width()) / 2
+        y = (h - pm.height()) / 2
+        painter.drawPixmap(QPointF(x, y), pm)
+    painter.end()
+    return QPixmap.fromImage(img)
+
+
+def _job_thumb_source(video_path: str) -> str:
+    """Źródło klatki dla miniatury kolejki: proxy 540p → LRF → oryginał.
+
+    Kolejność jak `MainWindow._frame_src`, ale zaczyna od proxy — miniatura nie
+    musi czekać na LRF, gdy proxy już jest gotowe (i vice versa, gdy proxy jeszcze
+    się buduje). Każde z tych źródeł jest małe, więc ekstrakcja jest szybka."""
+    proxy = config.find_proxy(video_path)
+    if proxy is not None:
+        return str(proxy)
+    lrf = ffmpeg.find_lrf(video_path)
+    if lrf is not None:
+        return str(lrf)
+    return video_path
+
+
+def _job_thumb_anchor(job: "RenderJob") -> float:
+    """Czas klatki miniatury: środek okna przycięcia, albo T0+1s, albo 0."""
+    kw = job.kwargs
+    ts, te = kw.get("trim_start"), kw.get("trim_end")
+    if ts is not None and te is not None:
+        return (ts + te) / 2
+    t0 = kw.get("t0")
+    if t0 is not None:
+        return t0 + 1.0
+    return 0.0
+
+
+class QueueThumbWorker(QThread):
+    """Wyciąga JEDNĄ klatkę-miniaturę dla wiersza kolejki renderów.
+
+    Osobny od `FrameExtractWorker` (ten sam wzorzec: FFmpeg w tle, PIL.Image
+    przez sygnał, konwersja na QPixmap dopiero w wątku GUI), bo niesie `job_id`
+    — wynik musi trafić do właściwego wiersza, nawet gdy w międzyczasie inne
+    zadania zostały dodane/usunięte z kolejki.
+    """
+    done = Signal(str, object)   # (job_id, PIL.Image)
+    failed = Signal(str, str)    # (job_id, komunikat)
+
+    def __init__(self, job_id: str, video_path: str, anchor_t: float):
+        super().__init__()
+        self.job_id = job_id
+        self.video_path = video_path
+        self.anchor_t = anchor_t
+
+    def run(self):
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                frame_png = ffmpeg.extract_frame(
+                    self.video_path, self.anchor_t,
+                    Path(tmp) / "t.png", scale_height=_QUEUE_THUMB_EXTRACT_H)
+                frame = Image.open(frame_png).convert("RGBA")
+                frame.load()
+            self.done.emit(self.job_id, frame)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(self.job_id, str(exc))
 
 
 class VideoPlayerPage(QGraphicsView):
@@ -5478,6 +5645,9 @@ class MainWindow(QMainWindow):
         if self._batch_window is not None:
             for worker in list(self._batch_window._workers.values()):
                 worker.wait(_THREAD_JOIN_MS)
+        # Miniatura kolejki: worker żyje niezależnie od stanu renderu/kolejki.
+        if self._queue_window is not None and self._queue_window._thumb_worker is not None:
+            self._queue_window._thumb_worker.wait(_THREAD_JOIN_MS)
         event.accept()
 
     def _open_output_folder(self):
@@ -5707,9 +5877,16 @@ _SHOT_DEMO_TIMELINE = ("1: 1.5s | 2: 2.1s (+0.6s) | 3: 2.9s (+0.8s) | "
                        "4: 3.6s (+0.7s) | 5: 4.4s (+0.8s) | 6: 5.3s (+0.9s)")
 
 
-def _screenshot_helper_window(win: "MainWindow", kind: str) -> QWidget:
+def _screenshot_helper_window(win: "MainWindow", kind: str,
+                              video_path: str | None = None) -> QWidget:
     """Buduje okno pomocnicze (`kind` = "queue"/"batch") z kilkoma przykładowymi
-    wierszami w różnych statusach — TYLKO do zrzutów `--screenshot --window`."""
+    wierszami w różnych statusach — TYLKO do zrzutów `--screenshot --window`.
+
+    `video_path` (z `--screenshot --window queue --video PLIK`): gdy podany,
+    wiersze demo dostają PRAWDZIWĄ ścieżkę wideo (miniatura wyciąga realną
+    klatkę zamiast placeholdera) — bez niego video_path == etykieta wiersza
+    (`"plik → wyjście"`), co i tak nie jest czytelną ścieżką dla FFmpeg, więc
+    miniatura zostaje placeholderem (świadomie dopuszczalne, patrz CLAUDE.md)."""
     if kind == "queue":
         qwin = win._get_queue_window()
         demo = (
@@ -5719,7 +5896,10 @@ def _screenshot_helper_window(win: "MainWindow", kind: str) -> QWidget:
              "FFmpeg: kod wyjścia 1 — Nothing was written (drugi strumień wideo)"),
         )
         for status, label, progress, error in demo:
-            job = RenderJob(id=uuid.uuid4().hex, label=label, kwargs={"video_path": label})
+            kwargs = {"video_path": video_path or label}
+            if video_path:
+                kwargs["t0"] = 1.0
+            job = RenderJob(id=uuid.uuid4().hex, label=label, kwargs=kwargs)
             qwin.add_job(job)
             row = qwin._rows[job.id]
             row.update_status(status)
@@ -5816,9 +5996,18 @@ def main():
         pass
 
     if shot_path and shot_window:
-        sub = _screenshot_helper_window(win, shot_window)
+        sub = _screenshot_helper_window(win, shot_window, video_path=shot_video)
         for _ in range(10):
             app.processEvents()
+        if shot_window == "queue" and shot_video:
+            # Miniatury się wyciągają w tle (jeden `QueueThumbWorker` naraz) —
+            # zrzut musi je doczekać, inaczej łapie placeholdery mimo realnego pliku.
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                app.processEvents()
+                if sub._thumb_worker is None and not sub._thumb_pending:
+                    break
+                time.sleep(0.05)
         try:
             set_windows_dark_titlebar(sub, theme["mode"] == "dark")
         except Exception:  # noqa: BLE001 — offscreen nie ma uchwytu okna

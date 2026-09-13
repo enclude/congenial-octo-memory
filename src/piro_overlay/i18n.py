@@ -270,6 +270,8 @@ _STRINGS: dict[str, dict[Lang, str]] = {
                  "w głównym oknie.",
         Lang.EN: "The queue is empty — add a job with the “Add to queue” button "
                  "in the main window."},
+    "queue_thumb_tooltip": {
+        Lang.PL: "Klatka z {0} s", Lang.EN: "Frame at {0} s"},
     "batch_title": {Lang.PL: "Przetwarzanie wsadowe (auto + ID)",
                     Lang.EN: "Batch processing (auto + ID)"},
     "batch_empty": {

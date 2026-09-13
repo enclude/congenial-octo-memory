@@ -925,6 +925,42 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   - Bez zmian: `RenderQueueRunner`, `BatchPrepWorker`, `BatchIdDetectWorker`,
     `_job_to_dict`/`_job_from_dict`, format `render_queue.json`, logika statusów.
 
+- **Miniatura klatki w wierszu kolejki renderów (v0.53.0):** użytkownik miał w
+  `RenderQueueWindow` same nazwy `DJI_2026…` i nie rozróżniał plików — każdy
+  `JobRowWidget` dostał po lewej miniaturę 96×54 px (letterbox w tle `surface`,
+  rogi `RADIUS["r_sm"]`) klatki ze ŚRODKA okna przycięcia zadania
+  (`_job_thumb_anchor`: `(trim_start+trim_end)/2`, brak przycięcia → T0+1 s,
+  brak T0 → 0). **Ekstrakcja sekwencyjna, NIE N naraz:** `QueueThumbWorker`
+  (wariant `FrameExtractWorker` niosący `job_id`) + FIFO `RenderQueueWindow.
+  _thumb_pending`/`_thumb_worker` — `_advance_thumb_queue` odpala kolejny worker
+  dopiero po `finished` poprzedniego, więc 20 zadań dodanych naraz nie odpala
+  20 równoległych FFmpegów. Źródło klatki (`_job_thumb_source`): `config.
+  find_proxy` (proxy 540p) → `ffmpeg.find_lrf` → oryginał — ekstrakcja niska
+  (`_QUEUE_THUMB_EXTRACT_H=108`), miniatura i tak ją pomniejsza. Wynik
+  (`PIL.Image`) leci przez sygnał jak w `FrameExtractWorker` — konwersja na
+  `QPixmap` (`_queue_thumb_pixmap`) TYLKO w wątku GUI (Qt tego wymaga); render
+  robi zaokrąglone rogi przez `QPainterPath` + `QImage` z jawnym DPR (ta sama
+  pułapka co przy ikonach SVG v0.51.0 — malować na `QImage` fizycznego
+  rozmiaru, `setDevicePixelRatio` dopiero na `QPixmap.fromImage`). Placeholder
+  (ikona `play-file` w `text_muted`) dopóki klatki nie ma/ekstrakcja padła —
+  `JobRowWidget.set_thumb_frame` cache'uje wynik na wierszu (bez ponownej
+  ekstrakcji przy update statusu/postępu), `refresh_icon()` przemalowuje
+  WYŁĄCZNIE placeholder (klatka już wyciągnięta ma barwy z realnego obrazu,
+  nie z tokenów). Zadania z `render_queue.json` (`_job_from_dict`) dostają
+  miniatury leniwie — `add_job` woła `_request_thumb` zawsze, format pliku
+  BEZ ZMIAN (miniatura nie jest serializowana). Pułapki QThread z reguł
+  projektu: usunięcie wiersza w trakcie ekstrakcji filtruje `_thumb_pending`
+  i `_on_thumb_done/_failed` sprawdzają, czy wiersz nadal istnieje w `_rows`;
+  `RenderQueueWindow.closeEvent` i `MainWindow.closeEvent` czekają na żywy
+  `_thumb_worker` (`wait(_THREAD_JOIN_MS)`) — ta sama zasada co przy innych
+  workerach kolejki/wsadu. Tooltip miniatury (`queue_thumb_tooltip`, i18n
+  PL+EN) pokazuje czas klatki przez `_fmt_time_s`. `--screenshot --window
+  queue --video PLIK`: `_screenshot_helper_window` dostał parametr
+  `video_path` — z prawdziwym plikiem demo-wiersze mają realną ścieżkę (bez
+  niego `video_path` == etykieta wiersza, FFmpeg jej nie otworzy, więc
+  placeholder — świadomie dopuszczalne), a `main()` doczekuje pustego
+  `_thumb_pending`/`_thumb_worker` przed zrzutem (do 60 s).
+
 ## Wersja webowa (`web/`) — v0.24.0
 
 Backend FastAPI + statyczny frontend (vanilla JS, PL) — importuje WYŁĄCZNIE domenę
