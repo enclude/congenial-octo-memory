@@ -293,6 +293,35 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "batch_empty": {
         Lang.PL: "Przeciągnij tu pliki wideo albo użyj „Dodaj pliki…”",
         Lang.EN: "Drop video files here or use “Add files…”"},
+    # --- „Automat z folderu…" (wsad, v0.56.0) ---
+    "batch_auto": {Lang.PL: "Automat z folderu…", Lang.EN: "Auto from folder…"},
+    "batch_auto_tip": {
+        Lang.PL: "Wskaż katalog z nagraniami: dodaje pliki wideo do listy, wykrywa "
+                 "ID z audio, a dla plików z ID pobiera sesję i wykrywa T0. Do "
+                 "kolejki NIC nie trafia automatycznie — najpierw sprawdź wyniki.",
+        Lang.EN: "Pick a folder with recordings: adds the video files to the list, "
+                 "detects IDs from audio and, for files with an ID, fetches the "
+                 "session and detects T0. Nothing is queued automatically — review "
+                 "the results first."},
+    "batch_auto_recursive": {Lang.PL: "z podkatalogami",
+                             Lang.EN: "include subfolders"},
+    "batch_auto_pick_dir": {Lang.PL: "Wybierz katalog z nagraniami",
+                            Lang.EN: "Choose a folder with recordings"},
+    "batch_auto_busy": {Lang.PL: "Automat…", Lang.EN: "Auto…"},
+    "batch_auto_scanning": {Lang.PL: "Skanuję katalog…", Lang.EN: "Scanning folder…"},
+    "batch_auto_added": {Lang.PL: "Dodano {0} z {1} plików wideo z katalogu.",
+                         Lang.EN: "Added {0} of {1} video files from the folder."},
+    "batch_auto_no_files": {
+        Lang.PL: "W katalogu nie ma plików wideo (.mp4, .mov, .mkv, .avi, .m4v).",
+        Lang.EN: "No video files in the folder (.mp4, .mov, .mkv, .avi, .m4v)."},
+    "batch_auto_scan_failed": {Lang.PL: "Nie udało się odczytać katalogu: {0}",
+                               Lang.EN: "Could not read the folder: {0}"},
+    "batch_auto_detecting": {Lang.PL: "Wykrywam ID: {0}/{1}",
+                             Lang.EN: "Detecting IDs: {0}/{1}"},
+    "batch_auto_preparing": {Lang.PL: "Przygotowuję: {0}/{1}",
+                             Lang.EN: "Preparing: {0}/{1}"},
+    "batch_auto_summary": {Lang.PL: "Gotowe: {0}, bez ID: {1}, błędy: {2}",
+                           Lang.EN: "Ready: {0}, no ID: {1}, errors: {2}"},
 }
 
 _FALLBACK_LANG = Lang.EN

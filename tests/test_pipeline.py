@@ -109,3 +109,53 @@ def test_t0_differs_within_tolerance():
 
 def test_t0_differs_beyond_tolerance():
     assert pipeline.t0_differs(26.2, 32.05) is True
+
+
+# --- skan katalogu z nagraniami (przycisk „Automat z folderu…") -------------
+
+def _make_dir(tmp_path):
+    """Katalog jak z karty DJI: nagrania, proxy LRF, miniatura, śmieci, podkatalog."""
+    (tmp_path / "DJI_0002.MP4").write_bytes(b"x")
+    (tmp_path / "DJI_0002.LRF").write_bytes(b"x")
+    (tmp_path / "DJI_0001.mp4").write_bytes(b"x")
+    (tmp_path / "DJI_0001.lrf").write_bytes(b"x")
+    (tmp_path / "DJI_0001.THM").write_bytes(b"x")
+    (tmp_path / "klip.MOV").write_bytes(b"x")
+    (tmp_path / "stare.avi").write_bytes(b"x")
+    (tmp_path / "film.m4v").write_bytes(b"x")
+    (tmp_path / "zrzut.png").write_bytes(b"x")
+    (tmp_path / "._DJI_0003.MP4").write_bytes(b"x")   # AppleDouble
+    sub = tmp_path / "kam2"
+    sub.mkdir()
+    (sub / "DJI_0100.mp4").write_bytes(b"x")
+    (sub / "notatki.txt").write_bytes(b"x")
+    return tmp_path
+
+
+def test_scan_video_dir_filters_and_sorts(tmp_path):
+    found = pipeline.scan_video_dir(_make_dir(tmp_path))
+    assert [p.name for p in found] == [
+        "DJI_0001.mp4", "DJI_0002.MP4", "film.m4v", "klip.MOV", "stare.avi"]
+
+
+def test_scan_video_dir_recursive_includes_subdirs(tmp_path):
+    found = pipeline.scan_video_dir(_make_dir(tmp_path), recursive=True)
+    assert "DJI_0100.mp4" in [p.name for p in found]
+    assert len(found) == 6
+
+
+def test_scan_video_dir_skips_lrf_next_to_mp4(tmp_path):
+    (tmp_path / "a.MP4").write_bytes(b"x")
+    (tmp_path / "a.LRF").write_bytes(b"x")
+    assert [p.name for p in pipeline.scan_video_dir(tmp_path)] == ["a.MP4"]
+
+
+def test_scan_video_dir_empty(tmp_path):
+    assert pipeline.scan_video_dir(tmp_path) == []
+
+
+def test_scan_video_dir_rejects_non_directory(tmp_path):
+    f = tmp_path / "plik.mp4"
+    f.write_bytes(b"x")
+    with pytest.raises(pipeline.PipelineError):
+        pipeline.scan_video_dir(f)

@@ -1296,10 +1296,28 @@ class BatchDialog(QWidget):
         self._row_widgets: dict[str, BatchRowWidget] = {}
         self._workers: dict[str, QThread] = {}   # prep/detect, trzymane do finished
         self._geometry_restored = False
+        # „Automat z folderu…": etapy łańcucha (skan → detekcja ID → przygotowanie)
+        self._auto_queue: list[str] = []   # etapy jeszcze do wykonania
+        self._auto_stage = ""              # etap trwający ("" = brak łańcucha)
+        self._auto_total = 0               # ile wierszy objął bieżący etap
 
         root = QVBoxLayout(self)
         root.setSpacing(SPACING["sp_3"])
         root.addWidget(SectionHeader(_TR("batch_title"), collapsible=False))
+
+        # --- wiersz „Automat" (jedyny primary w oknie) ---
+        auto_row = QHBoxLayout()
+        self._auto_btn = QPushButton(_TR("batch_auto"))
+        set_kind(self._auto_btn, "primary")
+        self._auto_btn.setToolTip(_TR("batch_auto_tip"))
+        self._auto_btn.clicked.connect(self._auto_from_folder)
+        self._recursive_chk = QCheckBox(_TR("batch_auto_recursive"))
+        self._recursive_chk.setToolTip(
+            "Skanuje też katalogi wewnątrz wskazanego (np. kam1/ i kam2/).")
+        auto_row.addWidget(self._auto_btn)
+        auto_row.addWidget(self._recursive_chk)
+        auto_row.addStretch(1)
+        root.addLayout(auto_row)
 
         top = QHBoxLayout()
         add_btn = QPushButton("Dodaj pliki…")
@@ -1412,7 +1430,8 @@ class BatchDialog(QWidget):
 
         btns = QHBoxLayout()
         self._prep_btn = QPushButton("Przygotuj wszystkie")
-        set_kind(self._prep_btn, "primary")
+        # secondary, bo jedynym primary w oknie jest „Automat z folderu…"
+        set_kind(self._prep_btn, "secondary")
         self._prep_btn.setToolTip("Dla plików z ID: pobiera sesję z API, wykrywa "
                                   "sygnał startu (T0) i liczy auto-przycięcie")
         self._prep_btn.clicked.connect(self._prepare_all)
@@ -1577,6 +1596,7 @@ class BatchDialog(QWidget):
                 f"Usunąć wszystkie pliki z listy ({len(self._rows)})?"
                 ) != QMessageBox.Yes:
             return
+        self._auto_cancel()   # wyczyszczenie listy gasi łańcuch „Automatu"
         for w in self._row_widgets.values():
             self._list_layout.removeWidget(w)
             w.deleteLater()
@@ -1606,6 +1626,102 @@ class BatchDialog(QWidget):
     def _on_overlay_toggled(self, on: bool) -> None:
         self._clock_chk.setEnabled(on)
 
+    # --- „Automat z folderu…": skan → ID z audio → przygotowanie ---
+    def _auto_active(self) -> bool:
+        return bool(self._auto_stage or self._auto_queue)
+
+    def _auto_from_folder(self) -> None:
+        """Wskazany katalog → wiersze → detekcja ID → przygotowanie.
+
+        Do kolejki ŚWIADOMIE nic nie trafia automatycznie: błędnie odczytane ID
+        pobrałoby cudzą sesję, więc przegląd przed „Wyślij gotowe do kolejki"
+        zostaje ręczny (jak dotąd).
+        """
+        if self._auto_active() or any(r.status in _BATCH_BUSY
+                                      for r in self._rows.values()):
+            return
+        start_dir = (config.load_last_dir("batch_dir")
+                     or config.load_last_dir("video") or "")
+        directory = QFileDialog.getExistingDirectory(
+            self, _TR("batch_auto_pick_dir"), start_dir)
+        if not directory:
+            return
+        config.save_last_dir("batch_dir", directory)
+        status_message(self._statusbar, _TR("batch_auto_scanning"), "info", 0)
+        try:
+            files = pipeline.scan_video_dir(
+                directory, recursive=self._recursive_chk.isChecked())
+        except (pipeline.PipelineError, OSError) as exc:  # noqa: BLE001
+            status_message(self._statusbar,
+                           _TR("batch_auto_scan_failed").format(exc), "danger", 0)
+            return
+        if not files:
+            status_message(self._statusbar, _TR("batch_auto_no_files"), "warning", 0)
+            return
+        if not self._out_dir.path():
+            self._out_dir.set_path(directory, emit=False)
+        added = sum(1 for f in files if self._add_row(str(f)) is not None)
+        self._refresh()
+        self._count_label.setText(
+            _TR("batch_auto_added").format(added, len(files)))
+        self._auto_queue = ["detect", "prep"]
+        self._auto_advance()
+
+    def _auto_advance(self) -> None:
+        """Uruchamia kolejny etap łańcucha; gdy nie ma czego robić — podsumowuje."""
+        while self._auto_queue:
+            stage = self._auto_queue.pop(0)
+            if stage == "detect":
+                todo = [r for r in self._rows.values()
+                        if r.status == BatchRowStatus.NEEDS_ID]
+                if todo:
+                    self._auto_stage, self._auto_total = stage, len(todo)
+                    self._detect_ids()
+                    return
+            elif stage == "prep":
+                todo = [r for r in self._rows.values()
+                        if r.status == BatchRowStatus.PENDING and r.session_id > 0]
+                if todo:
+                    self._auto_stage, self._auto_total = stage, len(todo)
+                    self._prepare_all()
+                    return
+        self._auto_finish()
+
+    def _auto_finish(self) -> None:
+        """Koniec łańcucha — podsumowanie w pasku stanu (po `_refresh`, bo ono
+        nadpisuje komunikat stanem „Gotowy")."""
+        self._auto_queue.clear()
+        self._auto_stage = ""
+        ready = sum(1 for r in self._rows.values()
+                    if r.status == BatchRowStatus.READY)
+        no_id = sum(1 for r in self._rows.values()
+                    if r.status == BatchRowStatus.NEEDS_ID)
+        failed = sum(1 for r in self._rows.values()
+                     if r.status == BatchRowStatus.FAILED)
+        self._refresh()
+        kind = "success" if ready and not (no_id or failed) else "warning"
+        status_message(self._statusbar,
+                       _TR("batch_auto_summary").format(ready, no_id, failed),
+                       kind, 0)
+
+    def _auto_cancel(self) -> None:
+        """Gasi łańcuch (zamknięcie okna, „Wyczyść wszystko"). Biegnące workery
+        kończą się same — przerywamy tylko przechodzenie do kolejnych etapów."""
+        self._auto_queue.clear()
+        self._auto_stage = ""
+
+    def _finish_worker(self, row_id: str) -> None:
+        """Zwalnia referencję workera PO `wait()` (ta sama pułapka QThread co w
+        kolejce renderów) i popycha łańcuch, gdy etap właśnie się domknął."""
+        worker = self._workers.pop(row_id, None)
+        if worker is not None:
+            worker.wait()
+        if not self._workers and self._auto_stage:
+            # etap skończony — kolejny odpalamy przez pętlę zdarzeń, żeby nie
+            # startować nowego QThread z wnętrza sygnału `finished` poprzedniego
+            self._auto_stage = ""
+            QTimer.singleShot(0, self._auto_advance)
+
     # --- wykrywanie ID z sygnału tonowego ---
     def _detect_ids(self) -> None:
         """Dla wierszy bez ID odpala w tle dekodowanie sygnału tonowego (per plik).
@@ -1621,13 +1737,14 @@ class BatchDialog(QWidget):
                 self, "Przetwarzanie wsadowe",
                 "Brak plików bez ID — wszystkie wiersze mają już ID.")
             return
+        self._auto_total = len(todo)   # licznik etapu w pasku stanu („3/12")
         for row in todo:
             row.status = BatchRowStatus.DETECTING
             row.error = ""
             self._sync_row(row)
             worker = BatchIdDetectWorker(row.id, row.video_path)
             worker.done.connect(self._on_id_detected)
-            worker.finished.connect(lambda rid=row.id: self._workers.pop(rid, None))
+            worker.finished.connect(lambda rid=row.id: self._finish_worker(rid))
             self._workers[row.id] = worker
             worker.start()
         self._refresh()
@@ -1658,6 +1775,7 @@ class BatchDialog(QWidget):
                 self, "Przetwarzanie wsadowe",
                 "Brak plików do przygotowania (podaj ID dla plików).")
             return
+        self._auto_total = len(todo)   # licznik etapu w pasku stanu („5/12")
         for row in todo:
             row.status = BatchRowStatus.PREPARING
             self._sync_row(row)
@@ -1665,7 +1783,7 @@ class BatchDialog(QWidget):
                                      row.session_id)
             worker.done.connect(self._on_prep_done)
             worker.failed.connect(self._on_prep_failed)
-            worker.finished.connect(lambda rid=row.id: self._workers.pop(rid, None))
+            worker.finished.connect(lambda rid=row.id: self._finish_worker(rid))
             self._workers[row.id] = worker
             worker.start()
         self._refresh()
@@ -1757,6 +1875,20 @@ class BatchDialog(QWidget):
         if w := self._row_widgets.get(row.id):
             w.update_row(row)
 
+    def _stage_message(self) -> str:
+        """Komunikat etapu do paska stanu („Wykrywam ID: 3/12")."""
+        left_det = sum(1 for r in self._rows.values()
+                       if r.status == BatchRowStatus.DETECTING)
+        left_prep = sum(1 for r in self._rows.values()
+                        if r.status == BatchRowStatus.PREPARING)
+        if left_det:
+            total = max(self._auto_total, left_det)
+            return _TR("batch_auto_detecting").format(total - left_det, total)
+        if left_prep:
+            total = max(self._auto_total, left_prep)
+            return _TR("batch_auto_preparing").format(total - left_prep, total)
+        return "Przetwarzanie w tle…"
+
     def _refresh(self) -> None:
         n = len(self._rows)
         ready = sum(1 for r in self._rows.values() if r.status == BatchRowStatus.READY)
@@ -1777,15 +1909,20 @@ class BatchDialog(QWidget):
         self._enqueue_btn.setEnabled(ready > 0 and not busy)
         self._clear_btn.setEnabled(n > 0 and not busy)
         self._detect_id_btn.setEnabled(needs_id > 0 and not busy)
-        self._batch_progress.setVisible(busy)
-        if busy:
+        auto = self._auto_active()
+        set_busy(self._auto_btn, auto, _TR("batch_auto_busy"))
+        self._auto_btn.setEnabled(not busy and not auto)
+        self._recursive_chk.setEnabled(not busy and not auto)
+        self._batch_progress.setVisible(busy or auto)
+        if busy or auto:
             self._batch_progress.setRange(0, 0)   # nieokreślony — postęp per plik nieznany
-            status_message(self._statusbar, "Przetwarzanie w tle…", "info", 0)
+            status_message(self._statusbar, self._stage_message(), "info", 0)
         else:
             self._batch_progress.setRange(0, 100)
             status_message(self._statusbar, "Gotowy", "muted", 0)
 
     def closeEvent(self, event):
+        self._auto_cancel()   # zamknięcie okna gasi łańcuch „Automatu"
         if any(r.status in _BATCH_BUSY for r in self._rows.values()):
             self.hide()
             event.ignore()

@@ -123,6 +123,45 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **„Automat z folderu…" we wsadzie (v0.56.0):** jedno kliknięcie od karty pamięci do
+  przeglądu — `BatchDialog._auto_from_folder` pyta o katalog
+  (`QFileDialog.getExistingDirectory`, pamięć katalogu pod NOWYM kluczem
+  `config.load/save_last_dir("batch_dir")`, fallback na klucz `"video"`), skanuje go
+  `pipeline.scan_video_dir(path, recursive)` (domena, BEZ Qt: rozszerzenia
+  `VIDEO_SUFFIXES` = .mp4/.mov/.mkv/.avi/.m4v bez względu na wielkość liter, pomija
+  proxy `.LRF`, miniatury `.THM`, pliki ukryte i AppleDouble `._*`, sortuje katalog→nazwa;
+  testy w `tests/test_pipeline.py`), dokłada wiersze (duplikaty ścieżek pomijane jak przy
+  imporcie ze schowka) i uruchamia łańcuch: detekcja ID z audio → przygotowanie (API+T0).
+  Do kolejki NIC nie trafia automatycznie — błędnie odczytane ID pobrałoby cudzą sesję,
+  więc „Wyślij gotowe do kolejki" zostaje ręczne (świadomie).
+  - **Maszyna etapów:** `_auto_queue` (`["detect", "prep"]`) + `_auto_stage` (etap
+    trwający) + `_auto_total` (licznik do paska stanu). `_auto_advance` zdejmuje etapy
+    z kolejki i POMIJA te bez pracy (brak wierszy NEEDS_ID → od razu przygotowanie),
+    a na końcu `_auto_finish` wypisuje podsumowanie `batch_auto_summary`
+    („Gotowe: N, bez ID: M, błędy: K") — PO `_refresh()`, bo ono nadpisuje pasek stanu
+    napisem „Gotowy". Łańcuch gasi `_auto_cancel()` z `closeEvent` i „Wyczyść wszystko";
+    pojedynczy błąd wiersza (API/brak bzyczka) NIE przerywa partii — wiersz zostaje
+    FAILED i ląduje w liczniku podsumowania (inaczej jeden zły plik zabierałby
+    przygotowanie pozostałych 18).
+  - **PUŁAPKA QThread:** łańcucha NIE wolno popychać z sygnału `done` workera —
+    `self._workers` jest keyowany po `row.id`, więc wstawienie tam `BatchPrepWorker`
+    dla tego samego wiersza zwolniłoby referencję do JESZCZE ŻYJĄCEGO
+    `BatchIdDetectWorker` (twardy crash, jak w kolejce renderów przed v0.21.0).
+    Stąd wspólny `_finish_worker(row_id)` podpięty do `finished` (zastąpił obie lambdy
+    `self._workers.pop(...)`): robi `wait()` przed zwolnieniem referencji, a kolejny etap
+    odpala dopiero gdy `_workers` jest PUSTE i przez `QTimer.singleShot(0, …)` — nowy
+    QThread nie startuje z wnętrza `finished` poprzedniego.
+  - **UI:** przycisk (i18n `batch_auto`) + checkbox „z podkatalogami"
+    (`batch_auto_recursive`) w OSOBNYM wierszu nad paskiem akcji — pasek ma już 4
+    przyciski, piąty (najdłuższa etykieta) nie mieściłby się w oknie 720–820 px.
+    Jest to teraz JEDYNY primary w oknie wsadu, więc „Przygotuj wszystkie" zeszło na
+    `secondary` (zasada „jeden primary na widoku"; „Automat" jest ścieżką domyślną,
+    „Przygotuj wszystkie" — dokończeniem po ręcznym uzupełnieniu ID). Postęp: istniejący
+    nieokreślony `QProgressBar` + `_stage_message()` w pasku stanu („Wykrywam ID: 3/12",
+    „Przygotowuję: 5/12") — licznik ustawiają też `_detect_ids`/`_prepare_all`, więc
+    działa również przy ręcznym kliknięciu. Wszystkie guardy `_BATCH_BUSY` i format
+    eksportu/importu schowka bez zmian. Zrzut: `--screenshot --window batch`.
+
 - **Wykrywanie przestarzałego T0 z pamięci pliku (v0.55.0):** problem realny —
   `file_settings.json` (per plik, patrz „Pamięć ustawień per-plik" niżej) trzyma T0 wyznaczony
   automatyczną detekcją, ale detektor (`audio_sync.detect_dji_start`) był od premiery kilka

@@ -117,3 +117,31 @@ def t0_needs_recheck(saved_detector: int | None, current: int) -> bool:
 def t0_differs(a: float, b: float, tol: float = 0.3) -> bool:
     """Czy dwie wartości T0 różnią się o więcej niż `tol` sekund."""
     return abs(a - b) > tol
+
+
+# ---------------------------------------------------------------------------
+# Skan katalogu z nagraniami (używa go „Automat z folderu…" w oknie wsadowym)
+# ---------------------------------------------------------------------------
+
+#: Rozszerzenia traktowane jako plik wideo (bez rozróżniania wielkości liter).
+#: Proxy DJI (.LRF) i miniatury (.THM) celowo NIE są tu wymienione — do listy
+#: wsadowej trafia tylko oryginał, proxy dokłada się samo (`ffmpeg.find_lrf`).
+VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".mkv", ".avi", ".m4v"})
+
+
+def scan_video_dir(path: str | Path, recursive: bool = False) -> list[Path]:
+    """Pliki wideo w katalogu, posortowane po nazwie (katalog → nazwa).
+
+    Pomija wszystko, co nie ma rozszerzenia z `VIDEO_SUFFIXES` (czyli m.in.
+    proxy `.LRF` i miniatury `.THM` leżące obok nagrań DJI) oraz pliki ukryte
+    i „._" (AppleDouble z kart formatowanych na macOS — to nie są nagrania).
+    """
+    root = Path(path)
+    if not root.is_dir():
+        raise PipelineError(f"To nie jest katalog: {root}")
+    it = root.rglob("*") if recursive else root.glob("*")
+    files = [p for p in it
+             if p.suffix.lower() in VIDEO_SUFFIXES
+             and not p.name.startswith(".")
+             and p.is_file()]
+    return sorted(files, key=lambda p: (str(p.parent).lower(), p.name.lower()))
