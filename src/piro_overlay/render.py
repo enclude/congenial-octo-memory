@@ -862,6 +862,83 @@ def trim_video(video_path: str | Path, out_path: str | Path,
     return out_path
 
 
+PREVIEW_PROXY_HEIGHT = 540   # patrz CLAUDE.md „Proxy podglądu" — 540p gra płynnie
+
+# Proxy ma powstać SZYBKO (użytkownik czeka), nie ładnie — stąd `p1`/`ultrafast`
+# i stały bitrate zamiast jakościowych trybów z `_NVENC_VARIANTS` (render wyjściowy
+# zostaje bez zmian).
+_PROXY_NVENC_ARGS = ["-c:v", "h264_nvenc", "-preset", "p1", "-b:v", "3M",
+                     "-pix_fmt", "yuv420p"]
+_PROXY_X264_ARGS = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+                    "-pix_fmt", "yuv420p"]
+
+
+def make_preview_proxy(video_path: str | Path, out_path: str | Path, *,
+                       height: int = PREVIEW_PROXY_HEIGHT,
+                       encoder: str = "auto",
+                       progress_cb: ProgressCb | None = None,
+                       cancel_check: CancelCheck | None = None,
+                       on_process: ProcessCb | None = None,
+                       on_encoder: Callable[[str], None] | None = None) -> Path:
+    """Buduje niskorozdzielcze proxy H.264 do PODGLĄDU (player + scrubber).
+
+    Powód: QMediaPlayer dekoduje 4K HEVC programowo (zmierzone: 4 klatki na 5 s
+    odtwarzania), więc podgląd w ruchu jest bezużyteczny; to samo nagranie jako
+    proxy 540p gra ~47 fps. Odpowiednik proxy LRF od DJI dla plików, które go
+    nie mają.
+
+    Zapis idzie do pliku `*.part.mp4` i dopiero po sukcesie jest przemianowany —
+    przerwana budowa (anulowanie, awaria, zamknięcie aplikacji) NIE może zostawić
+    w cache pliku wyglądającego na gotowe proxy.
+    """
+    video_path, out_path = str(video_path), Path(out_path)
+    info = ffmpeg.probe(video_path)
+    part = out_path.with_suffix(".part.mp4")
+    part.parent.mkdir(parents=True, exist_ok=True)
+
+    def build_cmd(enc: str, hwaccel: bool) -> list[str]:
+        hw = ["-hwaccel", "cuda"] if hwaccel else []
+        args = _PROXY_NVENC_ARGS if enc == "h264_nvenc" else _PROXY_X264_ARGS
+        return [
+            ffmpeg.ffmpeg_exe(), "-y", *hw, *ffmpeg.UNTRUSTED_INPUT_ARGS,
+            "-i", video_path,
+            # Tylko PIERWSZY strumień wideo i audio: pliki DJI mają obok głównego
+            # HEVC jeszcze miniaturę MJPEG (attached pic) i strumień danych `djmd`
+            # — `-map 0:v` zassałoby je wszystkie (patrz pułapka `0:v:0`).
+            "-map", "0:v:0", "-map", "0:a:0?",
+            "-vf", f"scale=-2:{int(height)}",
+            *args,
+            "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
+            str(part),
+        ]
+
+    chosen = _resolve_encoder(encoder)
+    # (enkoder, hwaccel) — NVENC najpierw z dekodowaniem na GPU, potem bez niego
+    # (nie każdy sterownik/plik daje radę z `-hwaccel cuda`), na końcu CPU.
+    attempts: list[tuple[str, bool]] = ([("h264_nvenc", True), ("h264_nvenc", False)]
+                                        if chosen == "h264_nvenc" else [])
+    attempts.append(("libx264", False))
+
+    last_exc: Exception | None = None
+    try:
+        for enc, hwaccel in attempts:
+            try:
+                _run_with_progress(build_cmd(enc, hwaccel), info.duration,
+                                   progress_cb, cancel_check, on_process)
+            except RuntimeError as exc:
+                last_exc = exc
+                continue
+            if on_encoder:
+                on_encoder(enc)
+            part.replace(out_path)
+            return out_path
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    part.unlink(missing_ok=True)
+    raise last_exc if last_exc else RuntimeError("Budowa proxy podglądu nie powiodła się.")
+
+
 def _short_err(exc: Exception) -> str:
     """Skraca komunikat błędu FFmpeg do najistotniejszych linii (NVENC)."""
     text = str(exc)

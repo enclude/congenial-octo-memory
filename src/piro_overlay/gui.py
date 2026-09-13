@@ -97,6 +97,9 @@ _THREAD_JOIN_MS = 3000         # limit oczekiwania na wątki robocze przy zamyka
 _FRAME_DEBOUNCE_MS = 250       # debounce ekstrakcji klatki po zmianie kotwicy
 _SCRUBBER_DEBOUNCE_MS = 200    # debounce podglądu Ctrl+klik na waveformie
 _BUSY_RETRY_MS = 150           # ponowna próba, gdy worker klatki jeszcze pracuje
+_PROXY_RETRY_MS = 1000         # odpytywanie „czy można już zbudować proxy podglądu"
+_PLAY_RESUME_MS = 200          # kontrola pozycji tuż po starcie odtwarzania
+_PLAY_RESUME_TOL_S = 1.0       # większa rozbieżność = backend zgubił przewinięcie
 _STYLE_AUTOSAVE_MS = 1000      # debounce autozapisu stylu na dysk
 # Wysokość płótna nakładek playera. Panele rysujemy RAZ na przebudowę w tej
 # rozdzielczości (nie w 4K) — obraz i tak jest skalowany do widoku, a Pillow
@@ -333,24 +336,43 @@ class FuncWorker(QThread):
     UWAGA (pułapka z CLAUDE.md): pola NIE mogą nazywać się `start`/`end` —
     przesłoniłyby `QThread.start()`.
     """
-    done = Signal(int, object)    # (gen, wynik)
-    failed = Signal(int, str)     # (gen, komunikat wyjątku)
+    done = Signal(int, object)     # (gen, wynik)
+    failed = Signal(int, str)      # (gen, komunikat wyjątku)
+    progressed = Signal(int, float)  # (gen, 0.0–1.0) — tylko w trybie `with_callbacks`
 
-    def __init__(self, fn, gen: int = 0):
+    def __init__(self, fn, gen: int = 0, with_callbacks: bool = False):
         super().__init__()
         self._fn = fn
         self.gen = gen
         self.cancelled = False
+        # Operacje długie i przerywalne (budowa proxy podglądu) dostają komplet
+        # uchwytów renderu: `fn(progress_cb, cancel_check, on_process)`.
+        self._with_callbacks = with_callbacks
+        self._proc = None
 
     def cancel(self) -> None:
-        """Flaga „wynik już nikogo nie interesuje" — biblioteka domenowa jest
-        jednym wywołaniem, więc nie da się jej przerwać w połowie; token
-        pokolenia i tak odrzuci wynik."""
+        """Flaga „wynik już nikogo nie interesuje". Przy operacji z callbackami
+        dodatkowo ubijamy proces FFmpeg — sama flaga zatrzymuje go najwcześniej
+        przy kolejnej linii postępu, a użytkownik chce efektu natychmiast."""
         self.cancelled = True
+        proc = self._proc
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _on_process(self, proc) -> None:
+        self._proc = proc
 
     def run(self):
         try:
-            result = self._fn()
+            if self._with_callbacks:
+                result = self._fn(lambda p: self.progressed.emit(self.gen, p),
+                                  lambda: self.cancelled,
+                                  self._on_process)
+            else:
+                result = self._fn()
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(self.gen, str(exc))
             return
@@ -2453,6 +2475,16 @@ class MainWindow(QMainWindow):
         self.session: Session | None = None
         self.video_path: str | None = None
         self.lrf_path: str | None = None
+        # Proxy podglądu (540p) — patrz `_maybe_start_proxy`. `_proxy_path` jest
+        # ustawione dopiero gdy proxy REALNIE istnieje; `_proxy_wanted` trzyma
+        # ścieżkę nagrania, dla którego proxy dopiero trzeba zbudować.
+        self._proxy_path: str | None = None
+        self._proxy_wanted: str | None = None
+        self._proxy_poll_queued: bool = False
+        self._proxy_building: bool = False
+        self._proxy_started_at: float = 0.0
+        self._proxy_status_at: float = 0.0
+        self._op_progress_text: str = ""
         self.worker: RenderWorker | None = None
         self.wave_worker: WaveformWorker | None = None
         # Operacje w tle (detekcje, API): jeden worker naraz + token pokolenia.
@@ -3035,6 +3067,16 @@ class MainWindow(QMainWindow):
         # Wpisanie/upuszczenie ścieżki = ta sama droga co wybór z dialogu.
         self.video_field.changed.connect(self._set_video)
         sec.add_row("Wideo", self.video_field)
+
+        # Ustawienie dotyczy WEJŚCIA (jak plik jest czytany do podglądu), nie
+        # wyjścia — render zawsze idzie na oryginale, niezależnie od proxy.
+        self.proxy_chk = QCheckBox(_TR("proxy_chk"))
+        self.proxy_chk.setToolTip(_TR("tip_proxy_chk"))
+        self.proxy_chk.setChecked(
+            QSettings().value("ui/preview_proxy", True, type=bool))
+        self.proxy_chk.toggled.connect(
+            lambda on: QSettings().setValue("ui/preview_proxy", on))
+        sec.add_row("", self.proxy_chk)
 
         self.source_seg = SegmentedControl([("text", _TR("source_text")),
                                             ("id", _TR("source_id"))])
@@ -3650,6 +3692,7 @@ class MainWindow(QMainWindow):
             info = ffmpeg.probe(path)
             self._video_size = (info.width, info.height)
         except Exception:  # noqa: BLE001
+            info = None
             self._video_size = None
 
         # Zapamiętane ustawienia dla tego pliku (zastosujemy po analizie audio).
@@ -3658,9 +3701,25 @@ class MainWindow(QMainWindow):
         lrf = ffmpeg.find_lrf(path)
         self.lrf_path = str(lrf) if lrf else None
         audio_src = self.lrf_path or path
-        # Player gra na proxy LRF, jeśli jest — mały plik dekoduje się od ręki,
-        # a offsety nakładek i tak skalujemy do rozdzielczości ORYGINAŁU.
-        self._set_player_source(audio_src)
+        # Player gra na proxy (LRF od DJI albo nasze 540p), jeśli jest — mały plik
+        # dekoduje się od ręki, a offsety nakładek i tak skalujemy do rozdzielczości
+        # ORYGINAŁU (`_video_size`), więc podgląd zostaje WYSIWYG.
+        self._proxy_path = None
+        self._proxy_wanted = None
+        if self.lrf_path:
+            self._set_player_source(self.lrf_path)
+        elif self._needs_preview_proxy(info):
+            cached = config.find_proxy(path)
+            if cached is not None:
+                self._proxy_path = str(cached)
+                self._set_player_source(self._proxy_path)
+            else:
+                # Budowa czeka na koniec analizy audio/detekcji T0 (`_on_wave_done`)
+                # — player jest do tego czasu nieaktywny, zostaje podgląd klatki.
+                self._proxy_wanted = path
+                self._set_player_pending()
+        else:
+            self._set_player_source(path)
         self._show_loading(_TR("busy_audio_lrf") if self.lrf_path else _TR("busy_audio"))
 
         self.wave_worker = WaveformWorker(audio_src)
@@ -3687,10 +3746,94 @@ class MainWindow(QMainWindow):
             self._file_settings_ready = True  # wolno zapisywać (mamy komplet)
             status_message(self.statusBar(),
                            "Wczytano zapisane ustawienia dla tego pliku.", "info", 6000)
+            self._maybe_start_proxy()
             return
         # Pierwszy raz dla tego pliku → wykryj T0 (buzzer) i ustaw przycięcie.
         self._file_settings_ready = True
         self._auto_detect_t0()
+        # Detekcja T0 zajmuje `_run_op`, więc budowa proxy poczeka w kolejce
+        # (`_maybe_start_proxy` sam spróbuje ponownie) — analiza audio i T0 mają
+        # pierwszeństwo, bo od nich zależy przycięcie i sensowny podgląd.
+        self._maybe_start_proxy()
+
+    # ---------- proxy podglądu (540p) ----------
+    # Polityka źródła playera i scrubbera: proxy LRF (DJI) → nasze proxy 540p →
+    # oryginał. Powód (zmierzony, patrz CLAUDE.md „Proxy podglądu"): QMediaPlayer
+    # dekoduje 4K HEVC programowo — 4 klatki na 5 s odtwarzania; to samo nagranie
+    # jako proxy 540p gra ~47 fps. Pliki ≤1080p H.264 grają wprost, bez proxy.
+
+    def _needs_preview_proxy(self, info) -> bool:
+        if info is None or not self.proxy_chk.isChecked():
+            return False
+        return info.height > 1080 or "hevc" in (info.codec or "").lower()
+
+    def _frame_src(self) -> str:
+        """Źródło do ekstrakcji klatek (scrubber, podgląd statyczny).
+
+        Ta sama kolejność co dla playera: klatka z 4K HEVC wychodzi sekundami,
+        z proxy — ułamkiem sekundy, a `PREVIEW_HEIGHT` (360) i tak jest niższe
+        niż proxy (540), więc jakość podglądu się nie zmienia."""
+        return self.lrf_path or self._proxy_path or self.video_path
+
+    def _maybe_start_proxy(self) -> None:
+        """Startuje budowę proxy, gdy nic ważniejszego nie trwa.
+
+        Pierwszeństwo mają: analiza audio + detekcja T0 (`_run_op` ma jeden slot)
+        oraz render/kolejka (proxy nie może odbierać im GPU/CPU). Gdy zajęte —
+        próbujemy ponownie za sekundę. Świadomie proste odpytywanie zamiast
+        łańcucha sygnałów: budowa jest jednorazowa i nieblokująca."""
+        if not self._proxy_wanted:
+            return
+        if self._op_worker is not None or self._render_busy:
+            if not self._proxy_poll_queued:
+                self._proxy_poll_queued = True
+                QTimer.singleShot(_PROXY_RETRY_MS, self._proxy_poll)
+            return
+        video = self._proxy_wanted
+        self._proxy_wanted = None      # anulowanie nie ma restartować budowy
+        out = config.proxy_path_for(video)
+        self._proxy_started_at = time.monotonic()
+        self._proxy_building = True
+
+        def build(progress_cb, cancel_check, on_process):
+            path = render.make_preview_proxy(
+                video, out, height=render.PREVIEW_PROXY_HEIGHT,
+                progress_cb=progress_cb, cancel_check=cancel_check,
+                on_process=on_process)
+            config.prune_proxies()
+            return str(path)
+
+        if not self._run_op(build, status_text=_TR("busy_proxy"),
+                            progress=True, progress_text=_TR("busy_proxy"),
+                            on_result=self._on_proxy_done,
+                            on_error=self._on_proxy_failed):
+            self._proxy_building = False
+            self._proxy_wanted = video   # slot zajęty — spróbujemy jeszcze raz
+            self._maybe_start_proxy()
+
+    def _proxy_busy(self) -> bool:
+        """Czy trwa (lub czeka) budowa proxy — do tooltipa transportu."""
+        return bool(self._proxy_wanted) or self._proxy_building
+
+    def _proxy_poll(self) -> None:
+        self._proxy_poll_queued = False
+        self._maybe_start_proxy()
+
+    def _on_proxy_done(self, path: str) -> None:
+        self._proxy_building = False
+        self._proxy_path = path
+        self._set_player_source(path)
+        self._show_preview_page()
+        self._rebuild_player_overlays()
+        self._seek(self.t0_spin.value())
+        took = time.monotonic() - self._proxy_started_at
+        self._ok(_TR("msg_proxy_ready").format(_fmt_time_s(round(took, 1))))
+
+    def _on_proxy_failed(self, msg: str) -> None:
+        self._proxy_building = False
+        # Proxy to DODATEK — bez niego zostaje podgląd klatki, więc to ostrzeżenie,
+        # nie błąd krytyczny.
+        self._notify("input", _TR("msg_proxy_failed").format(msg.splitlines()[0][:200]))
 
     def _auto_detect_t0(self) -> None:
         """Startuje detekcję bzyczka (T0) po imporcie pliku; po wykryciu ustawia
@@ -3772,8 +3915,14 @@ class MainWindow(QMainWindow):
 
     def _run_op(self, fn, *, button: QPushButton | None = None,
                 busy_text: str = "", status_text: str = "",
-                on_result=None, on_error=None) -> bool:
-        """Startuje `fn()` w wątku. Zwraca False, gdy inna operacja już trwa."""
+                on_result=None, on_error=None,
+                progress: bool = False, progress_text: str = "") -> bool:
+        """Startuje `fn()` w wątku. Zwraca False, gdy inna operacja już trwa.
+
+        `progress=True` — operacja zna swój czas trwania (budowa proxy): pasek
+        jest DETERMINISTYCZNY (0–100 %), a `fn` dostaje trzy uchwyty jak render:
+        `fn(progress_cb, cancel_check, on_process)`.
+        """
         if self._op_worker is not None:
             status_message(self.statusBar(), _TR("op_busy"), "warning", 6000)
             return False
@@ -3782,12 +3931,20 @@ class MainWindow(QMainWindow):
         if button is not None:
             set_busy(button, True, busy_text or button.text())
         self._set_ops_enabled(False)
-        self.progress.setRange(0, 0)       # nieokreślony — czasu nie znamy
+        if progress:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+        else:
+            self.progress.setRange(0, 0)   # nieokreślony — czasu nie znamy
         self.op_cancel_btn.setVisible(True)
         status_message(self.statusBar(), status_text, "info", 0)
-        worker = FuncWorker(fn, self._op_gen)
+        worker = FuncWorker(fn, self._op_gen, with_callbacks=progress)
         worker.done.connect(lambda gen, res, cb=on_result: self._on_op_done(gen, res, cb))
         worker.failed.connect(lambda gen, msg, cb=on_error: self._on_op_failed(gen, msg, cb))
+        if progress:
+            self._op_progress_text = progress_text or status_text
+            self._proxy_status_at = 0.0
+            worker.progressed.connect(self._on_op_progress)
         self._op_worker = worker
         # Referencja żyje do `finished` — QThread zniszczony w trakcie = crash.
         self._op_workers.append(worker)
@@ -3813,6 +3970,19 @@ class MainWindow(QMainWindow):
             set_busy(self._op_button, False)   # po _set_ops_enabled: przywraca tekst
             self._op_button = None
 
+    def _on_op_progress(self, gen: int, p: float) -> None:
+        """Postęp operacji długiej: pasek na bieżąco, pasek stanu NIE częściej niż
+        raz na sekundę (migotanie tekstu w statusbarze jest nieczytelne)."""
+        if gen != self._op_gen:
+            return
+        self.progress.setValue(int(max(0.0, min(p, 1.0)) * 100))
+        now = time.monotonic()
+        if now - self._proxy_status_at < 1.0:
+            return
+        self._proxy_status_at = now
+        status_message(self.statusBar(),
+                       f"{self._op_progress_text} {int(p * 100)} %", "info", 0)
+
     def _on_op_done(self, gen: int, result, callback) -> None:
         if gen != self._op_gen:
             return    # anulowane albo przestarzałe (zmiana pliku)
@@ -3833,6 +4003,7 @@ class MainWindow(QMainWindow):
         worker = self._op_worker
         if worker is None:
             return
+        self._proxy_building = False
         worker.cancel()
         self._op_gen += 1   # wynik, który i tak nadejdzie, zostanie odrzucony
         self._end_op()
@@ -4119,7 +4290,7 @@ class MainWindow(QMainWindow):
         if self._frame_worker and self._frame_worker.isRunning():
             self._scrubber_timer.start(_BUSY_RETRY_MS)
             return
-        self._frame_worker = FrameExtractWorker(self.lrf_path or self.video_path, t)
+        self._frame_worker = FrameExtractWorker(self._frame_src(), t)
         self._frame_worker.done.connect(self._on_scrubber_frame_ready)
         self._frame_worker.failed.connect(
             lambda m: self.preview_label.setText("Błąd podglądu klatki:\n" + m))
@@ -4175,7 +4346,7 @@ class MainWindow(QMainWindow):
                 return  # ten sam timestamp, poczekaj na wynik
             self._preview_timer.start(_BUSY_RETRY_MS)  # inny czas — retry gdy worker skończy
             return
-        self._frame_worker = FrameExtractWorker(self.lrf_path or self.video_path, anchor_t)
+        self._frame_worker = FrameExtractWorker(self._frame_src(), anchor_t)
         self._frame_worker.done.connect(self._on_frame_ready)
         self._frame_worker.failed.connect(
             lambda m: self.preview_label.setText("Błąd podglądu klatki:\n" + m))
@@ -4376,6 +4547,8 @@ class MainWindow(QMainWindow):
             btn.setEnabled(enabled)
             if not _HAS_MULTIMEDIA:
                 btn.setToolTip(_TR("msg_no_multimedia"))
+            elif not enabled and self._proxy_busy():
+                btn.setToolTip(_TR("tip_proxy_building"))
 
     def _player_active(self) -> bool:
         """Player ma sprawne źródło (jest moduł, jest plik, backend nie odmówił)."""
@@ -4416,6 +4589,20 @@ class MainWindow(QMainWindow):
         if self._player_size is not None:
             self.player_page.set_canvas(self._player_size)
             self.player.setSource(QUrl.fromLocalFile(str(Path(path).resolve())))
+        self._refresh_transport()
+
+    def _set_player_pending(self) -> None:
+        """Player bez źródła: proxy podglądu dopiero powstaje. Transport jest
+        wyłączony (`_player_active()` = False), zostaje podgląd klatki."""
+        self._release_player()
+        self._player_failed = False
+        self._player_frames = 0
+        self._priming = False
+        self._primed = False
+        self._prime_pending = False
+        self._playhead_t = 0.0
+        self._player_size = None
+        self.waveform.set_playhead(None)
         self._refresh_transport()
 
     def _release_player(self) -> None:
@@ -4496,9 +4683,25 @@ class MainWindow(QMainWindow):
             # Odtwarzanie i edycja pozycji wykluczają się (różne strony stosu).
             if self.edit_pos_btn.isChecked():
                 self.edit_pos_btn.setChecked(False)
+            resume = self._playhead_t
             self.player.play()
+            # PUŁAPKA (backend ffmpeg Qt): `setPosition` zrobione w PAUZIE na
+            # nagraniu, które jeszcze nie było odtwarzane, bywa gubione przy
+            # starcie — odtwarzanie rusza od 0 zamiast od kursora (zmierzone:
+            # po prime + seek na T0-1 `play()` grał od zera). Po starcie
+            # sprawdzamy pozycję i w razie czego przewijamy jeszcze raz.
+            if resume > _PLAY_RESUME_TOL_S:
+                QTimer.singleShot(_PLAY_RESUME_MS,
+                                  partial(self._restore_play_pos, resume))
         else:
             self.player.pause()
+
+    def _restore_play_pos(self, target: float) -> None:
+        if (not self._player_active()
+                or self.player.playbackState() != QMediaPlayer.PlayingState):
+            return
+        if abs(self.player.position() / 1000.0 - target) > _PLAY_RESUME_TOL_S:
+            self.player.setPosition(int(round(target * 1000)))
 
     def _on_player_state(self, state) -> None:
         playing = state == QMediaPlayer.PlayingState
@@ -5100,6 +5303,7 @@ class MainWindow(QMainWindow):
         self._render_busy = False
         self._set_render_enabled(True)
         self.cancel_btn.setText(_TR("act_cancel"))
+        self._maybe_start_proxy()   # render miał pierwszeństwo — teraz można
 
     def _on_cancelled(self):
         self._reset_render_ui()
@@ -5628,10 +5832,13 @@ def main():
             # WYJĄTEK od zakazu `processEvents` w pętli: tryb zrzutu nie ma pętli
             # zdarzeń, a musi doczekać analizy audio i detekcji T0 w wątkach.
             win._set_video(shot_video)
-            deadline = time.monotonic() + 60
+            # Budowa proxy podglądu (4K/HEVC) potrafi trwać kilkadziesiąt sekund
+            # — zrzut MUSI jej doczekać, inaczej łapie stronę „przygotowuję".
+            deadline = time.monotonic() + 300
             while time.monotonic() < deadline:
                 app.processEvents()
-                if win.waveform.duration and win._op_worker is None:
+                if (win.waveform.duration and win._op_worker is None
+                        and not win._proxy_busy()):
                     break
                 time.sleep(0.05)
             for _ in range(10):

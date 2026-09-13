@@ -105,3 +105,58 @@ def test_queue_missing_returns_none(cfg):
 def test_queue_corrupt_returns_none(cfg):
     cfg.queue_path().write_text("[1, 2", encoding="utf-8")
     assert cfg.load_queue() is None
+
+
+# --- cache proxy podglądu ---
+def test_proxy_path_depends_on_size_and_mtime(cfg, tmp_path):
+    import os
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x" * 10)
+    first = cfg.proxy_path_for(video)
+    assert first.parent == cfg.proxy_dir()
+    assert first.suffix == ".mp4"
+    # Ta sama zawartość i mtime → ta sama nazwa (cache trafia).
+    assert cfg.proxy_path_for(video) == first
+    # Inna zawartość (rozmiar) → inna nazwa.
+    video.write_bytes(b"x" * 20)
+    assert cfg.proxy_path_for(video) != first
+    # Sam mtime też wystarczy do zmiany klucza.
+    same_size = cfg.proxy_path_for(video)
+    os.utime(video, ns=(1_000_000_000, 1_000_000_000))
+    assert cfg.proxy_path_for(video) != same_size
+
+
+def test_find_proxy_requires_nonempty_file(cfg, tmp_path):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"x")
+    assert cfg.find_proxy(video) is None
+    path = cfg.proxy_path_for(video)
+    path.write_bytes(b"")
+    assert cfg.find_proxy(video) is None
+    path.write_bytes(b"data")
+    assert cfg.find_proxy(video) == path
+
+
+def test_prune_proxies_drops_oldest(cfg):
+    import os
+    paths = []
+    for i in range(5):
+        p = cfg.proxy_dir() / f"{i:020x}.mp4"
+        p.write_bytes(b"x" * 100)
+        os.utime(p, ns=((1_000 + i) * 10 ** 9, (1_000 + i) * 10 ** 9))
+        paths.append(p)
+    cfg.prune_proxies(max_files=2, max_bytes=10 ** 9)
+    assert [p.exists() for p in paths] == [False, False, False, True, True]
+
+
+def test_prune_proxies_respects_byte_budget(cfg):
+    import os
+    paths = []
+    for i in range(3):
+        p = cfg.proxy_dir() / f"{i:020x}.mp4"
+        p.write_bytes(b"x" * 100)
+        os.utime(p, ns=((1_000 + i) * 10 ** 9, (1_000 + i) * 10 ** 9))
+        paths.append(p)
+    cfg.prune_proxies(max_files=99, max_bytes=150)
+    # Mieści się tylko najnowszy (100 B); drugi przekroczyłby budżet.
+    assert [p.exists() for p in paths] == [False, False, True]

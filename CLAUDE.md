@@ -458,9 +458,12 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   `setVisible` (odpowiednik `enable='between(t,a,b)'` z filtergrafu). Pozycje liczy
   `render._overlay_xy`, więc player, `preview.compose_preview` i render nie mogą się
   rozjechać. Układ współrzędnych sceny = płótno nakładek: `min(wysokość źródła,
-  _PLAYER_OVERLAY_H=540)` — panele rysujemy w 540p, nie w 4K. **Źródłem jest proxy LRF**
-  (`self.lrf_path or self.video_path`): mały plik dekoduje się od ręki, a offsety i tak
-  skalujemy przez `_scaled_style` do wysokości ORYGINAŁU (WYSIWYG jak dotąd).
+  _PLAYER_OVERLAY_H=540)` — panele rysujemy w 540p, nie w 4K. **Źródłem jest proxy:**
+  LRF (DJI) → proxy podglądu 540p → oryginał (od v0.52.0 — pierwotnie
+  `self.lrf_path or self.video_path`, co dla plików BEZ LRF oznaczało 4K wprost do
+  playera i kilka klatek na sekundę; patrz wpis „Proxy podglądu"). Mały plik dekoduje
+  się od ręki, a offsety i tak skalujemy przez `_scaled_style` do wysokości ORYGINAŁU
+  (WYSIWYG jak dotąd).
   Synchronizacja nakładek idzie z `QVideoSink.videoFrameChanged` →
   `frame.startTime()` (µs) — dokładniejsze niż `positionChanged`, który zasila tylko
   playhead i etykietę czasu. **ALE tylko w `PlayingState` (v0.51.1):** w pauzie/po
@@ -503,6 +506,62 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   `build_exe.spec` wymienia je JAWNIE w `hiddenimports`; po buildzie sprawdź, czy
   w `dist/` jest `ffmpegmediaplugin.dll` / `windowsmediaplugin.dll` — bez nich player
   zgłosi błąd i zostanie sam podgląd statyczny.
+- **Proxy podglądu 540p (v0.52.0)** — odpowiednik LRF dla plików, które go nie mają.
+  POMIAR (DJI `DJI_20260812195408_0036_D.MP4`: HEVC Main 8-bit, 3840×2880, 50 fps,
+  66 Mbit/s, BEZ pliku .LRF obok): `QMediaPlayer` (backend ffmpeg Qt 6.11) dekoduje
+  go PROGRAMOWO — **4 klatki na 5 s odtwarzania**; podpowiedzi
+  `QT_FFMPEG_DECODING_HW_DEVICE_TYPES=d3d11va|cuda|dxva2` NIC nie dają. To samo
+  nagranie jako proxy 540p H.264: budowa **21,5 s** (NVENC), odtwarzanie **~50 fps**
+  (253 klatki/5 s), 24,8 MB. Seeki w pauzie i sync nakładek działały na 4K poprawnie —
+  problemem jest wyłącznie przepustowość dekodera.
+  - **Domena:** `render.make_preview_proxy(video, out, *, height=PREVIEW_PROXY_HEIGHT=540,
+    encoder="auto", progress_cb, cancel_check, on_process, on_encoder)`. Komenda:
+    `-map 0:v:0 -map 0:a:0?` (pliki DJI mają obok HEVC miniaturę MJPEG i strumień
+    `djmd` — ta sama pułapka `0:v:0` co w render/trim), `scale=-2:540`, audio AAC 96k,
+    `+faststart`, `UNTRUSTED_INPUT_ARGS` przed `-i`, postęp/anulowanie przez
+    `_run_with_progress`. Trzy próby po kolei: NVENC `-hwaccel cuda -preset p1 -b:v 3M`
+    → NVENC bez `-hwaccel` → `libx264 -preset ultrafast -crf 28` (bez NVENC budowa
+    idzie mniej więcej w czasie rzeczywistym, czyli ~1 min na minutę nagrania —
+    znośnie, bo raz na plik). PUŁAPKA: zapis idzie do `*.part.mp4` i dopiero po
+    sukcesie `rename` — przerwana budowa (anulowanie, awaria, zamknięcie aplikacji)
+    NIE MOŻE zostawić w cache pliku wyglądającego na gotowe proxy.
+  - **Cache (`config.py`):** `proxy_dir()` = `config_dir()/"proxies"`;
+    `proxy_path_for(video)` = `sha1("<ścieżka>|<rozmiar>|<mtime_ns>")[:20] + ".mp4"`
+    (podmiana pliku pod tą samą nazwą daje inny skrót — nigdy nie odtworzymy proxy
+    nieodpowiadającego zawartości); `find_proxy` (istnieje i > 0 B); `prune_proxies`
+    (24 pliki / 3 GB, kasuje najstarsze po `atime`/`mtime`) wołane po każdej udanej
+    budowie. Katalog jest OSOBNY — `file_settings.json`/`last_style.json` bez zmian.
+  - **Polityka źródła (GUI, `_set_video`):** `lrf_path` → gdy `probe` mówi
+    `height > 1080` LUB `codec` zawiera `hevc` (nowe pole `ffmpeg.VideoInfo.codec`,
+    z `codec_name` w ffprobe albo `Video: hevc` ze stderr) → `config.find_proxy`;
+    brak → budowa w tle. Pliki ≤1080p H.264 grają wprost, jak dotąd. Do czasu
+    gotowości player jest NIEAKTYWNY (`_set_player_pending` zeruje `_player_size`,
+    więc `_player_active()` = False → transport wyłączony, tooltip
+    „Trwa przygotowanie proxy podglądu"), zostaje podgląd klatki. `FrameExtractWorker`
+    czyta ze wspólnego `_frame_src()` (LRF → proxy → oryginał) — ekstrakcja klatki
+    z 4K HEVC trwa sekundy, z proxy ułamek; `PREVIEW_HEIGHT=360` < 540, więc jakość
+    podglądu bez zmian.
+  - **Kolejność zadań:** budowa rusza dopiero po `_on_wave_done` i tylko gdy wolny
+    jest slot `_run_op` (analiza audio + detekcja T0 mają pierwszeństwo) oraz gdy nie
+    trwa render (`_render_busy`) — inaczej `_maybe_start_proxy` odpytuje co
+    `_PROXY_RETRY_MS=1000` (świadomie proste odpytywanie zamiast łańcucha sygnałów;
+    `_reset_render_ui` dobudza je po renderze). Zmiana pliku w trakcie budowy anuluje
+    ją przez istniejący `_cancel_operation` + token pokolenia `_op_gen`.
+  - **`_run_op(..., progress=True)`:** pasek postępu jest DETERMINISTYCZNY (0–100 %),
+    a `fn` dostaje trzy uchwyty jak render — `fn(progress_cb, cancel_check, on_process)`
+    (`FuncWorker(with_callbacks=True)`; `cancel()` dodatkowo ubija proces FFmpeg, bo
+    sama flaga zadziałałaby dopiero przy kolejnej linii postępu). Pasek stanu
+    („Przygotowuję proxy podglądu… N %") odświeżany nie częściej niż raz na sekundę.
+  - **Ustawienie:** checkbox „Proxy podglądu (auto)" w sekcji „Wejście" pod polem
+    Wideo (to sprawa WEJŚCIA — render zawsze idzie na oryginale), stan w
+    `QSettings("ui/preview_proxy")`, domyślnie ON.
+  - **PUŁAPKA odkryta przy weryfikacji (v0.52.0):** `setPosition` zrobione w PAUZIE na
+    nagraniu, które jeszcze nie było odtwarzane, bywa przez backend GUBIONE — `play()`
+    ruszał od 0 zamiast od kursora (zmierzone: po rozgrzewaniu + seek na T0−1 s
+    odtwarzanie szło od zera; dotyczy i 4K, i proxy). `_on_play_toggled` po `play()`
+    sprawdza więc pozycję (`_PLAY_RESUME_MS=200`) i przy rozjeździe > 1 s przewija
+    jeszcze raz.
+
 - **`parser.format_timeline(shots)` (v0.50.0):** odwrotność `parse_timeline`
   (round-trip, test w `tests/test_parser.py`) — numeruje od 1 i PRZELICZA splity
   z czasów, bo po wstawieniu strzału w środek sesji stare splity są nieaktualne.

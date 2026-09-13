@@ -30,6 +30,7 @@ class VideoInfo:
     fps: float
     width: int
     height: int
+    codec: str = ""   # nazwa kodeka wideo (np. "h264", "hevc") — pusta gdy nieznana
 
 
 # Bezpieczeństwo: plik wejściowy pochodzi od użytkownika (upload w wersji WWW),
@@ -142,7 +143,8 @@ def probe(video_path: str | Path) -> VideoInfo:
 def _probe_with_ffprobe(probe_exe: str, video_path: str) -> VideoInfo | None:
     cmd = [
         probe_exe, *UNTRUSTED_INPUT_ARGS, "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,avg_frame_rate:format=duration",
+        "-show_entries",
+        "stream=width,height,avg_frame_rate,codec_name:format=duration",
         "-of", "json", video_path,
     ]
     res = _run(cmd)
@@ -158,6 +160,7 @@ def _probe_with_ffprobe(probe_exe: str, video_path: str) -> VideoInfo | None:
             fps=fps,
             width=int(stream["width"]),
             height=int(stream["height"]),
+            codec=str(stream.get("codec_name") or ""),
         )
     except (KeyError, IndexError, ValueError, ZeroDivisionError):
         return None
@@ -166,6 +169,8 @@ def _probe_with_ffprobe(probe_exe: str, video_path: str) -> VideoInfo | None:
 _DUR_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)")
 _RES_RE = re.compile(r"\b(\d{2,5})x(\d{2,5})\b")
 _FPS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*fps")
+# `Stream #0:0(eng): Video: hevc (Main) (hvc1 / …), yuv420p, 3840x2880, …`
+_CODEC_RE = re.compile(r"Video:\s*([A-Za-z0-9_]+)")
 
 
 def _probe_with_ffmpeg(video_path: str) -> VideoInfo:
@@ -196,8 +201,11 @@ def _probe_with_ffmpeg(video_path: str) -> VideoInfo:
     fm = _FPS_RE.search(video_line)
     if fm:
         fps = float(fm.group(1))
+    cm = _CODEC_RE.search(video_line)
+    codec = cm.group(1).lower() if cm else ""
 
-    return VideoInfo(duration=duration, fps=fps, width=width, height=height)
+    return VideoInfo(duration=duration, fps=fps, width=width, height=height,
+                     codec=codec)
 
 
 def extract_audio(video_path: str | Path, out_wav: str | Path,

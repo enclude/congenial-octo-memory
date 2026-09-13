@@ -1,4 +1,8 @@
-from piro_overlay import overlay, render
+import subprocess
+
+import pytest
+
+from piro_overlay import ffmpeg, overlay, render
 from piro_overlay.models import AnchorMode, OverlayStyle, Session, Shot
 from piro_overlay.render import auto_trim_window
 
@@ -257,3 +261,39 @@ def test_run_with_progress_logs_python_exception_and_kills_proc(monkeypatch):
         render._run_with_progress(["ffmpeg", "-i", "in.mp4", "out.mp4"], 1.0, None)
     assert killed["kill"]
     assert any(m.startswith("FAIL (python):") for m in logged)
+
+
+def test_make_preview_proxy(tiny_video, tmp_path):
+    """E2E na realnym pliku: proxy powstaje, jest niższe i zachowuje audio."""
+    out = tmp_path / "proxy.mp4"
+    seen: list[str] = []
+    progress: list[float] = []
+    render.make_preview_proxy(tiny_video, out, height=120, encoder="cpu",
+                              progress_cb=progress.append,
+                              on_encoder=seen.append)
+    assert out.exists() and out.stat().st_size > 0
+    assert seen == ["libx264"]
+    info = ffmpeg.probe(out)
+    assert info.height <= 120
+    assert info.width % 2 == 0          # scale=-2 → parzysta szerokość
+    # Plik roboczy nie zostaje w cache (inaczej wyglądałby na gotowe proxy).
+    assert not out.with_suffix(".part.mp4").exists()
+    assert progress and max(progress) > 0
+
+
+def test_make_preview_proxy_keeps_audio(tiny_video, tmp_path):
+    out = tmp_path / "proxy_a.mp4"
+    render.make_preview_proxy(tiny_video, out, height=120, encoder="cpu")
+    res = subprocess.run([ffmpeg.ffmpeg_exe(), "-hide_banner", "-i", str(out)],
+                         capture_output=True, text=True,
+                         encoding="utf-8", errors="replace")
+    assert "Audio:" in res.stderr
+
+
+def test_make_preview_proxy_cancel_leaves_no_file(tiny_video, tmp_path):
+    out = tmp_path / "proxy_c.mp4"
+    with pytest.raises(render.RenderCancelled):
+        render.make_preview_proxy(tiny_video, out, height=120, encoder="cpu",
+                                  cancel_check=lambda: True)
+    assert not out.exists()
+    assert not out.with_suffix(".part.mp4").exists()

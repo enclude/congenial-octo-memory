@@ -224,3 +224,75 @@ def load_queue() -> dict | None:
     except Exception as exc:  # noqa: BLE001
         _log_error("load_queue", exc)
         return None
+
+
+# --- cache proxy podglądu (osobny katalog, NIE miesza się z file_settings.json) ---
+# Proxy 540p jednego nagrania to kilka–kilkadziesiąt MB, więc cache ma DWA limity:
+# liczbę plików i łączny rozmiar. Sprzątamy po każdej udanej budowie.
+_PROXY_MAX_FILES = 24
+_PROXY_MAX_BYTES = 3 * 1024 ** 3
+
+
+def proxy_dir() -> Path:
+    """Katalog z proxy podglądu (tworzy go, jeśli nie istnieje)."""
+    d = config_dir() / "proxies"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def proxy_path_for(video_path: str | Path) -> Path:
+    """Ścieżka proxy dla danego pliku wideo (nie sprawdza, czy istnieje).
+
+    Nazwa to skrót ze ścieżki ORAZ rozmiaru i czasu modyfikacji — podmiana pliku
+    pod tą samą nazwą (albo dogranie innego nagrania z kamery) daje inny skrót,
+    więc nigdy nie odtworzymy proxy nieodpowiadającego bieżącej zawartości.
+    """
+    import hashlib
+    p = Path(video_path)
+    try:
+        resolved = str(p.resolve())
+    except Exception:  # noqa: BLE001
+        resolved = str(p)
+    try:
+        st = p.stat()
+        size, mtime = st.st_size, st.st_mtime_ns
+    except OSError:
+        size, mtime = 0, 0
+    key = f"{resolved}|{size}|{mtime}"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:20]
+    return proxy_dir() / f"{digest}.mp4"
+
+
+def find_proxy(video_path: str | Path) -> Path | None:
+    """Gotowe proxy dla pliku (None gdy brak albo plik pusty/uszkodzony)."""
+    try:
+        path = proxy_path_for(video_path)
+        if path.exists() and path.stat().st_size > 0:
+            return path
+    except Exception as exc:  # noqa: BLE001
+        _log_error("find_proxy", exc)
+    return None
+
+
+def prune_proxies(max_files: int = _PROXY_MAX_FILES,
+                  max_bytes: int = _PROXY_MAX_BYTES) -> None:
+    """Usuwa najstarsze proxy, gdy cache przekroczy limit plików albo rozmiaru.
+
+    „Najstarsze" liczymy po ostatnim UŻYCIU (`atime`, z `mtime` jako zapasem) —
+    proxy, na którym użytkownik wciąż pracuje, przeżywa sprzątanie."""
+    try:
+        entries = []
+        for path in proxy_dir().glob("*.mp4"):
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            entries.append((max(st.st_atime, st.st_mtime), st.st_size, path))
+        entries.sort(reverse=True)   # najświeższe pierwsze
+        total = 0
+        for i, (_, size, path) in enumerate(entries):
+            total += size
+            if i >= max_files or total > max_bytes:
+                path.unlink(missing_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        _log_error("prune_proxies", exc)

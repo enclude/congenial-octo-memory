@@ -236,6 +236,29 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "rect_panel": {Lang.PL: "panel strzału", Lang.EN: "shot panel"},
     "rect_clock": {Lang.PL: "zegar", Lang.EN: "clock"},
     "rect_meta": {Lang.PL: "metadane", Lang.EN: "metadata"},
+    "proxy_chk": {Lang.PL: "Proxy podglądu (auto)", Lang.EN: "Preview proxy (auto)"},
+    "tip_proxy_chk": {
+        Lang.PL: "Dla nagrań 4K i HEVC aplikacja buduje raz małe proxy 540p i to ono "
+                 "gra w podglądzie oraz w podglądzie klatki. Bez niego odtwarzacz "
+                 "dekoduje 4K programowo i pokazuje kilka klatek na sekundę. "
+                 "Proxy leżą w katalogu konfiguracji (AppData → PiroOverlay → proxies) "
+                 "i są kasowane od najstarszych; render zawsze idzie na oryginale.",
+        Lang.EN: "For 4K and HEVC recordings the app builds a small 540p proxy once and "
+                 "plays that in the motion and frame previews. Without it the player "
+                 "decodes 4K in software and shows a few frames per second. "
+                 "Proxies live in the config directory (AppData → PiroOverlay → proxies) "
+                 "and the oldest are dropped first; rendering always uses the original."},
+    "busy_proxy": {Lang.PL: "Przygotowuję proxy podglądu…",
+                   Lang.EN: "Building the preview proxy…"},
+    "tip_proxy_building": {Lang.PL: "Trwa przygotowanie proxy podglądu",
+                           Lang.EN: "The preview proxy is being prepared"},
+    "msg_proxy_ready": {Lang.PL: "Proxy podglądu gotowe ({} s).",
+                        Lang.EN: "Preview proxy ready ({} s)."},
+    "msg_proxy_failed": {
+        Lang.PL: "Nie udało się zbudować proxy podglądu ({}). Podgląd w ruchu jest "
+                 "wyłączony dla tego pliku. Zostaje podgląd klatki (Ctrl+klik na osi).",
+        Lang.EN: "The preview proxy could not be built ({}). Motion preview is disabled "
+                 "for this file. The frame preview (Ctrl+click on the timeline) still works."},
     "busy_audio": {Lang.PL: "Analiza audio…", Lang.EN: "Analysing audio…"},
     "busy_audio_lrf": {Lang.PL: "Analiza audio (proxy LRF)…",
                        Lang.EN: "Analysing audio (LRF proxy)…"},
