@@ -5768,6 +5768,8 @@ def main():
     shot_path = _pop_option(argv, "--screenshot")
     shot_video = _pop_option(argv, "--video")   # tylko z --screenshot (zrzut z nagraniem)
     shot_edit = _pop_flag(argv, "--edit")       # zrzut w trybie „Edytuj pozycje"
+    shot_id = _pop_option(argv, "--id")         # z --video: prawdziwa sesja z API zamiast demo osi
+    shot_at = _pop_option(argv, "--at")         # z --video: pauza playera na T0+N s (domyślnie 1.5)
     # zrzut okna pomocniczego zamiast głównego: "queue" (kolejka) albo "batch" (wsad)
     shot_window = _pop_option(argv, "--window")
     scale = _pop_option(argv, "--scale")
@@ -5843,21 +5845,45 @@ def main():
                 time.sleep(0.05)
             for _ in range(10):
                 app.processEvents()
-            # Oś bez markerów niczego nie pokazuje — zrzut dostaje demo osi czasu,
-            # kursor podglądu i fokus na osi (pierścień fokusu musi być widoczny).
-            win.timeline_edit.setPlainText(_SHOT_DEMO_TIMELINE)
-            win._set_source("text")
-            win._refresh_timeline_summary()
+            if shot_id:
+                # Prawdziwa sesja z API (zrzuty do README): „Pobierz i przytnij"
+                # = fetch + T0 + auto-przycięcie, jak kliknięcie w GUI.
+                win.id_spin.setValue(int(shot_id))
+                win._set_source("id")
+                # Świeża detekcja T0 — zapisane ustawienia pliku (`file_settings.json`)
+                # mają pierwszeństwo i mogą nieść stary T0 sprzed poprawek detekcji.
+                win._detect_start_signal()
+                deadline = time.monotonic() + 120
+                while time.monotonic() < deadline:
+                    app.processEvents()
+                    if win._op_worker is None:
+                        break
+                    time.sleep(0.05)
+                win._fetch_id_and_trim()
+                deadline = time.monotonic() + 120
+                while time.monotonic() < deadline:
+                    app.processEvents()
+                    if win.session is not None and win._op_worker is None:
+                        break
+                    time.sleep(0.05)
+                for _ in range(10):
+                    app.processEvents()
+            else:
+                # Oś bez markerów niczego nie pokazuje — zrzut dostaje demo osi czasu.
+                win.timeline_edit.setPlainText(_SHOT_DEMO_TIMELINE)
+                win._set_source("text")
+                win._refresh_timeline_summary()
             if shot_edit:
                 win.edit_pos_btn.setChecked(True)
             dur = win.waveform.duration
-            if dur:
+            if dur and not shot_id:
                 t0 = win.t0_spin.value()
-                # zrzut ma pokazać WĘŻSZY zakres Od…Do niż całe nagranie
                 # zrzut ma pokazać WĘŻSZY zakres Od…Do niż całe nagranie
                 win.trim_start_spin.setValue(max(0.0, t0 - 2.0))
                 win.trim_end_spin.setValue(min(dur, t0 + 8.0))
-                win.waveform.preview_t = min(dur, t0 + 2.0)
+            if dur:
+                # kursor podglądu i fokus na osi (pierścień fokusu musi być widoczny)
+                win.waveform.preview_t = min(dur, win.t0_spin.value() + 2.0)
             win.waveform.setFocus()
             win._update_preview()
             win._update_preview_time()
@@ -5884,9 +5910,13 @@ def main():
                 # i na pozycję zrzut łapie losową klatkę (albo pustą scenę).
                 _wait(lambda: win.player.playbackState()
                       != QMediaPlayer.PlayingState, 5.0)
-                target = win.t0_spin.value() + 1.5
+                target = win.t0_spin.value() + (float(shot_at) if shot_at else 1.5)
+                frames_before = win._player_frames
                 win._seek(target)
                 _wait(lambda: abs(win.player.position() / 1000.0 - target) < 0.25, 5.0)
+                # Klatka po seeku przychodzi asynchronicznie — bez tego zrzut
+                # potrafi złapać pustą scenę (same nakładki na tle).
+                _wait(lambda: win._player_frames > frames_before, 8.0)
                 for _ in range(10):
                     app.processEvents()
                 print(f"player: klatki={win._player_frames} "

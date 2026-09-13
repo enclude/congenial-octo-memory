@@ -3,7 +3,7 @@
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Strona projektu:** [shothud.com](https://shothud.com) (marka ShotHUD)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.52.0
+> **Wersja:** 0.52.1
 > **Dokumentacja wersji web (Docker/deploy):** [readme_web.md](readme_web.md)
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
@@ -17,36 +17,72 @@ wzbogacają nagłówek i podsumowanie.
 
 ## Zrzuty ekranu
 
+Wszystkie zrzuty pochodzą z jednego realnego nagrania (DJI Osmo, 4K HEVC 50 fps) — sesja
+„ŁUKASZ W." uczestnika Jaro, 10 strzałów, ID pobrane z API po zdekodowaniu sygnału
+tonowego z audio. Wersja 0.52.
+
 ### Główne okno (po wczytaniu wideo)
 
-Lewy panel — wejście (wideo, oś czasu/ID), synchronizacja i przycięcie oraz pełna
-konfiguracja wyglądu nakładki. Po prawej podgląd na żywo (z planszą START) i waveforma
-z zaznaczonymi T0 oraz oknem przycięcia.
+Pasek akcji ze skrótami (Ctrl+O/G/D/T/R), lewy inspektor w zwijanych sekcjach (wejście,
+synchronizacja i przycięcie, wygląd, kolory, metadane, zegar, plansza START, wyjście),
+po prawej **podgląd w ruchu** z nakładką na żywo i paskiem transportu (Spacja, J/K/L,
+klatka `,`/`.`, pętla Od–Do) oraz oś czasu z falą audio, wykrytymi impulsami, T0,
+zakresem przycięcia i playheadem. Pasek stanu pokazuje wynik ostatniej operacji,
+status NVENC i postęp renderu.
 
 ![Główne okno aplikacji po załadowaniu wideo](pictures/02%20widok%20aplikacji%20po%20załadowaniu%20wideo.png)
 
 ### Nakładka z płynącym czasem
 
-Panel strzału (numer, czas od startu, split, „x z yy") oraz opcjonalny zegar „T+x.xs"
-liczony od sygnału startu.
+Klasyczny panel strzału (tor, uczestnik, „Strzał x z yy", czas od startu, split) oraz
+zegar „T+x.xs" liczony od sygnału startu — klatka z wyrenderowanego pliku.
 
-![Widok nakładki z płynącym czasem](pictures/01%20widok%20nakładki%20z%20czasem.png)
+![Widok nakładki z płynącym czasem](pictures/01%20widok%20nakładki%20z%20czasem.jpg)
 
-### Nakładka „lista strzałów" + metadane (od v0.37.0)
+### Nakładka „lista strzałów" + metadane
 
 Alternatywny styl panelu: ostatnie strzały jako lista (numer | czas | split) — nowy strzał
 pojawia się na dole (wyróżniony, z postępem „x/yy"), starsze przesuwają się w górę
-i stopniowo gasną. Do tego osobna, niezależnie pozycjonowana nakładka z nazwą toru
-i uczestnikiem. Obie nakładki można przeciągać myszą w podglądzie (tryb edycji pozycji).
+i gasną, pierwszy strzał zostaje przypięty na górze. Osobna nakładka z nazwą toru
+i uczestnikiem w innym rogu.
 
-![Widok nakładki „lista strzałów" z metadanymi toru i uczestnika](pictures/04%20widok%20nakładki%20lista%20strzałów.png)
+![Widok nakładki „lista strzałów" z metadanymi toru i uczestnika](pictures/04%20widok%20nakładki%20lista%20strzałów.jpg)
 
-### Przetwarzanie wsadowe
+### Plansza START i panel podsumowania
 
-Okno „Wsadowo…" — wiele plików naraz w trybie auto + ID, ze wspólnymi ustawieniami
-(katalog, sufiks, format, GPU, nakładka, zegar) i eksportem/importem listy przez schowek.
+Plansza START wyświetlana w momencie sygnału timera (T0), a po ostatnim strzale panel
+podsumowania: pierwszy strzał, czas bazowy, suma kar, czas końcowy.
+
+![Plansza START w momencie sygnału startu](pictures/05%20plansza%20START.jpg)
+
+![Panel podsumowania po ostatnim strzale](pictures/06%20panel%20podsumowania.jpg)
+
+### Tryb edycji pozycji
+
+„Edytuj pozycje" (skrót E) pokazuje ramki nakładek w podglądzie — panel strzału, metadane
+i zegar można przeciągać myszą, a offsety zapisują się w pikselach wyjścia (podgląd
+jest WYSIWYG względem renderu).
+
+![Tryb edycji pozycji z ramkami nakładek](pictures/07%20tryb%20edycji%20pozycji.png)
+
+### Kolejka renderów i przetwarzanie wsadowe
+
+Kolejka renderuje kilka zadań równolegle (NVENC), pamięta niewykonane zadania między
+uruchomieniami i pokazuje powód błędu. Okno „Wsadowo…" przygotowuje wiele plików naraz
+w trybie auto + ID (wykrycie ID z audio, T0, przycięcie) ze wspólnymi ustawieniami.
+
+![Okno kolejki renderów](pictures/08%20kolejka%20renderów.png)
 
 ![Widok wsadowego przetwarzania danych](pictures/03%20widok%20wsadowego%20przetwarzania%20danych.png)
+
+### Motyw jasny i stan początkowy
+
+Motyw przełącza się przyciskiem w pasku akcji (zapamiętywany). Bez wczytanego pliku
+podgląd pokazuje stan pusty z jedną akcją główną.
+
+![Motyw jasny](pictures/09%20motyw%20jasny.png)
+
+![Stan początkowy bez wideo](pictures/10%20stan%20pusty.png)
 
 ## Jak to działa
 

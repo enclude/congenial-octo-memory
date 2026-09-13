@@ -904,6 +904,14 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
     PENDING/RUNNING/FAILED w kolejce; NEEDS_ID/READY/FAILED we wsadzie) i zwraca je do
     zrzutu zamiast głównego okna — `main()` rozgałęzia PRZED istniejącą logiką
     `--video`/grab głównego okna.
+  - **`--id N` / `--at S` w trybie `--screenshot --video` (v0.52.1, zrzuty README):** prawdziwa
+    sesja z API zamiast demo osi; przed „Pobierz i przytnij” WYMUSZA świeżą detekcję T0, bo
+    `file_settings.json` ma pierwszeństwo i może nieść stary T0 sprzed poprawek detekcji
+    (realny przypadek `_0035`: zapisane 26,2 s = kling zrzutu zamka, poprawne 32,05 s);
+    player pauzuje na T0+S i czeka na NOWĄ klatkę po seeku (w offscreen bywała spóźniona —
+    zrzut łapał same nakładki na tle sceny). Zrzuty w README: nagranie
+    `DJI_20260812195106_0035` (ID 326, uczestnik Jaro), klatki nakładek z renderu (NVENC),
+    JPG dla klatek wideo (PNG 3 MB → 250–300 KB).
   - **PUŁAPKA — `BatchDialog` za niski po zamianie `QGroupBox` na `FormSection`:**
     `FormSection` (nagłówek + odstępy tokenów) zajmuje więcej pionu niż
     `QGroupBox`+`QFormLayout`; przy starym `setMinimumSize(720, 460)` layout się nakładał
