@@ -123,6 +123,36 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **„Zapisz klatkę" — PNG z nakładką w pełnej rozdzielczości (v0.57.0):** przycisk
+  icon-only (`camera`, nowa ikona `assets/icons/camera.svg`) w pasku nad podglądem,
+  obok „Dopasuj"/„Zoom Od–Do", skrót **Ctrl+S** (skrót okna z modyfikatorem — działa
+  nawet gdy fokus jest w polu tekstowym, w przeciwieństwie do gołego „E"). Domenowa
+  funkcja `preview.render_still(video_path, t, session, t0, style, duration, *,
+  height=None)` (bez Qt): `ffmpeg.extract_frame(..., scale_height=height)` (bez
+  `height` = pełna rozdzielczość źródła — `extract_frame` już obsługiwał
+  `scale_height=None`, zero zmian tam potrzebnych) + `compose_preview` z `video_h`
+  klatki (skalowanie offsetów 1:1, bo klatka i offsety są w tej samej rozdzielczości).
+  GUI (`gui._on_save_frame`): dialog zapisu (`QFileDialog.getSaveFileName`, filtr PNG,
+  domyślna nazwa `<stem>_<czas>s.png` w `config.load_last_dir("output")` — ten sam
+  klucz co `_choose_output`) PRZED pracą w tle — użytkownik nie czeka na ekstrakcję
+  klatki z 4K/HEVC (sekundy), żeby dopiero wybrać plik. Ekstrakcja+kompozycja+zapis
+  idzie przez `_run_op(fn, button=save_frame_btn, ...)` jak inne długie operacje;
+  `save_frame_btn` jest w `_op_buttons` (blokowany na czas innej operacji) i wyłączony
+  bez wideo (`_set_render_enabled` — jak `render_btn`, ale NIEZALEŻNIE od stanu
+  renderu: czytanie oryginału FFmpeg-iem obok trwającego renderu jest bezpieczne).
+  **Czas klatki** (`gui._current_still_time`) = to samo źródło co pasek „▶ czas" nad
+  podglądem: pozycja playera (`player.position()`, gdy aktywny) → kursor podglądu
+  (`waveform.preview_t`) → playhead → T0+1 s (świeżo wczytany plik, nic jeszcze nie
+  wskazano). Sesja jak w `_on_scrubber_frame_ready`/`_update_preview` (`self.session
+  or self._safe_session()` — ta sama zasada „podgląd i render muszą używać tej samej
+  sesji", patrz wpis w „Uwagi/pułapki"); `session=None` → czysta klatka (tryb „bez
+  nakładki"). Tryb `--screenshot --video X --save-frame PATH`: ta sama ścieżka
+  domenowa, ale SYNCHRONICZNIE i bez dialogu (tryb zrzutu nie ma pętli zdarzeń dla
+  `_run_op`/QThread) — użyty do weryfikacji na realnym nagraniu `_0035`
+  (ID 326, T0+1,5 s): 3840×2880, nakładka (panel metadanych) w tej samej pozycji
+  co w podglądzie na żywo. i18n: `save_frame`, `tip_save_frame`, `busy_save_frame`,
+  `msg_frame_saved`, `msg_save_frame_failed`.
+
 - **„Automat z folderu…" we wsadzie (v0.56.0):** jedno kliknięcie od karty pamięci do
   przeglądu — `BatchDialog._auto_from_folder` pyta o katalog
   (`QFileDialog.getExistingDirectory`, pamięć katalogu pod NOWYM kluczem

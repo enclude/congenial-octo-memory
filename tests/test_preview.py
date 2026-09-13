@@ -68,3 +68,21 @@ def test_scaled_style_scales_offsets():
 def test_scaled_style_identity_when_same_height():
     style = OverlayStyle(offset_x=100)
     assert preview.scaled_style(style, 540, 540) is style
+
+
+def test_render_still_full_resolution_matches_source(tiny_video):
+    from piro_overlay import ffmpeg as ffmpeg_mod
+
+    info = ffmpeg_mod.probe(str(tiny_video))
+    out = preview.render_still(str(tiny_video), 0.7, _session(), 0.0,
+                               OverlayStyle(), 3.0)
+    assert out.size == (info.width, info.height)
+
+
+def test_render_still_with_session_differs_from_plain(tiny_video):
+    plain = preview.render_still(str(tiny_video), 0.7, None, 0.0,
+                                 OverlayStyle(), 3.0)
+    overlaid = preview.render_still(str(tiny_video), 0.7, _session(), 0.0,
+                                    OverlayStyle(), 3.0)
+    assert plain.size == overlaid.size
+    assert plain.tobytes() != overlaid.tobytes()

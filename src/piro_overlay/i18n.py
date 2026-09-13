@@ -249,6 +249,17 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "tip_preview_zoom_range": {
         Lang.PL: "Powiększ oś do zakresu przycięcia (Od…Do) z marginesem",
         Lang.EN: "Zoom the timeline to the trim range (From…To) with a margin"},
+    "save_frame": {Lang.PL: "Zapisz klatkę", Lang.EN: "Save frame"},
+    "tip_save_frame": {
+        Lang.PL: "Zapisz bieżącą klatkę wideo z nakładką jako PNG w pełnej "
+                 "rozdzielczości źródła",
+        Lang.EN: "Save the current video frame with overlay as a PNG at the "
+                 "source's full resolution"},
+    "busy_save_frame": {Lang.PL: "Zapisuję klatkę…", Lang.EN: "Saving frame…"},
+    "msg_frame_saved": {Lang.PL: "Zapisano klatkę: {}", Lang.EN: "Frame saved: {}"},
+    "msg_save_frame_failed": {
+        Lang.PL: "Nie udało się zapisać klatki: {}",
+        Lang.EN: "Failed to save the frame: {}"},
     "rect_panel": {Lang.PL: "panel strzału", Lang.EN: "shot panel"},
     "rect_clock": {Lang.PL: "zegar", Lang.EN: "clock"},
     "rect_meta": {Lang.PL: "metadane", Lang.EN: "metadata"},

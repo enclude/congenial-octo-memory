@@ -8,11 +8,13 @@ temu backend WWW pokazuje dokładnie to, co wyrenderuje `render.render_video`.
 
 from __future__ import annotations
 
+import tempfile
 from dataclasses import replace
+from pathlib import Path
 
 from PIL import Image
 
-from . import overlay, render
+from . import ffmpeg, overlay, render
 from .models import OverlayStyle, Session
 
 
@@ -86,3 +88,23 @@ def compose_preview(frame: Image.Image, session: Session | None, t: float,
         elapsed = min(t - t0, session.shots[-1].czas)
         _composite_clock(composite, pstyle, session, elapsed)
     return composite
+
+
+def render_still(video_path: str, t: float, session: Session | None, t0: float,
+                 style: OverlayStyle, duration: float, *,
+                 height: int | None = None) -> Image.Image:
+    """Klatka z ORYGINALNEGO wideo (`ffmpeg.extract_frame`) + nakładka aktywna
+    dla czasu `t`, skomponowana dokładnie jak render (`compose_preview`).
+
+    Bez `height` (domyślnie) klatka jest w PEŁNEJ rozdzielczości źródła — do
+    tego służy „Zapisz klatkę" w GUI (`gui.py`), gdzie liczy się dokładność
+    1:1 z wyjściem `render_video`, nie szybkość jak w podglądzie na żywo
+    (`PREVIEW_HEIGHT`). `session=None` daje czystą klatkę (tryb „bez nakładki").
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        frame_png = ffmpeg.extract_frame(
+            video_path, t, Path(tmp) / "still.png", scale_height=height)
+        frame = Image.open(frame_png).convert("RGBA")
+        frame.load()  # wczytaj do pamięci zanim katalog tymczasowy zniknie
+    return compose_preview(frame, session, t, t0, style, duration,
+                           video_h=frame.size[1])

@@ -61,7 +61,7 @@ from PIL import Image
 from PIL.ImageQt import ImageQt
 
 from . import (__version__, api, audio_sync, config, ffmpeg, overlay, pipeline,
-              render, resources)
+              preview, render, resources)
 from .i18n import get_translator
 from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session, Shot
 from .parser import delete_shot, format_timeline, move_shot, parse_timeline
@@ -3098,6 +3098,8 @@ class MainWindow(QMainWindow):
             _apply_icon(self.fit_btn, "fit", 18, _TR("preview_fit"))
         if getattr(self, "zoom_range_btn", None) is not None:
             _apply_icon(self.zoom_range_btn, "zoom-range", 18, _TR("preview_zoom_range"))
+        if getattr(self, "save_frame_btn", None) is not None:
+            _apply_icon(self.save_frame_btn, "camera", 18, _TR("save_frame"))
         if getattr(self, "op_cancel_btn", None) is not None:
             self.op_cancel_btn.setIcon(ui_theme.icon("cancel", size=16))
         if getattr(self, "_queue_window", None) is not None:
@@ -3242,6 +3244,14 @@ class MainWindow(QMainWindow):
                                        f"{_TR('tip_preview_zoom_range')}")
         self.zoom_range_btn.clicked.connect(self._on_zoom_range)
         bar.addWidget(self.zoom_range_btn)
+        self.save_frame_btn = QToolButton()
+        self.save_frame_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.save_frame_btn.setIconSize(QSize(18, 18))
+        set_kind(self.save_frame_btn, "ghost")
+        self.save_frame_btn.setToolTip(f"{_TR('save_frame')} — {_TR('tip_save_frame')} (Ctrl+S)")
+        self.save_frame_btn.clicked.connect(self._on_save_frame)
+        self.save_frame_btn.setEnabled(False)   # bez wideo nie ma czego zapisać
+        bar.addWidget(self.save_frame_btn)
         # Etykieta trybu edycji nie może się skracać do „Ed…ycje" — to przełącznik
         # trybu, jego nazwa jest ważniejsza niż kilka pikseli w wąskim oknie.
         self.edit_pos_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
@@ -3304,11 +3314,14 @@ class MainWindow(QMainWindow):
         # (nie cały inspektor: zmiana koloru panelu w trakcie detekcji nikomu nie szkodzi).
         self._op_buttons = [self.fetch_btn, self.fetch_trim_btn, self.detect_id_btn,
                             self.detect_btn, self.next_btn, self.start_sig_btn,
-                            self.autotrim_btn]
+                            self.autotrim_btn, self.save_frame_btn]
         # Escape wychodzi z trybu „Edytuj pozycje" (skill §11: tryb zawsze z wyjściem).
         QShortcut(QKeySequence.Cancel, self, self._escape_edit_pos)
         # „E" przełącza tryb edycji — ale nie wtedy, gdy użytkownik pisze w polu.
         QShortcut(QKeySequence("E"), self, self._shortcut_edit_pos)
+        # Ctrl+S = „Zapisz klatkę" — skrót okna z modyfikatorem, działa nawet gdy
+        # fokus jest w polu tekstowym (w przeciwieństwie do gołego „E").
+        QShortcut(QKeySequence("Ctrl+S"), self, self._on_save_frame)
         # Transport z klawiatury (skill §11). Wszystkie skróty przechodzą przez
         # `_transport_shortcut`, który odpuszcza, gdy fokus jest w polu tekstowym.
         for keys, slot in (
@@ -3400,6 +3413,65 @@ class MainWindow(QMainWindow):
 
     def _on_zoom_range(self) -> None:
         self.waveform.zoom_to_trim()
+
+    def _current_still_time(self) -> float:
+        """Czas klatki do zapisu — to samo źródło co pasek „▶ czas" nad podglądem:
+        pozycja playera (gdy aktywny) → kursor podglądu (scrubber/przewinięcie
+        osi) → T0+1 s, gdy nic jeszcze nie wskazano (świeżo wczytany plik)."""
+        if self._player_active():
+            return self.player.position() / 1000.0
+        if self.waveform.preview_t is not None:
+            return self.waveform.preview_t
+        if self.waveform.playhead_t is not None:
+            return self.waveform.playhead_t
+        return self.t0_spin.value() + 1.0
+
+    def _save_frame_path(self, t: float) -> str:
+        """Domyślna nazwa `<stem>_<czas>s.png` w ostatnim katalogu wyjściowym."""
+        p = Path(self.video_path)
+        time_str = _fmt_time_s(round(max(t, 0.0), 2)).replace(",", ".")
+        start_dir = config.load_last_dir("output") or str(p.parent)
+        return str(Path(start_dir) / f"{p.stem}_{time_str}s.png")
+
+    def _on_save_frame(self) -> None:
+        """„Zapisz klatkę" — PNG z nakładką w pełnej rozdzielczości źródła.
+
+        Dialog PRZED pracą w tle (użytkownik wybiera plik, zanim FFmpeg zacznie
+        wyciągać klatkę z oryginału — z 4K/HEVC to sekundy, nie chcemy, żeby
+        czekał na wynik, którego jeszcze nie umieścił)."""
+        if not self._require_video():
+            return
+        t = self._current_still_time()
+        default_path = self._save_frame_path(t)
+        path, _ = QFileDialog.getSaveFileName(
+            self, _TR("save_frame"), default_path, "PNG (*.png)")
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        config.save_last_dir("output", Path(path).parent)
+        session = self.session or self._safe_session()
+        style = self.current_style()
+        mode = self._anchor_mode()
+        first_shot = session.shots[0].czas if session and session.shots else 0.0
+        t0 = audio_sync.resolve_t0(self.t0_spin.value(), mode, first_shot)
+        duration = self.waveform.duration or (t + 10.0)
+        video_path = self.video_path
+
+        def fn():
+            img = preview.render_still(video_path, t, session, t0, style, duration)
+            img.save(path)
+            return path
+
+        self._run_op(fn, button=self.save_frame_btn,
+                     busy_text=_TR("busy_save_frame"),
+                     status_text=_TR("busy_save_frame"),
+                     on_result=self._on_frame_saved,
+                     on_error=lambda msg: self._notify(
+                         "input", _TR("msg_save_frame_failed").format(msg)))
+
+    def _on_frame_saved(self, path: str) -> None:
+        self._ok(_TR("msg_frame_saved").format(Path(path).name))
 
     def _shortcut_edit_pos(self) -> None:
         """„E" przełącza tryb edycji tylko poza polami tekstowymi (skill §11)."""
@@ -5910,6 +5982,10 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setEnabled(not idle)
         self.act_cancel.setEnabled(not idle)
         self.act_cancel.setVisible(not idle)
+        # „Zapisz klatkę" nie zależy od stanu renderu (czytanie oryginału FFmpeg-iem
+        # obok trwającego renderu jest bezpieczne) — tylko od wczytanego pliku.
+        if getattr(self, "save_frame_btn", None) is not None:
+            self.save_frame_btn.setEnabled(bool(self.video_path))
 
     def _cancel_render(self):
         if self.worker is not None and self.worker.isRunning():
@@ -6403,6 +6479,9 @@ def main():
     shot_edit = _pop_flag(argv, "--edit")       # zrzut w trybie „Edytuj pozycje"
     shot_id = _pop_option(argv, "--id")         # z --video: prawdziwa sesja z API zamiast demo osi
     shot_at = _pop_option(argv, "--at")         # z --video: pauza playera na T0+N s (domyślnie 1.5)
+    # z --video: zapisz klatkę z nakładką (jak przycisk „Zapisz klatkę") do PATH,
+    # bez dialogu — weryfikacja `preview.render_still` na realnym nagraniu
+    shot_save_frame = _pop_option(argv, "--save-frame")
     # z --video (bez --id): zaznacz N-ty strzał na osi (numeracja jak na pastylce, od 1)
     shot_select = _pop_option(argv, "--select-shot")
     # zrzut okna pomocniczego zamiast głównego: "queue" (kolejka) albo "batch" (wsad)
@@ -6567,6 +6646,24 @@ def main():
                     app.processEvents()
                 print(f"player: klatki={win._player_frames} "
                       f"pos={win.player.position()} ms (cel {target:.2f} s)")
+            if shot_save_frame:
+                # Ta sama ścieżka domenowa co przycisk „Zapisz klatkę" (Ctrl+S),
+                # ale synchronicznie i bez dialogu — tryb zrzutu nie ma pętli
+                # zdarzeń dla `_run_op`/QThread.
+                still_t = win._current_still_time()
+                still_session = win.session or win._safe_session()
+                still_mode = win._anchor_mode()
+                still_first_shot = (still_session.shots[0].czas
+                                    if still_session and still_session.shots else 0.0)
+                still_t0 = audio_sync.resolve_t0(win.t0_spin.value(), still_mode,
+                                                 still_first_shot)
+                still_dur = win.waveform.duration or (still_t + 10.0)
+                still_img = preview.render_still(
+                    win.video_path, still_t, still_session, still_t0,
+                    win.current_style(), still_dur)
+                still_img.save(shot_save_frame)
+                print(f"zapisano klatkę {shot_save_frame} (t={still_t:.2f} s, "
+                      f"{still_img.size[0]}x{still_img.size[1]})")
         for _ in range(5):
             app.processEvents()
         ok = win.grab().save(shot_path)
