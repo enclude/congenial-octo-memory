@@ -22,3 +22,7 @@ assets/bin/
 # Pliki robocze
 *.mp4
 !tests/**/*.mp4
+
+# Zrzuty robocze (tryb --screenshot)
+.tmp-shots/
+.tmp-ui/
