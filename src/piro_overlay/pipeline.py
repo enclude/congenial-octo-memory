@@ -90,3 +90,30 @@ def compute_trim(t0: float | None, session: Session | None,
     if duration is not None:
         end = min(end, duration)
     return start, end
+
+
+# ---------------------------------------------------------------------------
+# T0 przestarzały z pamięci pliku (`file_settings.json`) — patrz CLAUDE.md
+# „Wykrywanie przestarzałego T0 z pamięci pliku". Zapisany T0 niesie wersję
+# detektora, który go wyznaczył (`audio_sync.START_DETECTOR_VERSION` w chwili
+# detekcji); 0 = T0 ustawiony ręcznie (nigdy nie proponujemy nowej detekcji),
+# brak/None = wpis sprzed śledzenia wersji (traktowany jak przestarzały).
+# ---------------------------------------------------------------------------
+
+def t0_needs_recheck(saved_detector: int | None, current: int) -> bool:
+    """Czy warto uruchomić ponowną detekcję T0 i porównać z zapisaną wartością.
+
+    False dla T0 ustawionego ręcznie (`saved_detector == 0`) — użytkownik
+    świadomie skorygował wartość, nie proponujemy jej nadpisania. True gdy
+    wersja jest nieznana (stary wpis bez klucza) albo starsza niż bieżąca.
+    """
+    if saved_detector == 0:
+        return False
+    if saved_detector is None:
+        return True
+    return saved_detector < current
+
+
+def t0_differs(a: float, b: float, tol: float = 0.3) -> bool:
+    """Czy dwie wartości T0 różnią się o więcej niż `tol` sekund."""
+    return abs(a - b) > tol

@@ -655,10 +655,14 @@ class InlineMessage(QWidget):
     """One-line message under a field or section, with a coloured left bar.
 
     ``kind`` is one of info, success, warning, danger (token names). Hidden when
-    empty so it takes no space in the form.
+    empty so it takes no space in the form. Optional ``action_text`` shows a
+    ghost button next to the message; clicking it emits ``actionClicked`` —
+    the caller decides what the action does (e.g. "apply the new value").
     """
 
     KINDS = ("info", "success", "warning", "danger")
+
+    actionClicked = Signal()
 
     def __init__(self, tokens: dict[str, str] | None = None, parent: QWidget | None = None):
         super().__init__(parent)
@@ -669,20 +673,34 @@ class InlineMessage(QWidget):
         self.label = QLabel()
         self.label.setWordWrap(True)
         self.label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        lay.addWidget(self.label)
+        lay.addWidget(self.label, 1)
+        self.action_btn = QPushButton()
+        self.action_btn.setProperty("kind", "ghost")
+        self.action_btn.clicked.connect(self.actionClicked.emit)
+        self.action_btn.hide()
+        lay.addWidget(self.action_btn)
         self.hide()
 
-    def show_message(self, text: str, kind: str = "info") -> None:
+    def show_message(self, text: str, kind: str = "info",
+                      action_text: str | None = None) -> None:
         if kind not in self.KINDS:
             kind = "info"
         self._kind = kind
         set_role(self.label, kind)
         self.label.setText(text)
+        if action_text:
+            self.action_btn.setText(action_text)
+            if _HAVE_THEME:
+                repolish(self.action_btn)
+            self.action_btn.show()
+        else:
+            self.action_btn.hide()
         self.setVisible(bool(text))
         self.update()
 
     def clear(self) -> None:
         self.label.clear()
+        self.action_btn.hide()
         self.hide()
 
     def paintEvent(self, _event: Any) -> None:

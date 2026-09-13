@@ -125,6 +125,14 @@ _STRINGS: dict[str, dict[Lang, str]] = {
                  "w kalkulatorze, pod koniec nagrania. Wpisz ID ręcznie i kliknij „Pobierz”.",
         Lang.EN: "No ID tone found. The tone is played only after the session is saved, "
                  "near the end of the recording. Type the ID manually and click “Fetch”."},
+    "busy_recheck_t0": {Lang.PL: "Sprawdzanie zapisanego T0…",
+                        Lang.EN: "Checking the saved T0…"},
+    "msg_t0_stale": {
+        Lang.PL: "T0 z pamięci pliku: {} s; nowa detekcja: {} s. Zapisany T0 pochodzi "
+                 "ze starszej wersji detekcji sygnału startu — może być nieaktualny.",
+        Lang.EN: "T0 from the file's memory: {} s; new detection: {} s. The saved T0 "
+                 "comes from an older start-signal detection — it may be outdated."},
+    "msg_t0_stale_use": {Lang.PL: "Użyj {} s", Lang.EN: "Use {} s"},
     "msg_t0_detected": {Lang.PL: "Wykryto T0 = {} s", Lang.EN: "Detected T0 = {} s"},
     "msg_anchor_detected": {Lang.PL: "Wykryto kotwicę = {} s", Lang.EN: "Detected anchor = {} s"},
     "msg_id_detected": {Lang.PL: "Wykryto ID z audio: {}", Lang.EN: "ID detected from audio: {}"},

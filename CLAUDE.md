@@ -123,6 +123,65 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Wykrywanie przestarzałego T0 z pamięci pliku (v0.55.0):** problem realny —
+  `file_settings.json` (per plik, patrz „Pamięć ustawień per-plik" niżej) trzyma T0 wyznaczony
+  automatyczną detekcją, ale detektor (`audio_sync.detect_dji_start`) był od premiery kilka
+  razy poprawiany (v0.42.0 guard obwiedni + scoring i dalsze); wpis sprzed poprawki może nieść
+  ZŁY T0 bez żadnego sygnału dla użytkownika. Przypadek z pola:
+  `DJI_20260812195106_0035_D.MP4` (ID 326) miał zapisane T0=26,2 s (metaliczny kling zrzutu
+  zamka — dokładnie ten przypadek z wpisu „Wykrywanie sygnału startu" niżej), poprawna
+  detekcja daje 32,05 s.
+  - **Wersjonowanie detektora:** `audio_sync.START_DETECTOR_VERSION` (int, obecnie 2) —
+    PODNOŚ o 1 przy KAŻDEJ zmianie zachowania `detect_dji_start`, która może zmienić wynik na
+    realnych nagraniach (nowy próg, nowy guard, zmiana pasma/okna). 0 jest zarezerwowane jako
+    „T0 ustawiony ręcznie" — nigdy nie oznaczaj nią wersji.
+  - **Śledzenie pochodzenia T0 w GUI:** `MainWindow._t0_detector` (`int | None`) — 0 = ręczna
+    zmiana (spinbox albo klik na osi), `None` = nieznana/przestarzała wersja (wpis sprzed tej
+    funkcji), `>=1` = wersja detektora z chwili automatycznej detekcji. Jedyne miejsce, które
+    ustawia T0 programowo i OD RAZU znaczy pochodzenie, to `_set_t0(value, detector=...)` —
+    ustawia `_t0_detector` PRZED `t0_spin.setValue`, otoczonym flagą `_suppress_manual_t0`, bo
+    `valueChanged` (`_on_t0_spin`) obsługuje TEN SAM sygnał co ręczna edycja użytkownika: bez
+    flagi nie dałoby się ich odróżnić, a `_on_t0_spin` domyślnie zakłada „ręczna" (`detector=0`)
+    gdy flaga nie jest ustawiona. Wszystkie wywołania `detect_dji_start` w GUI (auto po
+    imporcie, „Wykryj sygnał startu", „Pobierz i przytnij") idą przez `_set_t0(...,
+    detector=audio_sync.START_DETECTOR_VERSION)`; zwykłe „Wykryj kotwicę" (`detect_start`,
+    inny — nie wersjonowany algorytm) i ręczna edycja spinboxa/osi zostają na `setValue` wprost
+    → `detector=0`, bo nie są objęte tym mechanizmem.
+  - **Zapis/odczyt:** `_collect_file_settings` dokłada klucz `"t0_detector": self._t0_detector`
+    (może być `None` — JSON `null`, świadomie NIE mapowane na 0, żeby nie gubić „nieznane" na
+    zawsze); `_apply_file_settings` woła `_set_t0(t0, detector=data.get("t0_detector"))` — brak
+    klucza w starym wpisie daje `None` z samego `dict.get`, czyli naturalnie „nieznany/
+    przestarzały" bez dodatkowego kodu.
+  - **Porównanie — czyste funkcje w `pipeline.py`:** `t0_needs_recheck(saved_detector,
+    current)` (False tylko dla `saved_detector == 0`; True dla `None` i dla wersji starszej
+    niż bieżąca) i `t0_differs(a, b, tol=0.3)`. Testy w `tests/test_pipeline.py`.
+  - **Przepływ w GUI:** `_on_wave_done` po zastosowaniu zapisanych ustawień woła
+    `_maybe_recheck_t0(pending)` PRZED `_maybe_start_proxy()` (T0 ma pierwszeństwo, jak
+    auto-detekcja) — gdy potrzebne, odpala `detect_dji_start` w tle przez `_run_op` (BEZ
+    nadpisywania T0). Wynik: różnica > 0,3 s → `InlineMessage` w sekcji „Synchronizacja"
+    (`_notify_sync_action`, kind `warning`, tekst i18n `msg_t0_stale` + przycisk akcji
+    `msg_t0_stale_use` „Użyj X s") — klik (`_on_sync_msg_action` → `_apply_t0_recheck`)
+    ustawia nowy T0 (`detector` = bieżąca wersja), przelicza przycięcie jak `_apply_auto_trim`
+    i chowa komunikat. Różnica ≤ 0,3 s → cicho podnosi `_t0_detector` do bieżącej wersji (zapis
+    dopiero przy najbliższym `_save_file_settings` — bez tego sprawdzalibyśmy ten sam plik przy
+    KAŻDYM wczytaniu). PUŁAPKA odkryta przy weryfikacji: `_apply_file_settings` (source="id")
+    kończy się CICHYM `_fetch_id(silent=True)`, który sam zajmuje slot `_run_op` — recheck
+    odpalony zaraz potem dostawałby zawsze odmowę. Fix: gdy `_run_op` zwróci `False` (zajęte),
+    `_maybe_recheck_t0` NIE zgłasza niczego, tylko planuje ponowną próbę
+    (`QTimer.singleShot(_T0_RECHECK_RETRY_MS, ...)`, jak `_maybe_start_proxy`/`_proxy_poll`) —
+    aż slot się zwolni albo plik się zmieni (`_retry_recheck_t0` porównuje `self.video_path`).
+  - **`InlineMessage` z przyciskiem akcji (`ui_widgets.py`):** `show_message(text, kind,
+    action_text=None)` + sygnał `actionClicked` — opcjonalny ghost-button obok tekstu,
+    chowany gdy `action_text` nie podano (ZERO zmian w istniejących wywołaniach bez tego
+    argumentu). `clear()` chowa też przycisk.
+  - **Tryb `--screenshot`:** pole `MainWindow._t0_recheck_busy` (True od decyzji, że recheck
+    jest potrzebny, do wyniku) dopisane do warunku oczekiwania w `--screenshot --video` (obok
+    `_op_worker is None` i `_proxy_busy()`) — bez tego zrzut łapał moment W TRAKCIE detekcji
+    (pasek postępu w połowie), zanim komunikat zdążył się pojawić. Zweryfikowane zrzutem na
+    realnym pliku ze starym wpisem T0 (26,2 s → poprawne 32,05 s): `pictures` nie dodawano
+    (zrzut roboczy w `.tmp-shots/`, nie w repo), ale przebieg potwierdzony ręcznie.
+  - Zapisany T0 = 0 (nigdy nie wykryty) nie wywołuje sprawdzenia — nie ma z czym porównywać.
+
 - **Edycja strzałów na osi czasu (v0.54.0):** `WaveformWidget` rysuje znaczniki strzałów
   sesji w czasie ABSOLUTNYM (`shots` = T0 + `shot.czas`, listę podaje `MainWindow.
   _sync_wave_shots` — oś sama nic nie liczy): cienka linia `text` z alfą 120 od 1/3

@@ -80,3 +80,32 @@ def test_compute_trim_end_clamped_to_duration():
 def test_compute_trim_lead_in_clamped_to_zero():
     start, _ = pipeline.compute_trim(2.0, None, 100.0, auto=True, auto_window=10.0)
     assert start == 0.0
+
+
+def test_t0_needs_recheck_manual_never_rechecked():
+    assert pipeline.t0_needs_recheck(0, 5) is False
+
+
+def test_t0_needs_recheck_unknown_detector_is_stale():
+    assert pipeline.t0_needs_recheck(None, 2) is True
+
+
+def test_t0_needs_recheck_older_version_is_stale():
+    assert pipeline.t0_needs_recheck(1, 2) is True
+
+
+def test_t0_needs_recheck_current_version_is_fresh():
+    assert pipeline.t0_needs_recheck(2, 2) is False
+
+
+def test_t0_needs_recheck_newer_version_is_fresh():
+    assert pipeline.t0_needs_recheck(3, 2) is False
+
+
+def test_t0_differs_within_tolerance():
+    assert pipeline.t0_differs(26.2, 26.4) is False
+    assert pipeline.t0_differs(26.2, 26.45, tol=0.3) is False
+
+
+def test_t0_differs_beyond_tolerance():
+    assert pipeline.t0_differs(26.2, 32.05) is True

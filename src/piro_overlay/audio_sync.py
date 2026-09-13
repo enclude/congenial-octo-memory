@@ -25,6 +25,18 @@ from .models import AnchorMode
 
 _WINDOW_S = 0.02  # 20 ms okna analizy
 
+# Wersja logiki `detect_dji_start` (guard obwiedni + scoring, v0.42.0 i dalsze
+# poprawki koncentracji/ciągłości/fallbacku). PODNOŚ o 1 przy KAŻDEJ zmianie
+# zachowania tej funkcji (nowy próg, nowy guard, zmiana pasma/okna) — nawet
+# drobnej, jeśli może zmienić WYNIK detekcji na realnych nagraniach. Wartość
+# jest zapisywana w `file_settings.json` (klucz "t0_detector") przy każdym
+# automatycznym T0; GUI porównuje ją przy wczytaniu pliku i proponuje nową
+# detekcję, gdy zapisany T0 pochodzi ze starszej wersji (patrz `gui.py`
+# `_maybe_recheck_t0` i CLAUDE.md „Wykrywanie przestarzałego T0"). 0 jest
+# zarezerwowane jako wartość specjalna „T0 ustawiony ręcznie" — nigdy nie
+# oznaczaj nią wersji detektora.
+START_DETECTOR_VERSION = 2
+
 
 # ---------------------------------------------------------------------------
 # Warstwa I/O — tylko tutaj trafia FFmpeg + dysk

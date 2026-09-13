@@ -26,6 +26,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from functools import partial
 from pathlib import Path
+from typing import Callable
 
 import urllib.request
 import json
@@ -59,7 +60,8 @@ except Exception:  # noqa: BLE001
 from PIL import Image
 from PIL.ImageQt import ImageQt
 
-from . import __version__, api, audio_sync, config, ffmpeg, overlay, render, resources
+from . import (__version__, api, audio_sync, config, ffmpeg, overlay, pipeline,
+              render, resources)
 from .i18n import get_translator
 from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session, Shot
 from .parser import delete_shot, format_timeline, move_shot, parse_timeline
@@ -99,6 +101,7 @@ _FRAME_DEBOUNCE_MS = 250       # debounce ekstrakcji klatki po zmianie kotwicy
 _SCRUBBER_DEBOUNCE_MS = 200    # debounce podglądu Ctrl+klik na waveformie
 _BUSY_RETRY_MS = 150           # ponowna próba, gdy worker klatki jeszcze pracuje
 _PROXY_RETRY_MS = 1000         # odpytywanie „czy można już zbudować proxy podglądu"
+_T0_RECHECK_RETRY_MS = 1500    # jw. dla ponownej detekcji T0 z pamięci pliku
 _PLAY_RESUME_MS = 200          # kontrola pozycji tuż po starcie odtwarzania
 _PLAY_RESUME_TOL_S = 1.0       # większa rozbieżność = backend zgubił przewinięcie
 _STYLE_AUTOSAVE_MS = 1000      # debounce autozapisu stylu na dysk
@@ -2774,6 +2777,20 @@ class MainWindow(QMainWindow):
         # Zapisane ustawienia tego pliku, czekające na zastosowanie po analizie audio
         # (spiny czasu mają sensowny zakres dopiero po poznaniu długości nagrania).
         self._pending_file_settings: dict | None = None
+        # Pochodzenie T0 bieżącego pliku (patrz `_set_t0`/`_collect_file_settings`):
+        # 0 = ustawiony ręcznie (nigdy nie proponujemy nowej detekcji), >=1 =
+        # wersja `audio_sync.START_DETECTOR_VERSION` z chwili automatycznej
+        # detekcji. Ustawiane też przy wczytaniu `file_settings.json` (może
+        # zostać None = nieznana/przestarzała wersja z wpisu sprzed śledzenia).
+        self._t0_detector: int | None = 0
+        self._suppress_manual_t0: bool = False
+        # True od momentu, gdy `_maybe_recheck_t0` uzna sprawdzenie za potrzebne,
+        # do momentu wyniku (nawet przez oczekiwanie na wolny slot `_run_op`) —
+        # tryb `--screenshot` czeka na to samo, na czym czeka na proxy/detekcję.
+        self._t0_recheck_busy: bool = False
+        # Akcja wpięta w `sync_msg` (np. „Użyj X s" przy przestarzałym T0) —
+        # `None` gdy komunikat bez akcji.
+        self._sync_action_cb: Callable[[], None] | None = None
         # True gdy ustawienia bieżącego pliku są „ustabilizowane" (po analizie audio):
         # dopiero wtedy wolno je zapisać (inaczej zapisalibyśmy domyślne wartości
         # widgetów, zanim wczytany/wykryty T0/trim zostanie zastosowany).
@@ -3505,6 +3522,7 @@ class MainWindow(QMainWindow):
         sec.add_row("Margines końcowy", _wrap(mrow))
         # Komunikaty synchronizacji (detekcja bez wyniku, zły zakres przycięcia).
         self.sync_msg = InlineMessage()
+        self.sync_msg.actionClicked.connect(self._on_sync_msg_action)
         sec.add_widget_row(self.sync_msg)
         return sec
 
@@ -3964,7 +3982,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{Path(path).name} — {_TR('app_title')}")
         self.preview_stack.setCurrentWidget(self.preview_label)
         self.input_msg.clear()
+        self._sync_action_cb = None
         self.sync_msg.clear()
+        self._t0_detector = 0  # nowy plik — dopóki coś go nie ustawi, T0=0 jest "ręczne"
+        self._t0_recheck_busy = False  # sprawdzenie POPRZEDNIEGO pliku już nieaktualne
         self._set_render_enabled(not self._render_busy)
         p = Path(path)
         out_ext = _FORMAT_EXT.get(self.format_combo.currentData(), ".mp4")
@@ -4031,6 +4052,10 @@ class MainWindow(QMainWindow):
             self._file_settings_ready = True  # wolno zapisywać (mamy komplet)
             status_message(self.statusBar(),
                            "Wczytano zapisane ustawienia dla tego pliku.", "info", 6000)
+            # Sprawdzenie T0 (jeśli w ogóle potrzebne) ma pierwszeństwo przed
+            # budową proxy — ten sam powód co auto-detekcja niżej: `_run_op`
+            # ma jeden slot, a proxy sama spróbuje ponownie (`_maybe_start_proxy`).
+            self._maybe_recheck_t0(pending)
             self._maybe_start_proxy()
             return
         # Pierwszy raz dla tego pliku → wykryj T0 (buzzer) i ustaw przycięcie.
@@ -4140,7 +4165,7 @@ class MainWindow(QMainWindow):
             self._notify("sync", _TR("msg_no_start_signal"))
             return
         self._force_start_signal_mode()
-        self.t0_spin.setValue(detected)
+        self._set_t0(detected, detector=audio_sync.START_DETECTOR_VERSION)
         dur = self.waveform.duration or None
         start = max(0.0, detected - _LEAD_IN_S)
         end = detected + _IMPORT_TAIL_S
@@ -4149,6 +4174,67 @@ class MainWindow(QMainWindow):
         self.trim_start_spin.setValue(start)
         self.trim_end_spin.setValue(end)
         self._ok(_TR("msg_t0_detected").format(_fmt_time_s(round(detected, 2))))
+
+    def _maybe_recheck_t0(self, pending: dict) -> None:
+        """T0 wczytany z `file_settings.json` może pochodzić ze starszej wersji
+        `audio_sync.detect_dji_start` (np. sprzed guardu obwiedni v0.42.0) —
+        patrz CLAUDE.md „Wykrywanie przestarzałego T0 z pamięci pliku". Gdy
+        `pipeline.t0_needs_recheck` mówi, że warto sprawdzić, odpalamy świeżą
+        detekcję W TLE (bez nadpisywania T0) i porównujemy wynik.
+
+        Nie może wyścigać się z inną operacją: gdy `_run_op` jest zajęty (np.
+        cichym pobraniem sesji z API tuż po wczytaniu zapamiętanych ustawień,
+        `_apply_file_settings` → `_fetch_id(silent=True)`), NIE zgłaszamy
+        zajętości — po prostu próbujemy ponownie za chwilę (jak `_maybe_start_proxy`
+        z budową proxy), aż slot się zwolni albo plik się zmieni.
+        """
+        video_path = self.video_path
+        saved_t0 = float(pending.get("t0") or 0.0)
+        if saved_t0 <= 0 or video_path is None:
+            return
+        if not pipeline.t0_needs_recheck(pending.get("t0_detector"),
+                                         audio_sync.START_DETECTOR_VERSION):
+            return
+        self._t0_recheck_busy = True
+        src = self.lrf_path or video_path
+        started = self._run_op(partial(audio_sync.detect_dji_start, src),
+                               status_text=_TR("busy_recheck_t0"),
+                               on_result=partial(self._on_t0_recheck_done, saved_t0))
+        if not started:
+            QTimer.singleShot(_T0_RECHECK_RETRY_MS,
+                              partial(self._retry_recheck_t0, pending, video_path))
+
+    def _retry_recheck_t0(self, pending: dict, video_path: str) -> None:
+        if self.video_path != video_path:
+            self._t0_recheck_busy = False  # plik się zmienił — nieaktualne
+            return
+        self._maybe_recheck_t0(pending)
+
+    def _on_t0_recheck_done(self, saved_t0: float, detected) -> None:
+        self._t0_recheck_busy = False
+        if detected is None:
+            # Nowa detekcja nic nie znalazła — nie mamy z czym porównać zapisanego
+            # T0, więc nie zgłaszamy niczego (cisza jest tu poprawna, nie "pusta").
+            return
+        if pipeline.t0_differs(saved_t0, detected):
+            self._notify_sync_action(
+                _TR("msg_t0_stale").format(_fmt_time_s(round(saved_t0, 2)),
+                                          _fmt_time_s(round(detected, 2))),
+                _TR("msg_t0_stale_use").format(_fmt_time_s(round(detected, 2))),
+                partial(self._apply_t0_recheck, detected), kind="warning")
+        else:
+            # Różnica w granicy tolerancji — cicho podnieś zapisaną wersję
+            # detektora (zapisze się przy najbliższym `_save_file_settings`),
+            # żeby nie sprawdzać tego samego pliku przy każdym wczytaniu.
+            self._t0_detector = audio_sync.START_DETECTOR_VERSION
+
+    def _apply_t0_recheck(self, detected: float) -> None:
+        """Akcja „Użyj X s" z komunikatu o przestarzałym T0: ustawia nowy T0,
+        przelicza przycięcie jak `_apply_auto_trim` (które samo zamelduje wynik
+        w pasku stanu — sukces albo, gdy sesja nie jest jeszcze gotowa, powód)."""
+        self._force_start_signal_mode()
+        self._set_t0(detected, detector=audio_sync.START_DETECTOR_VERSION)
+        self._apply_auto_trim()
 
     def _force_start_signal_mode(self) -> None:
         """Wykryty bzyczek JEST sygnałem startu → wymuś tryb kotwicy START_SIGNAL."""
@@ -4298,14 +4384,31 @@ class MainWindow(QMainWindow):
     # ---------- komunikaty ----------
     def _notify(self, where: str, text: str, kind: str = "warning") -> None:
         """Komunikat trzyczęściowy: pełny pod sekcją, pierwsze zdanie w pasku stanu."""
+        if where == "sync":
+            self._sync_action_cb = None  # komunikat bez akcji wygasza poprzednią
         widget = self.input_msg if where == "input" else self.sync_msg
         widget.show_message(text, kind)
         head = text.split(". ")[0].rstrip(".") + "."
         status_message(self.statusBar(), head, kind, 8000)
 
+    def _notify_sync_action(self, text: str, action_text: str,
+                            on_action: Callable[[], None], kind: str = "warning") -> None:
+        """Jak `_notify("sync", ...)`, ale z przyciskiem akcji w komunikacie
+        (np. „Użyj X s" przy przestarzałym T0 z pamięci pliku)."""
+        self._sync_action_cb = on_action
+        self.sync_msg.show_message(text, kind, action_text=action_text)
+        head = text.split(". ")[0].rstrip(".") + "."
+        status_message(self.statusBar(), head, kind, 8000)
+
+    def _on_sync_msg_action(self) -> None:
+        cb, self._sync_action_cb = self._sync_action_cb, None
+        if cb is not None:
+            cb()
+
     def _ok(self, text: str) -> None:
         """Sukces: pasek stanu + czyszczenie komunikatów sekcji."""
         self.input_msg.clear()
+        self._sync_action_cb = None
         self.sync_msg.clear()
         status_message(self.statusBar(), text, "success", 8000)
 
@@ -4392,7 +4495,7 @@ class MainWindow(QMainWindow):
             self._notify("sync", _TR("msg_no_start_signal"))
             return
         self._force_start_signal_mode()
-        self.t0_spin.setValue(detected)
+        self._set_t0(detected, detector=audio_sync.START_DETECTOR_VERSION)
         self._apply_trim_for_t0(detected)
 
     def _apply_trim_for_t0(self, t0: float) -> None:
@@ -4454,7 +4557,7 @@ class MainWindow(QMainWindow):
             self._notify("sync", _TR("msg_no_start_signal"))
             return
         self._force_start_signal_mode()
-        self.t0_spin.setValue(detected)
+        self._set_t0(detected, detector=audio_sync.START_DETECTOR_VERSION)
         self._ok(_TR("msg_t0_detected").format(_fmt_time_s(round(detected, 2))))
 
     def _detect_id_tone(self):
@@ -4502,7 +4605,25 @@ class MainWindow(QMainWindow):
     def _on_wave_trim(self, start: float, end: float):
         self._set_trim_silently(start, end)
 
+    def _set_t0(self, value: float, *, detector: int | None) -> None:
+        """Ustawia T0 programowo, znacząc pochodzenie do pamięci per-plik.
+
+        `detector`: None = nieznana wersja (wpis wczytany sprzed śledzenia),
+        0 = ręczna (nigdy nie proponujemy nowej detekcji), >=1 = wersja
+        `audio_sync.START_DETECTOR_VERSION` z chwili detekcji. `_on_t0_spin`
+        NIE nadpisuje tego na „ręczna" — ustawiamy `_suppress_manual_t0` na
+        czas `setValue`, bo ten sam sygnał obsługuje też ręczną edycję przez
+        użytkownika (bez flagi nie dałoby się ich odróżnić)."""
+        self._t0_detector = detector
+        self._suppress_manual_t0 = True
+        try:
+            self.t0_spin.setValue(value)
+        finally:
+            self._suppress_manual_t0 = False
+
     def _on_t0_spin(self, v: float):
+        if not self._suppress_manual_t0:
+            self._t0_detector = 0  # ręczna zmiana (spinbox albo klik na osi)
         self.waveform.set_anchor(v)
         self._sync_wave_shots()   # markery strzałów są w czasie ABSOLUTNYM (T0 + czas)
         self._update_preview_time()
@@ -5470,6 +5591,7 @@ class MainWindow(QMainWindow):
             "timeline": self.timeline_edit.toPlainText(),
             "anchor": self._anchor_mode().value,
             "t0": self.t0_spin.value(),
+            "t0_detector": self._t0_detector,  # None = nieznana wersja detektora
             "trim_start": self.trim_start_spin.value(),
             "trim_end": self.trim_end_spin.value(),
             "tail": self.tail_spin.value(),
@@ -5496,7 +5618,7 @@ class MainWindow(QMainWindow):
         aidx = self.anchor_combo.findData(data.get("anchor", AnchorMode.START_SIGNAL.value))
         if aidx >= 0:
             self.anchor_combo.setCurrentIndex(aidx)
-        self.t0_spin.setValue(float(data.get("t0", 0.0)))
+        self._set_t0(float(data.get("t0", 0.0)), detector=data.get("t0_detector"))
         self.trim_start_spin.setValue(float(data.get("trim_start", 0.0)))
         self.trim_end_spin.setValue(float(data.get("trim_end", 0.0)))
         self.tail_spin.setValue(float(data.get("tail", _TRIM_TAIL_S)))
@@ -6225,7 +6347,7 @@ def main():
             while time.monotonic() < deadline:
                 app.processEvents()
                 if (win.waveform.duration and win._op_worker is None
-                        and not win._proxy_busy()):
+                        and not win._proxy_busy() and not win._t0_recheck_busy):
                     break
                 time.sleep(0.05)
             for _ in range(10):

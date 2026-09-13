@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from piro_overlay.audio_sync import _impact_ring, detect_dji_start, resolve_t0
+from piro_overlay.audio_sync import (START_DETECTOR_VERSION, _impact_ring,
+                                     detect_dji_start, resolve_t0)
 from piro_overlay.models import AnchorMode
 
 
@@ -82,3 +83,11 @@ def test_detect_dji_start_ignores_id_tones(id_tone_video):
     # GUARD poszerzenia pasma do 4800 Hz: tony protokołu ID (marker 5000 Hz,
     # cyfry 5200–7000 Hz) leżą tuż nad sufitem i NIE mogą być brane za bzyczek.
     assert detect_dji_start(id_tone_video) is None
+
+
+def test_start_detector_version_is_a_tracked_int():
+    # Podnoszona przy każdej zmianie logiki detect_dji_start (patrz komentarz
+    # w audio_sync.py) — GUI porównuje ją z wartością zapisaną per plik, żeby
+    # zaproponować nową detekcję dla wpisów sprzed poprawki (v0.42.0+).
+    assert isinstance(START_DETECTOR_VERSION, int)
+    assert START_DETECTOR_VERSION >= 2
