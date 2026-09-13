@@ -62,7 +62,7 @@ from PIL.ImageQt import ImageQt
 from . import __version__, api, audio_sync, config, ffmpeg, overlay, render, resources
 from .i18n import get_translator
 from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session, Shot
-from .parser import format_timeline, parse_timeline
+from .parser import delete_shot, format_timeline, move_shot, parse_timeline
 from . import ui_theme
 from .ui_theme import (
     RADIUS, SPACING, apply_theme, current_tokens, load_app_fonts, repolish, restore_window_state,
@@ -84,6 +84,7 @@ PREVIEW_HEIGHT = 360  # obniżona jakość podglądu — szybciej i lżej dla du
 _HANDLE_PX = 8        # tolerancja trafienia uchwytu przycięcia (px)
 _AXIS_H = 22          # wysokość paska osi czasu (px)
 _TAG_H = 16           # wysokość pastylki etykiety markera (px)
+_SHOT_HIT_PX = 4      # tolerancja trafienia markera strzału (px logiczne)
 
 _FORMAT_EXT = {"mp4": ".mp4", "webm": ".webm", "gif": ".gif"}  # format → rozszerzenie
 _SESSION_ID_MAX = 10_000_000   # górny zakres ID sesji API (główne okno i wsad)
@@ -1798,6 +1799,8 @@ class WaveformWidget(QWidget):
     - Ctrl + lewy klik → podgląd klatki w danym czasie (bez zmiany T0),
     - przeciągnięcie uchwytu (Od/Do) → przycięcie fragmentu,
     - cienkie znaczniki = wykryte onsety (pomoc w trafieniu sygnału/strzału),
+    - znaczniki strzałów sesji (czas absolutny = T0 + czas strzału): klik =
+      zaznaczenie, przeciągnięcie = zmiana czasu, Delete/Backspace = usunięcie,
     - klawiatura (po fokusie): ←/→ kotwica, Home/End granice przycięcia,
       +/− zoom, 0 reset, O znaczniki onsetów, I/O granice w bieżącym czasie,
       T kotwica w bieżącym czasie, M dodanie strzału,
@@ -1812,6 +1815,8 @@ class WaveformWidget(QWidget):
     trimChanged = Signal(float, float)
     previewAt = Signal(float)   # Ctrl+klik → podgląd/seek w czasie t
     addShotAt = Signal(float)   # M → dodaj strzał w bieżącym czasie
+    shotMoved = Signal(int, float)   # (indeks, nowy czas ABSOLUTNY) — commit edycji
+    shotDeleted = Signal(int)        # Delete/Backspace na zaznaczonym strzale
 
     KEY_STEP = 0.05       # ←/→ przesuwa kotwicę o 50 ms
     KEY_STEP_FAST = 1.0   # Shift + ←/→
@@ -1823,6 +1828,11 @@ class WaveformWidget(QWidget):
         self.env: list[float] = []
         self.duration = 0.0
         self.onsets: list[float] = []
+        # znaczniki strzałów sesji w czasie ABSOLUTNYM (T0 + shot.czas) —
+        # wyliczane przez MainWindow (`_sync_wave_shots`), oś ich nie liczy sama
+        self.shots: list[float] = []
+        self.selected_shot: int | None = None
+        self._shot_drag_from: float | None = None   # czas przed przeciągnięciem
         self.anchor: float | None = None
         self.anchor_label = "T0"      # "T0" (beep) lub "T1" (pierwszy strzał) wg trybu
         self.preview_t: float | None = None   # czas aktualnie podglądu (Ctrl+klik)
@@ -1848,6 +1858,8 @@ class WaveformWidget(QWidget):
         self.env = env
         self.duration = duration
         self.onsets = onsets
+        self.shots = []
+        self.selected_shot = None
         self.trim_start = 0.0
         self.trim_end = duration
         self.anchor = None
@@ -1861,6 +1873,34 @@ class WaveformWidget(QWidget):
     def set_anchor(self, t: float):
         self.anchor = t
         self.update()
+
+    def set_shots(self, times: list[float]) -> None:
+        """Znaczniki strzałów (czasy ABSOLUTNE). Zaznaczenie przeżywa odświeżenie
+        tylko wtedy, gdy indeks nadal istnieje — po usunięciu ostatniego strzału
+        gaśnie samo."""
+        self.shots = list(times)
+        if self.selected_shot is not None and self.selected_shot >= len(self.shots):
+            self.selected_shot = None
+        self.update()
+
+    def select_shot(self, index: int | None) -> None:
+        """Zaznaczenie strzału (None = brak). Po przesunięciu strzał zmienia
+        indeks (lista jest sortowana) — MainWindow wskazuje nowy jawnie."""
+        if index is not None and not 0 <= index < len(self.shots):
+            index = None
+        self.selected_shot = index
+        self.update()
+
+    def _shot_at_x(self, x: float) -> int | None:
+        """Indeks strzału pod kursorem (±`_SHOT_HIT_PX`), najbliższy przy remisie."""
+        best, best_d = None, _SHOT_HIT_PX + 1.0
+        for i, t in enumerate(self.shots):
+            if not self._in_view(t):
+                continue
+            d = abs(self._t2x(t) - x)
+            if d <= _SHOT_HIT_PX and d < best_d:
+                best, best_d = i, d
+        return best
 
     def set_trim(self, start: float, end: float):
         self.trim_start, self.trim_end = start, end
@@ -2032,6 +2072,23 @@ class WaveformWidget(QWidget):
                     x = int(self._t2x(o))
                     p.drawLine(x, 0, x, plot_h)
 
+        # strzały sesji — znaczniki od 1/3 wysokości w dół, żeby nie mylić ich
+        # z pełnowysokimi markerami (kotwica/playhead); zaznaczony jest grubszy
+        # i w kolorze akcentu (to jego jedyne wyróżnienie poza pastylką)
+        if self.shots:
+            faint = QColor(t["text"])
+            faint.setAlpha(120)
+            top = plot_h // 3
+            for i, st in enumerate(self.shots):
+                if not self._in_view(st):
+                    continue
+                xsh = int(self._t2x(st))
+                if i == self.selected_shot:
+                    p.setPen(QPen(QColor(t["accent"]), 3))
+                else:
+                    p.setPen(QPen(faint, 1))
+                p.drawLine(xsh, top, xsh, plot_h)
+
         # uchwyty przycięcia (info — zieleń/czerwień są zarezerwowane dla stanów)
         p.setPen(QPen(QColor(t["info"]), 2))
         p.drawLine(xs, 0, xs, plot_h)
@@ -2143,6 +2200,15 @@ class WaveformWidget(QWidget):
         if self.preview_t is not None and self._in_view(self.preview_t):
             items.append((int(self._t2x(self.preview_t)),
                           f"⊹ {_fmt_axis_time(round(self.preview_t, 1))}", QColor(t["text"]), ""))
+        # strzały na końcu listy = najniższy priorytet (T0/Od/Do wygrywają miejsce)
+        for i, st in enumerate(self.shots):
+            if not self._in_view(st):
+                continue
+            if i == self.selected_shot:
+                items.append((int(self._t2x(st)), f"#{i + 1}", QColor(t["accent"]),
+                              t["accent_text"]))
+            else:
+                items.append((int(self._t2x(st)), f"#{i + 1}", QColor(t["text_muted"]), ""))
 
         placed: list[list[QRect]] = [[], []]
         self._hidden_tags = []
@@ -2224,6 +2290,28 @@ class WaveformWidget(QWidget):
         key = e.key()
         step = self.KEY_STEP_FAST if e.modifiers() & Qt.ShiftModifier else self.KEY_STEP
         center = (self.view_start + self.view_end) / 2
+        # Zaznaczony strzał PRZEJMUJE ←/→ (przesuwa strzał, nie kotwicę) —
+        # inaczej trzeba by osobnego modyfikatora, a zaznaczenie i tak jest
+        # stanem chwilowym: Escape (lub klik obok) oddaje strzałki kotwicy.
+        if self.selected_shot is not None:
+            if key in (Qt.Key_Delete, Qt.Key_Backspace):
+                self.shotDeleted.emit(self.selected_shot)
+                e.accept()
+                return
+            if key == Qt.Key_Escape:
+                self.select_shot(None)
+                e.accept()
+                return
+            if key in (Qt.Key_Left, Qt.Key_Right):
+                i = self.selected_shot
+                new_t = max(0.0, min(self.duration, self.shots[i]
+                                     + (step if key == Qt.Key_Right else -step)))
+                self.shots[i] = new_t
+                self._ensure_visible(new_t)
+                self.update()
+                self.shotMoved.emit(i, new_t)
+                e.accept()
+                return
         if key in (Qt.Key_Left, Qt.Key_Right):
             base = self.anchor if self.anchor is not None else self.trim_start
             self.commit_anchor(base + (step if key == Qt.Key_Right else -step))
@@ -2300,11 +2388,21 @@ class WaveformWidget(QWidget):
             self.update()
             self.previewAt.emit(t)
             return
+        # Priorytet trafień: uchwyty Od/Do → marker strzału → kotwica. Uchwyty
+        # zostają pierwsze (bez nich nie dałoby się chwycić granicy stojącej na
+        # strzale), a marker strzału wyprzedza kotwicę, bo klik w kotwicę można
+        # powtórzyć kilka pikseli obok, a w strzał — nie.
         if abs(x - self._t2x(self.trim_start)) <= _HANDLE_PX:
             self._drag = "start"
         elif abs(x - self._t2x(self.trim_end)) <= _HANDLE_PX:
             self._drag = "end"
+        elif (hit := self._shot_at_x(x)) is not None:
+            self.selected_shot = hit
+            self._drag = "shot"
+            self._shot_drag_from = self.shots[hit]
+            self.update()
         else:
+            self.selected_shot = None   # klik poza strzałem odznacza
             self.set_anchor(self._snap_to_onset(t))
             self.anchorChanged.emit(self.anchor)
 
@@ -2325,6 +2423,12 @@ class WaveformWidget(QWidget):
             self._hover(e.position().x())
             return
         t = self._x2t(e.position().x())
+        if self._drag == "shot":
+            # podgląd w trakcie — commit (sygnał) dopiero przy puszczeniu przycisku
+            if self.selected_shot is not None:
+                self.shots[self.selected_shot] = max(0.0, min(self.duration, t))
+                self.update()
+            return
         if self._drag == "start":
             self.trim_start = min(t, self.trim_end - 0.05)
         else:
@@ -2335,7 +2439,8 @@ class WaveformWidget(QWidget):
     def _hover(self, x: float) -> None:
         """Kursor uchwytu w strefie chwytu + tooltip etykiety zdjętej przez kolizję."""
         if self.duration > 0 and (abs(x - self._t2x(self.trim_start)) <= _HANDLE_PX
-                                  or abs(x - self._t2x(self.trim_end)) <= _HANDLE_PX):
+                                  or abs(x - self._t2x(self.trim_end)) <= _HANDLE_PX
+                                  or self._shot_at_x(x) is not None):
             self.setCursor(Qt.SizeHorCursor)
         else:
             self.setCursor(Qt.CrossCursor)
@@ -2343,6 +2448,11 @@ class WaveformWidget(QWidget):
         self.setToolTip(" · ".join(hidden) if hidden else self._base_tip)
 
     def mouseReleaseEvent(self, _):
+        if self._drag == "shot" and self.selected_shot is not None:
+            new_t = self.shots[self.selected_shot]
+            if self._shot_drag_from is None or abs(new_t - self._shot_drag_from) > 1e-6:
+                self.shotMoved.emit(self.selected_shot, new_t)
+        self._shot_drag_from = None
         self._drag = None
         if self._pan is not None:
             self._pan = None
@@ -3008,6 +3118,8 @@ class MainWindow(QMainWindow):
         self.waveform.trimChanged.connect(self._on_wave_trim)
         self.waveform.previewAt.connect(self._on_preview_at)
         self.waveform.addShotAt.connect(self._on_wave_add_shot)
+        self.waveform.shotMoved.connect(self._on_wave_shot_moved)
+        self.waveform.shotDeleted.connect(self._on_wave_shot_deleted)
         right.addWidget(self.waveform, 1)
         right_container = QWidget()
         right_container.setLayout(right)
@@ -3143,6 +3255,12 @@ class MainWindow(QMainWindow):
         self.edit_pos_btn.toggle()
 
     def _escape_edit_pos(self) -> None:
+        # Skrót okna ma pierwszeństwo przed `keyPressEvent` osi, więc odznaczenie
+        # strzału musi być obsłużone TU (jak Home/End w `_home_key`).
+        if (QApplication.focusWidget() is self.waveform
+                and self.waveform.selected_shot is not None):
+            self.waveform.select_shot(None)
+            return
         if self.edit_pos_btn.isChecked():
             self.edit_pos_btn.setChecked(False)
 
@@ -4386,6 +4504,7 @@ class MainWindow(QMainWindow):
 
     def _on_t0_spin(self, v: float):
         self.waveform.set_anchor(v)
+        self._sync_wave_shots()   # markery strzałów są w czasie ABSOLUTNYM (T0 + czas)
         self._update_preview_time()
         self._schedule_player_rebuild()   # T0 przesuwa okna czasowe nakładek
         if (self._player_active() and not self._priming
@@ -4536,6 +4655,7 @@ class MainWindow(QMainWindow):
         Wywoływana przy każdej zmianie stylu, trybu, sesji. Jeśli klatka nie jest
         skeszowana (np. pierwsze uruchomienie), poprosi o jej wyciągnięcie w tle.
         """
+        self._sync_wave_shots()   # markery strzałów na osi idą z tej samej osi czasu
         if not self.video_path:
             return
         self._schedule_player_rebuild()
@@ -5081,6 +5201,80 @@ class MainWindow(QMainWindow):
         self._update_preview()
         idx = next(i for i, sh in enumerate(shots) if abs(sh.czas - round(rel, 2)) < 1e-9)
         self._ok(_TR("msg_shot_added").format(idx + 1, _fmt_time_s(round(rel, 2))))
+
+    def _sync_wave_shots(self) -> None:
+        """Znaczniki strzałów na osi = czas ABSOLUTNY (T0 + czas strzału).
+
+        W trybie „ID (API)" bierzemy pobraną sesję (`_build_session` odpytałoby
+        tam sieć!), w trybie „Tekst" — aktualną zawartość pola osi czasu.
+        """
+        session = self.session if self._source_is_id() else self._safe_session()
+        if session is None or not session.shots:
+            self.waveform.set_shots([])
+            return
+        t0 = audio_sync.resolve_t0(self.t0_spin.value(), self._anchor_mode(),
+                                   session.shots[0].czas)
+        self.waveform.set_shots([t0 + sh.czas for sh in session.shots])
+
+    def _editable_shots(self):
+        """Strzały z pola tekstowego do edycji (None = nie da się edytować,
+        komunikat już pokazany)."""
+        if self._source_is_id():
+            self._notify("input", _TR("msg_shot_text_only"))
+            return None
+        text = self.timeline_edit.toPlainText().strip()
+        try:
+            return parse_timeline(text) if text else []
+        except Exception:  # noqa: BLE001 — niedokończony tekst nie może zjeść klawisza
+            self._notify("input", _TR("timeline_invalid"))
+            return None
+
+    def _apply_edited_shots(self, shots, select: int | None) -> None:
+        """Zapisuje zmienioną listę strzałów do pola osi (splity i numery
+        przelicza `format_timeline`) i odświeża podsumowanie, podgląd oraz oś."""
+        self.timeline_edit.setPlainText(format_timeline(shots))
+        self._set_source("text")
+        self._refresh_timeline_summary()
+        self._update_preview()       # w środku woła `_sync_wave_shots`
+        self._sync_wave_shots()      # …ale podgląd bywa wcześnie przerywany
+        self.waveform.select_shot(select)
+
+    def _on_wave_shot_moved(self, index: int, t: float) -> None:
+        """Przeciągnięcie/←/→ na zaznaczonym strzale → nowy czas WZGLĘDEM T0.
+
+        Po przesunięciu lista jest sortowana, więc strzał może zmienić numer —
+        zaznaczenie wędruje za nim (nowy indeks), a nie za starym numerem."""
+        shots = self._editable_shots()
+        if shots is None:
+            self._sync_wave_shots()   # cofnij podgląd przeciągnięcia
+            return
+        first = shots[0].czas if shots else 0.0
+        t0 = audio_sync.resolve_t0(self.t0_spin.value(), self._anchor_mode(), first)
+        rel = round(t - t0, 2)
+        if rel < 0:
+            self._notify("sync", _TR("msg_shot_before_t0"))
+            self._sync_wave_shots()
+            return
+        try:
+            shots = move_shot(shots, index, rel)
+        except (IndexError, ValueError):
+            self._sync_wave_shots()
+            return
+        idx = next((i for i, sh in enumerate(shots) if abs(sh.czas - rel) < 1e-9), None)
+        self._apply_edited_shots(shots, idx)
+        self._ok(_TR("msg_shot_moved").format((idx or 0) + 1, _fmt_time_s(rel)))
+
+    def _on_wave_shot_deleted(self, index: int) -> None:
+        """Delete/Backspace na zaznaczonym strzale — zaznaczenie po usunięciu gaśnie."""
+        shots = self._editable_shots()
+        if shots is None:
+            return
+        try:
+            shots = delete_shot(shots, index)
+        except IndexError:
+            return
+        self._apply_edited_shots(shots, None)
+        self._ok(_TR("msg_shot_deleted").format(index + 1))
 
     # --- edycja pozycji nakładek przez przeciąganie w podglądzie ---
     def _on_edit_pos_toggled(self, on: bool) -> None:
@@ -5950,6 +6144,8 @@ def main():
     shot_edit = _pop_flag(argv, "--edit")       # zrzut w trybie „Edytuj pozycje"
     shot_id = _pop_option(argv, "--id")         # z --video: prawdziwa sesja z API zamiast demo osi
     shot_at = _pop_option(argv, "--at")         # z --video: pauza playera na T0+N s (domyślnie 1.5)
+    # z --video (bez --id): zaznacz N-ty strzał na osi (numeracja jak na pastylce, od 1)
+    shot_select = _pop_option(argv, "--select-shot")
     # zrzut okna pomocniczego zamiast głównego: "queue" (kolejka) albo "batch" (wsad)
     shot_window = _pop_option(argv, "--window")
     scale = _pop_option(argv, "--scale")
@@ -6076,6 +6272,8 @@ def main():
             win.waveform.setFocus()
             win._update_preview()
             win._update_preview_time()
+            if shot_select:
+                win.waveform.select_shot(int(shot_select) - 1)
             for _ in range(10):
                 app.processEvents()
             # Podgląd w ruchu: rusz odtwarzanie, poczekaj na pierwszą klatkę,

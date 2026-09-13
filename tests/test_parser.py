@@ -3,9 +3,12 @@ import pytest
 from piro_overlay.models import Shot
 from piro_overlay.parser import (
     TimelineParseError,
+    delete_shot,
     extract_start_delay,
     format_timeline,
+    move_shot,
     parse_timeline,
+    renumber,
 )
 
 SAMPLE_23 = (
@@ -98,3 +101,58 @@ def test_format_timeline_recomputes_splits_and_numbers():
 
 def test_format_timeline_single_shot_has_no_split():
     assert format_timeline([Shot(numer=1, czas=0.9)]) == "1: 0.90s"
+
+
+# --- edycja strzałów na osi (v0.54.0) ---
+
+def test_move_shot_keeps_order_and_recomputes_splits():
+    shots = parse_timeline("1: 1.00s | 2: 2.00s (+1.00s) | 3: 3.00s (+1.00s)")
+    out = move_shot(shots, 1, 2.5)
+    assert [sh.czas for sh in out] == [1.0, 2.5, 3.0]
+    assert format_timeline(out) == "1: 1.00s | 2: 2.50s (+1.50s) | 3: 3.00s (+0.50s)"
+    assert parse_timeline(format_timeline(out)) == out
+
+
+def test_move_shot_past_neighbour_resorts_and_renumbers():
+    shots = parse_timeline("1: 1.00s | 2: 2.00s (+1.00s) | 3: 3.00s (+1.00s)")
+    out = move_shot(shots, 0, 2.5)   # pierwszy strzał przeskakuje drugi
+    assert [sh.numer for sh in out] == [1, 2, 3]
+    assert [sh.czas for sh in out] == [2.0, 2.5, 3.0]
+    assert parse_timeline(format_timeline(out)) == out
+
+
+def test_move_shot_does_not_mutate_input():
+    shots = parse_timeline("1: 1.00s | 2: 2.00s (+1.00s)")
+    before = list(shots)
+    move_shot(shots, 0, 0.5)
+    assert shots == before
+
+
+def test_move_shot_rejects_negative_time_and_bad_index():
+    shots = parse_timeline("1: 1.00s | 2: 2.00s (+1.00s)")
+    with pytest.raises(TimelineParseError):
+        move_shot(shots, 0, -0.01)
+    with pytest.raises(IndexError):
+        move_shot(shots, 2, 1.0)
+
+
+def test_delete_shot_renumbers_rest():
+    shots = parse_timeline("1: 1.00s | 2: 2.00s (+1.00s) | 3: 3.50s (+1.50s)")
+    out = delete_shot(shots, 1)
+    assert format_timeline(out) == "1: 1.00s | 2: 3.50s (+2.50s)"
+    assert [sh.numer for sh in out] == [1, 2]
+    assert parse_timeline(format_timeline(out)) == out
+
+
+def test_delete_shot_last_one_gives_empty_list():
+    assert delete_shot([Shot(numer=1, czas=1.0)], 0) == []
+
+
+def test_delete_shot_bad_index():
+    with pytest.raises(IndexError):
+        delete_shot([Shot(numer=1, czas=1.0)], 1)
+
+
+def test_renumber_sorts_and_clears_first_split():
+    out = renumber([Shot(numer=7, czas=2.0, split=9.0), Shot(numer=3, czas=0.5)])
+    assert [(sh.numer, sh.czas, sh.split) for sh in out] == [(1, 0.5, None), (2, 2.0, 1.5)]

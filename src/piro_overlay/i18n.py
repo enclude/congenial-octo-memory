@@ -161,12 +161,16 @@ _STRINGS: dict[str, dict[Lang, str]] = {
                  "kółko = zoom · prawy przycisk = przesuń · dwuklik = reset zoomu · "
                  "←/→ = kotwica o 0,05 s (Shift: 1 s) · Home/End = granice przycięcia · "
                  "+/− = zoom, 0 = reset · Shift+O = znaczniki onsetów · "
-                 "I/O = Od/Do w bieżącym czasie · T = kotwica · M = dodaj strzał",
+                 "I/O = Od/Do w bieżącym czasie · T = kotwica · M = dodaj strzał · "
+                 "klik na strzale = zaznacz, przeciągnij = przesuń, "
+                 "←/→ = przesuń o 0,05 s, Delete = usuń, Esc = odznacz",
         Lang.EN: "Click = set anchor (snaps to a shot) · Ctrl+click = frame preview · "
                  "wheel = zoom · right button = pan · double click = reset zoom · "
                  "←/→ = anchor by 0.05 s (Shift: 1 s) · Home/End = trim bounds · "
                  "+/− = zoom, 0 = reset · Shift+O = onset markers · "
-                 "I/O = in/out at the current time · T = anchor · M = add shot"},
+                 "I/O = in/out at the current time · T = anchor · M = add shot · "
+                 "click a shot = select, drag = move, ←/→ = nudge by 0.05 s, "
+                 "Delete = remove, Esc = deselect"},
     # --- podgląd w ruchu: pasek transportu (iteracja VI) ---
     # Przyciski transportu są ikonowe (v0.51.0, `assets/icons/*.svg` przez
     # `ui_theme.icon`, `gui._apply_icon`) — te klucze `tr_*` (stare glify)
@@ -212,10 +216,14 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "msg_out_set": {Lang.PL: "„Do” ustawione na {}.", Lang.EN: "Out point set to {}."},
     "msg_shot_added": {Lang.PL: "Dodano strzał {} w czasie {} od T0.",
                        Lang.EN: "Shot {} added at {} after T0."},
+    "msg_shot_moved": {Lang.PL: "Przesunięto strzał {} na {} od T0.",
+                       Lang.EN: "Shot {} moved to {} after T0."},
+    "msg_shot_deleted": {Lang.PL: "Usunięto strzał {} z osi czasu.",
+                         Lang.EN: "Shot {} removed from the timeline."},
     "msg_shot_text_only": {
-        Lang.PL: "Dodawanie strzałów działa tylko przy źródle „Tekst” "
+        Lang.PL: "Edycja strzałów działa tylko przy źródle „Tekst” "
                  "(oś z API jest tylko do odczytu).",
-        Lang.EN: "Adding shots only works with the „Text” source "
+        Lang.EN: "Editing shots only works with the „Text” source "
                  "(the API timeline is read-only)."},
     "msg_shot_before_t0": {
         Lang.PL: "Ten czas jest przed T0 — strzał musi wypaść po sygnale startu.",

@@ -10,6 +10,7 @@ Każdy token: `numer: czas s (+split s)`. Split jest opcjonalny (brak przy 1. st
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 from .models import Shot
 
@@ -114,3 +115,38 @@ def format_timeline(shots: list[Shot]) -> str:
             token += f" (+{shot.czas - shots[i - 1].czas:.2f}s)"
         parts.append(token)
     return " | ".join(parts)
+
+
+def renumber(shots: list[Shot]) -> list[Shot]:
+    """Porządkuje listę strzałów: sortowanie po czasie, numeracja 1..N, splity
+    przeliczone z czasów. Wynik jest zawsze poprawnym wejściem `format_timeline`
+    (i po nim `parse_timeline`)."""
+    ordered = sorted(shots, key=lambda sh: sh.czas)
+    return [
+        replace(sh, numer=i + 1,
+                split=None if i == 0 else round(sh.czas - ordered[i - 1].czas, 2))
+        for i, sh in enumerate(ordered)
+    ]
+
+
+def move_shot(shots: list[Shot], index: int, new_time: float) -> list[Shot]:
+    """Przesuwa strzał o indeksie `index` na czas `new_time` (względem T0).
+
+    Zwraca NOWĄ listę (wejście nietknięte) posortowaną po czasie, z numeracją
+    i splitami przeliczonymi od nowa — przesunięcie strzału przez sąsiada jest
+    więc legalne i nie zostawia niespójnej osi.
+    """
+    if not 0 <= index < len(shots):
+        raise IndexError(f"Nie ma strzału o indeksie {index}.")
+    if new_time < 0:
+        raise TimelineParseError("Czas strzału nie może być ujemny.")
+    updated = list(shots)
+    updated[index] = replace(shots[index], czas=round(float(new_time), 2))
+    return renumber(updated)
+
+
+def delete_shot(shots: list[Shot], index: int) -> list[Shot]:
+    """Usuwa strzał o indeksie `index`; reszta dostaje nową numerację i splity."""
+    if not 0 <= index < len(shots):
+        raise IndexError(f"Nie ma strzału o indeksie {index}.")
+    return renumber([sh for i, sh in enumerate(shots) if i != index])

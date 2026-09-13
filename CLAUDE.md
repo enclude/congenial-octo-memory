@@ -123,6 +123,36 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Edycja strzałów na osi czasu (v0.54.0):** `WaveformWidget` rysuje znaczniki strzałów
+  sesji w czasie ABSOLUTNYM (`shots` = T0 + `shot.czas`, listę podaje `MainWindow.
+  _sync_wave_shots` — oś sama nic nie liczy): cienka linia `text` z alfą 120 od 1/3
+  wysokości w dół (pełnowysokie zostają kotwica/playhead/podgląd, onsety dalej `success`),
+  zaznaczony = `accent` 3 px + pastylka „#N" w istniejącym mechanizmie `_tag_rect/_draw_tag`
+  (dokładane NA KOŃCU listy etykiet, więc T0/Od/Do wygrywają miejsce, a zderzone numery
+  wracają w tooltipie). Interakcja: klik = zaznacz (±`_SHOT_HIT_PX`=4 px), przeciągnięcie =
+  zmiana czasu (podgląd w locie, `shotMoved(index, czas_absolutny)` dopiero na
+  `mouseRelease`), Delete/Backspace = `shotDeleted(index)`, kursor `SizeHorCursor` nad
+  markerem. **Priorytet trafień myszy: Ctrl (podgląd) → uchwyty Od/Do → marker strzału →
+  kotwica** — uchwyty muszą zostać pierwsze (inaczej nie dałoby się chwycić granicy
+  stojącej na strzale), a strzał wyprzedza kotwicę, bo klik w kotwicę wolno powtórzyć
+  kilka pikseli obok, a w strzał nie. **Dlaczego ←/→ zmieniają znaczenie:** przy
+  ZAZNACZONYM strzale przesuwają jego czas (0,05 s / Shift 1 s), a nie kotwicę —
+  osobny modyfikator byłby trzecim wariantem tych samych klawiszy, a zaznaczenie
+  i tak jest stanem chwilowym: Escape albo klik obok oddaje strzałki kotwicy. PUŁAPKA:
+  Escape obsługuje `MainWindow._escape_edit_pos`, bo `QShortcut` okna ma pierwszeństwo
+  przed `keyPressEvent` widżetu (ta sama sztuczka co `_home_key`/`_end_key`).
+  Domena bez Qt: `parser.move_shot/delete_shot/renumber` (sortowanie po czasie, numeracja
+  1..N, splity przeliczone z czasów, czas ujemny → `TimelineParseError`, zły indeks →
+  `IndexError`) — testy round-trip w `tests/test_parser.py`. GUI zapisuje wynik przez
+  `format_timeline` do `timeline_edit` (`_apply_edited_shots`), więc działa TYLKO przy
+  źródle „Tekst" (przy „ID (API)" `msg_shot_text_only` i cofnięcie podglądu
+  przeciągnięcia). Po przesunięciu strzał może zmienić numer (lista jest sortowana) —
+  zaznaczenie idzie za NOWYM indeksem, po usunięciu gaśnie. `_sync_wave_shots` bierze
+  sesję z `self.session` przy źródle ID (`_build_session` odpytałoby tam SIEĆ) i
+  z `_safe_session()` przy tekście; wołane z `_update_preview` (czyli też przy każdej
+  zmianie pola osi) i z `_on_t0_spin` (T0 przesuwa czasy absolutne). Tryb zrzutu:
+  `--select-shot N` (numeracja jak na pastylce, od 1) — zrzut `.tmp-shots/shots-edit.png`.
+
 - **Komponenty UI (v0.46.0):** trzecia iteracja odświeżenia (skill `python-desktop-ux`,
   krok III) — wymiana kontrolek na te z `ui_widgets.py`, ZERO zmian w formacie ustawień.
   (1) `ColorButton` USUNIĘTY → `ColorSwatchButton` (7 użyć: tło/tekst/akcent/obramowanie
