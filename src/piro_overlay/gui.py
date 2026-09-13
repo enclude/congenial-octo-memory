@@ -105,6 +105,8 @@ _PLAYER_OVERLAY_H = 540
 _SEEK_STEP_S = 1.0             # J/L i przyciski „◀ 1 s” / „1 s ▶”
 _DEFAULT_FRAME_MS = 40         # krok klatki, gdy fps nagrania nieznany (25 fps)
 _PLAYER_REBUILD_MS = 200       # debounce przebudowy nakładek podglądu w ruchu
+_SEEK_VERIFY_MS = 150          # kontrola nakładek po przewinięciu w pauzie
+_FRAME_STALE_S = 0.5           # klatka starsza od pozycji o tyle = sprzed seeku
 _CLOCK_CACHE_MAX = 1200        # pixmapy zegara (co 0.1 s) trzymane między klatkami
 
 # Kandydaci na krok głównych kresek (major ticks) — od 0.05 s do 1 godziny.
@@ -4439,6 +4441,22 @@ class MainWindow(QMainWindow):
         self._update_preview_time()
         # W pauzie klatka przyjdzie asynchronicznie — nakładki ustawiamy od razu,
         # żeby panel nie „doganiał" obrazu o jedno zdarzenie.
+        self._sync_overlays(t)
+        # Klatka po przewinięciu bywa spóźniona ALBO przychodzi ze starym
+        # znacznikiem czasu (backend dosyła to, co miał w kolejce) — po chwili
+        # sprawdzamy, czy scena zgadza się z `position()`.
+        QTimer.singleShot(_SEEK_VERIFY_MS, self._verify_seek_overlays)
+
+    def _verify_seek_overlays(self) -> None:
+        if not self._player_active() or self._priming:
+            return
+        if self.player.playbackState() == QMediaPlayer.PlayingState:
+            return
+        self._sync_overlays(self.player.position() / 1000.0)
+
+    def _sync_overlays(self, t: float) -> None:
+        """Ustawia scenę (widoczność zdarzeń + zegar) na czas `t`."""
+        self._playhead_t = t
         self.player_page.update_time(t)
         self._update_player_clock(t)
 
@@ -4531,6 +4549,9 @@ class MainWindow(QMainWindow):
         self.waveform.set_playhead(t)
         self._update_preview_time()
         if self.player.playbackState() != QMediaPlayer.PlayingState:
+            # W pauzie JEDYNĄ wiarygodną osią czasu jest `position()`: klatki
+            # przychodzą rzadko i bywają sprzed przewinięcia.
+            self._sync_overlays(t)
             return
         end = self.trim_end_spin.value()
         if end > 0 and t >= end - 0.03:
@@ -4552,12 +4573,20 @@ class MainWindow(QMainWindow):
                 self._prime_pending = True
                 QTimer.singleShot(0, self._finish_prime)
             return
+        pos = self.player.position() / 1000.0
         start_us = frame.startTime()
-        t = (start_us / 1_000_000.0 if start_us >= 0
-             else self.player.position() / 1000.0)
-        self._playhead_t = t
-        self.player_page.update_time(t)
-        self._update_player_clock(t)
+        frame_t = start_us / 1_000_000.0 if start_us >= 0 else -1.0
+        if self.player.playbackState() != QMediaPlayer.PlayingState:
+            # PUŁAPKA (v0.51.1): po `setPosition` w pauzie backend potrafi dosłać
+            # klatkę ze znacznikiem SPRZED przewinięcia — nakładki zostawały wtedy
+            # na starym zdarzeniu (plansza START zamiast panelu strzału na zrzucie
+            # `09-icons-dark.png`). W pauzie prawdą jest `position()`, a wyraźnie
+            # spóźniona klatka jest ignorowana.
+            if frame_t >= 0 and pos - frame_t > _FRAME_STALE_S:
+                return
+            self._sync_overlays(pos)
+            return
+        self._sync_overlays(frame_t if frame_t >= 0 else pos)
 
     # --- nakładki ---
     def _schedule_player_rebuild(self) -> None:

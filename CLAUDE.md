@@ -463,7 +463,17 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   skalujemy przez `_scaled_style` do wysokości ORYGINAŁU (WYSIWYG jak dotąd).
   Synchronizacja nakładek idzie z `QVideoSink.videoFrameChanged` →
   `frame.startTime()` (µs) — dokładniejsze niż `positionChanged`, który zasila tylko
-  playhead i etykietę czasu. Zegar (`show_running_clock`) to jedyna nakładka zależna
+  playhead i etykietę czasu. **ALE tylko w `PlayingState` (v0.51.1):** w pauzie/po
+  zatrzymaniu jedyną wiarygodną osią czasu jest `player.position()`, bo po
+  `setPosition` backend potrafi dosłać klatkę ze znacznikiem SPRZED przewinięcia —
+  nakładki zostawały wtedy na starym zdarzeniu (realny objaw: zrzut
+  `09-icons-dark.png` pokazywał planszę START zamiast panelu strzału 1 na 3,5 s,
+  a jasny wariant tej samej pozycji był poprawny — czysta wyścigówka). Stąd trzy
+  bezpieczniki: `_sync_overlays(t)` jako jedyne wejście do sceny; `_on_player_position`
+  synchronizuje scenę także poza odtwarzaniem; `_seek` dokłada jednorazowy
+  `QTimer.singleShot(_SEEK_VERIFY_MS=150)` → `_verify_seek_overlays` (kontrola, czy
+  scena zgadza się z `position()`), a klatki starsze od pozycji o ponad
+  `_FRAME_STALE_S=0.5` s są w pauzie ignorowane. Zegar (`show_running_clock`) to jedyna nakładka zależna
   od czasu: `render_clock_panel` z `fixed_size=clock_panel_max_size(...)`, treść
   liczona co dziesiątą sekundy i keszowana po tej wartości (`_clock_cache`,
   `_CLOCK_CACHE_MAX`), zamrożona na ostatnim strzale — jak w renderze. Przebudowa
