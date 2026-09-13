@@ -31,28 +31,38 @@ import urllib.request
 import json
 
 from PySide6.QtCore import (
-    QEvent, QLocale, QObject, QPoint, QRect, QRectF, QSettings, Qt, QThread, QTimer,
-    QUrl, Signal,
+    QEvent, QLocale, QObject, QPoint, QPointF, QRect, QRectF, QSettings, QSizeF, Qt,
+    QThread, QTimer, QUrl, Signal,
 )
 from PySide6.QtGui import (
     QAction, QColor, QDesktopServices, QFontMetrics, QIcon, QImage, QKeySequence,
     QPainter, QPen, QPixmap, QPolygon, QShortcut,
 )
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QApplication, QComboBox, QCheckBox,
-    QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel,
+    QAbstractButton, QAbstractSpinBox, QApplication, QComboBox, QCheckBox,
+    QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGraphicsPixmapItem,
+    QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QPlainTextEdit,
     QStatusBar, QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
+
+# Podgląd w ruchu jest DODATKIEM: gdy backendu multimediów brak (okrojony bundle,
+# egzotyczna dystrybucja Qt), aplikacja działa dalej na podglądzie statycznym.
+try:
+    from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+    from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
+    _HAS_MULTIMEDIA = True
+except Exception:  # noqa: BLE001
+    _HAS_MULTIMEDIA = False
 
 from PIL import Image
 from PIL.ImageQt import ImageQt
 
 from . import __version__, api, audio_sync, config, ffmpeg, overlay, render, resources
 from .i18n import get_translator
-from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session
-from .parser import parse_timeline
+from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session, Shot
+from .parser import format_timeline, parse_timeline
 from . import ui_theme
 from .ui_theme import (
     RADIUS, SPACING, apply_theme, current_tokens, load_app_fonts, repolish, restore_window_state,
@@ -88,6 +98,14 @@ _FRAME_DEBOUNCE_MS = 250       # debounce ekstrakcji klatki po zmianie kotwicy
 _SCRUBBER_DEBOUNCE_MS = 200    # debounce podglądu Ctrl+klik na waveformie
 _BUSY_RETRY_MS = 150           # ponowna próba, gdy worker klatki jeszcze pracuje
 _STYLE_AUTOSAVE_MS = 1000      # debounce autozapisu stylu na dysk
+# Wysokość płótna nakładek playera. Panele rysujemy RAZ na przebudowę w tej
+# rozdzielczości (nie w 4K) — obraz i tak jest skalowany do widoku, a Pillow
+# nie musi rysować pikseli, których nikt nie zobaczy.
+_PLAYER_OVERLAY_H = 540
+_SEEK_STEP_S = 1.0             # J/L i przyciski „◀ 1 s” / „1 s ▶”
+_DEFAULT_FRAME_MS = 40         # krok klatki, gdy fps nagrania nieznany (25 fps)
+_PLAYER_REBUILD_MS = 200       # debounce przebudowy nakładek podglądu w ruchu
+_CLOCK_CACHE_MAX = 1200        # pixmapy zegara (co 0.1 s) trzymane między klatkami
 
 # Kandydaci na krok głównych kresek (major ticks) — od 0.05 s do 1 godziny.
 _TICK_STEPS = (0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600)
@@ -1648,7 +1666,10 @@ class WaveformWidget(QWidget):
     - przeciągnięcie uchwytu (Od/Do) → przycięcie fragmentu,
     - cienkie znaczniki = wykryte onsety (pomoc w trafieniu sygnału/strzału),
     - klawiatura (po fokusie): ←/→ kotwica, Home/End granice przycięcia,
-      +/− zoom, 0 reset, O znaczniki onsetów.
+      +/− zoom, 0 reset, O znaczniki onsetów, I/O granice w bieżącym czasie,
+      T kotwica w bieżącym czasie, M dodanie strzału,
+    - playhead (linia ciągła + trójkąt na osi) pokazuje pozycję odtwarzania;
+      kursor podglądu klatki jest przerywany — to DWA różne markery.
 
     Kolory pochodzą WYŁĄCZNIE z tokenów motywu (`current_tokens`) i są czytane
     w `paintEvent` — zmiana motywu wymaga jedynie `update()`.
@@ -1656,7 +1677,8 @@ class WaveformWidget(QWidget):
 
     anchorChanged = Signal(float)
     trimChanged = Signal(float, float)
-    previewAt = Signal(float)   # Ctrl+klik → podgląd w czasie t
+    previewAt = Signal(float)   # Ctrl+klik → podgląd/seek w czasie t
+    addShotAt = Signal(float)   # M → dodaj strzał w bieżącym czasie
 
     KEY_STEP = 0.05       # ←/→ przesuwa kotwicę o 50 ms
     KEY_STEP_FAST = 1.0   # Shift + ←/→
@@ -1671,6 +1693,7 @@ class WaveformWidget(QWidget):
         self.anchor: float | None = None
         self.anchor_label = "T0"      # "T0" (beep) lub "T1" (pierwszy strzał) wg trybu
         self.preview_t: float | None = None   # czas aktualnie podglądu (Ctrl+klik)
+        self.playhead_t: float | None = None  # pozycja odtwarzania (podgląd w ruchu)
         self.trim_start = 0.0
         self.trim_end = 0.0
         self.show_onsets = True       # warstwa widoku (klawisz O) — dane zostają
@@ -1696,6 +1719,7 @@ class WaveformWidget(QWidget):
         self.trim_end = duration
         self.anchor = None
         self.preview_t = None
+        self.playhead_t = None
         self.view_start = 0.0
         self.view_end = duration
         self._cache_key = None
@@ -1708,6 +1732,23 @@ class WaveformWidget(QWidget):
     def set_trim(self, start: float, end: float):
         self.trim_start, self.trim_end = start, end
         self.update()
+
+    def set_playhead(self, t: float | None) -> None:
+        """Pozycja odtwarzania. Widok podąża za playheadem TYLKO gdy ten wyjedzie
+        poza okno (przesuwamy okno, nie zmieniamy zoomu — inaczej obraz osi skakałby
+        przy każdym odtworzeniu)."""
+        self.playhead_t = t
+        if t is not None and not self._in_view(t):
+            self._ensure_visible(t)
+        self.update()
+
+    def current_t(self) -> float:
+        """Czas „tu i teraz” dla skrótów I/O/T/M: playhead → kursor podglądu →
+        kotwica → początek zakresu."""
+        for value in (self.playhead_t, self.preview_t, self.anchor):
+            if value is not None:
+                return value
+        return self.trim_start
 
     # --- okno widoku ---
     def _span(self) -> float:
@@ -1869,11 +1910,17 @@ class WaveformWidget(QWidget):
             xa = int(self._t2x(self.anchor))
             p.drawLine(xa, 0, xa, plot_h)
 
-        # kursor podglądu (Ctrl+klik)
+        # kursor podglądu (Ctrl+klik) — przerywany, żeby odróżnić go od playheada
         if self.preview_t is not None and self._in_view(self.preview_t):
             p.setPen(QPen(QColor(t["text"]), 1, Qt.DashLine))
             xp = int(self._t2x(self.preview_t))
             p.drawLine(xp, 0, xp, plot_h)
+
+        # playhead (podgląd w ruchu) — linia ciągła 1 px
+        if self.playhead_t is not None and self._in_view(self.playhead_t):
+            p.setPen(QPen(QColor(t["text"]), 1))
+            xh = int(self._t2x(self.playhead_t))
+            p.drawLine(xh, 0, xh, plot_h)
 
         self._paint_markers(p, w, plot_h, t)
         self._paint_axis(p, w, h, plot_h, t)
@@ -1956,9 +2003,13 @@ class WaveformWidget(QWidget):
         if self._in_view(self.trim_end):
             items.append((int(self._t2x(self.trim_end)),
                           f"Do {_fmt_axis_time(round(self.trim_end, 1))}", QColor(t["info"]), ""))
+        if self.playhead_t is not None and self._in_view(self.playhead_t):
+            items.append((int(self._t2x(self.playhead_t)),
+                          f"▶ {_fmt_axis_time(round(self.playhead_t, 1))}",
+                          QColor(t["text"]), ""))
         if self.preview_t is not None and self._in_view(self.preview_t):
             items.append((int(self._t2x(self.preview_t)),
-                          f"▶ {_fmt_axis_time(round(self.preview_t, 1))}", QColor(t["text"]), ""))
+                          f"⊹ {_fmt_axis_time(round(self.preview_t, 1))}", QColor(t["text"]), ""))
 
         placed: list[list[QRect]] = [[], []]
         self._hidden_tags = []
@@ -1996,16 +2047,23 @@ class WaveformWidget(QWidget):
             p.drawText(lx, h - 5, label)
             tick += step
 
-        # wskaźnik podglądu: mały trójkąt na osi (linia jest nad osią)
-        if self.preview_t is not None and self._in_view(self.preview_t):
-            xp = int(self._t2x(self.preview_t))
+        # wskaźniki na osi: trójkąt podglądu (kontur) i playheada (wypełniony)
+        for value, filled in ((self.preview_t, False), (self.playhead_t, True)):
+            if value is None or not self._in_view(value):
+                continue
+            xp = int(self._t2x(value))
             tri = QPolygon([QPoint(xp - 4, plot_h + 1), QPoint(xp + 4, plot_h + 1),
                             QPoint(xp, plot_h + 7)])
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(t["text"]))
             p.setRenderHint(QPainter.Antialiasing, True)
+            if filled:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QColor(t["text"]))
+            else:
+                p.setPen(QPen(QColor(t["text"]), 1))
+                p.setBrush(Qt.NoBrush)
             p.drawPolygon(tri)
             p.setRenderHint(QPainter.Antialiasing, False)
+            p.setPen(Qt.NoPen)
             p.setBrush(Qt.NoBrush)
 
     def _snap_to_onset(self, t: float) -> float:
@@ -2035,26 +2093,46 @@ class WaveformWidget(QWidget):
         center = (self.view_start + self.view_end) / 2
         if key in (Qt.Key_Left, Qt.Key_Right):
             base = self.anchor if self.anchor is not None else self.trim_start
-            self._commit_anchor(base + (step if key == Qt.Key_Right else -step))
+            self.commit_anchor(base + (step if key == Qt.Key_Right else -step))
         elif key == Qt.Key_Home:
-            self._commit_anchor(self.trim_start)
+            self.commit_anchor(self.trim_start)
         elif key == Qt.Key_End:
-            self._commit_anchor(self.trim_end)
+            self.commit_anchor(self.trim_end)
         elif key in (Qt.Key_Plus, Qt.Key_Equal):
             self._zoom(0.8, center)
         elif key == Qt.Key_Minus:
             self._zoom(1.25, center)
         elif key == Qt.Key_0:
             self.fit_view()
-        elif key == Qt.Key_O:
+        elif key == Qt.Key_I:
+            self._set_in_out("start", self.current_t())
+        elif key == Qt.Key_O and e.modifiers() & Qt.ShiftModifier:
+            # Shift+O zostaje przy starym znaczeniu (warstwa onsetów),
+            # samo O przejmuje rolę punktu „Do” z konwencji edytorów wideo.
             self.show_onsets = not self.show_onsets
             self.update()
+        elif key == Qt.Key_O:
+            self._set_in_out("end", self.current_t())
+        elif key == Qt.Key_T:
+            self.commit_anchor(self.current_t())
+        elif key == Qt.Key_M:
+            self.addShotAt.emit(self.current_t())
         else:
             super().keyPressEvent(e)
             return
         e.accept()
 
-    def _commit_anchor(self, t: float) -> None:
+    def _set_in_out(self, which: str, t: float) -> None:
+        """I/O — granica przycięcia w bieżącym czasie; sygnał ten sam co przy myszy."""
+        t = max(0.0, min(self.duration, t))
+        if which == "start":
+            self.trim_start = min(t, self.trim_end - 0.05)
+        else:
+            self.trim_end = max(t, self.trim_start + 0.05)
+        self.update()
+        self.trimChanged.emit(self.trim_start, self.trim_end)
+
+    def commit_anchor(self, t: float) -> None:
         """Ustawia kotwicę z klawiatury — jak klik myszą (ten sam sygnał)."""
         t = max(0.0, min(self.duration, t))
         self._ensure_visible(t)
@@ -2136,6 +2214,93 @@ class WaveformWidget(QWidget):
         if self._pan is not None:
             self._pan = None
             self.setCursor(Qt.CrossCursor)
+
+
+def _pil_to_pixmap(img: "Image.Image") -> QPixmap:
+    """Pillow RGBA → QPixmap. WOLNO wołać wyłącznie z wątku GUI (Qt tak wymaga)."""
+    qim = ImageQt(img.convert("RGBA"))
+    return QPixmap.fromImage(QImage(qim))
+
+
+class VideoPlayerPage(QGraphicsView):
+    """Podgląd w ruchu: klatka z `QGraphicsVideoItem` + nakładki jako pixmapy.
+
+    Dlaczego scena, a nie „klatka z QVideoSink przemalowana Pillow": dekodowanie
+    i skalowanie wideo zostaje po stronie Qt/FFmpeg (zero kopii przez Pythona na
+    każdą klatkę), a nakładki są policzone RAZ na przebudowę i tylko przełączane
+    widocznością wg czasu — dokładnie tak, jak robi to filtergraph w renderze.
+
+    Układ współrzędnych sceny = piksele płótna nakładek (`set_canvas`), więc
+    pozycje paneli liczy ta sama funkcja co render (`render._overlay_xy`).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.setFrameShape(QFrame.NoFrame)
+        self.setRenderHints(QPainter.SmoothPixmapTransform | QPainter.Antialiasing)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFocusPolicy(Qt.NoFocus)   # fokus należy do osi i paska transportu
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self.video_item = QGraphicsVideoItem()
+        self._scene.addItem(self.video_item)
+        self._events: list[tuple[QGraphicsPixmapItem, float, float]] = []
+        self._clock_item: QGraphicsPixmapItem | None = None
+        self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        """Tło sceny = token `bg` (letterbox nie może być czarną plamą, skill §9)."""
+        self.setBackgroundBrush(QColor(current_tokens(QApplication.instance())["bg"]))
+
+    def set_canvas(self, size: tuple[int, int]) -> None:
+        self.video_item.setSize(QSizeF(size[0], size[1]))
+        self.video_item.setPos(0, 0)
+        self._scene.setSceneRect(QRectF(QPointF(0, 0), QSizeF(size[0], size[1])))
+        self.fit()
+
+    def fit(self) -> None:
+        rect = self._scene.sceneRect()
+        if rect.width() > 0 and rect.height() > 0:
+            self.fitInView(rect, Qt.KeepAspectRatio)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit()
+
+    def clear_overlays(self) -> None:
+        for item, _, _ in self._events:
+            self._scene.removeItem(item)
+        self._events = []
+        self.set_clock(None)
+
+    def set_overlays(self, items: list[tuple[QPixmap, int, int, float, float]]) -> None:
+        self.clear_overlays()
+        for pix, x, y, start, end in items:
+            item = QGraphicsPixmapItem(pix)
+            item.setPos(x, y)
+            item.setZValue(1)
+            item.setVisible(False)
+            self._scene.addItem(item)
+            self._events.append((item, start, end))
+
+    def set_clock(self, pix: QPixmap | None, xy: tuple[int, int] = (0, 0)) -> None:
+        if pix is None:
+            if self._clock_item is not None:
+                self._scene.removeItem(self._clock_item)
+                self._clock_item = None
+            return
+        if self._clock_item is None:
+            self._clock_item = QGraphicsPixmapItem()
+            self._clock_item.setZValue(2)
+            self._scene.addItem(self._clock_item)
+        self._clock_item.setPixmap(pix)
+        self._clock_item.setPos(*xy)
+
+    def update_time(self, t: float) -> None:
+        """Przełącza widoczność nakładek wg czasu klatki (okna jak w renderze)."""
+        for item, start, end in self._events:
+            item.setVisible(start <= t < end)
 
 
 class PreviewLabel(QLabel):
@@ -2286,6 +2451,11 @@ class MainWindow(QMainWindow):
         self._autosave_timer = QTimer()
         self._autosave_timer.setSingleShot(True)
         self._autosave_timer.timeout.connect(lambda: config.save_last_style(self.current_style()))
+        # Podgląd w ruchu — przebudowa nakładek jest kosztowna (Pillow × liczba
+        # strzałów), więc idzie przez własny debounce, nie na każdy tick spinboxa.
+        self._player_rebuild_timer = QTimer()
+        self._player_rebuild_timer.setSingleShot(True)
+        self._player_rebuild_timer.timeout.connect(self._rebuild_player_overlays)
         self.setWindowTitle(f"Piro Overlay v{__version__}")
         self.setWindowIcon(QIcon(resources.icon_path()))
         self.setAcceptDrops(True)  # drag&drop pliku
@@ -2451,6 +2621,8 @@ class MainWindow(QMainWindow):
         # unieważnia się sam (kolor jest częścią klucza), ale repaint trzeba wymusić.
         self.waveform.update()
         self.preview_label.update()
+        if self.player_page is not None:
+            self.player_page.refresh_theme()
         self._update_preview()
 
     def _build_ui(self):
@@ -2480,11 +2652,12 @@ class MainWindow(QMainWindow):
         right = QVBoxLayout()
         right.setContentsMargins(0, 0, 0, 0)
 
-        # Pasek nad podglądem: tryb edycji, widok osi, czas podglądu.
-        # (Aplikacja NIE odtwarza wideo — brak transportu play/pauza jest celowy.)
+        # Pasek nad podglądem: transport odtwarzania, tryb edycji, widok osi, czas.
+        self._build_player()
         bar = QHBoxLayout()
         bar.setContentsMargins(0, 0, 0, SPACING["sp_2"])
         bar.setSpacing(SPACING["sp_2"])
+        self._build_transport(bar)
         self.edit_pos_btn = QToolButton()
         self.edit_pos_btn.setText("✥ " + _TR("act_edit_pos"))
         self.edit_pos_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
@@ -2503,6 +2676,9 @@ class MainWindow(QMainWindow):
         self.zoom_range_btn.setToolTip(_TR("tip_preview_zoom_range"))
         self.zoom_range_btn.clicked.connect(self._on_zoom_range)
         bar.addWidget(self.zoom_range_btn)
+        # Etykieta trybu edycji nie może się skracać do „Ed…ycje" — to przełącznik
+        # trybu, jego nazwa jest ważniejsza niż kilka pikseli w wąskim oknie.
+        self.edit_pos_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self.preview_time_label = QLabel("")
         set_role(self.preview_time_label, "mono")
         bar.addWidget(self.preview_time_label)
@@ -2521,12 +2697,15 @@ class MainWindow(QMainWindow):
         self.preview_stack.addWidget(self._empty_state_page())
         self.preview_stack.addWidget(self.preview_label)
         self.preview_stack.addWidget(self._loading_page())
+        if self.player_page is not None:
+            self.preview_stack.addWidget(self.player_page)
         right.addWidget(self.preview_stack, 3)
 
         self.waveform = WaveformWidget()
         self.waveform.anchorChanged.connect(self._on_wave_anchor)
         self.waveform.trimChanged.connect(self._on_wave_trim)
         self.waveform.previewAt.connect(self._on_preview_at)
+        self.waveform.addShotAt.connect(self._on_wave_add_shot)
         right.addWidget(self.waveform, 1)
         right_container = QWidget()
         right_container.setLayout(right)
@@ -2562,6 +2741,20 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence.Cancel, self, self._escape_edit_pos)
         # „E" przełącza tryb edycji — ale nie wtedy, gdy użytkownik pisze w polu.
         QShortcut(QKeySequence("E"), self, self._shortcut_edit_pos)
+        # Transport z klawiatury (skill §11). Wszystkie skróty przechodzą przez
+        # `_transport_shortcut`, który odpuszcza, gdy fokus jest w polu tekstowym.
+        for keys, slot in (
+            ("J", partial(self._seek_by, -_SEEK_STEP_S)),
+            ("K", self._pause),
+            ("L", partial(self._seek_by, _SEEK_STEP_S)),
+            (",", partial(self._seek_frames, -1)),
+            (".", partial(self._seek_frames, 1)),
+            ("Home", self._home_key),
+            ("End", self._end_key),
+        ):
+            QShortcut(QKeySequence(keys), self, partial(self._transport_shortcut, slot))
+        QShortcut(QKeySequence(Qt.Key_Space), self,
+                  partial(self._transport_shortcut, self._toggle_play, True))
         self._update_preview_time()
         self._set_render_enabled(True)   # bez wideo „Renderuj" jest wyłączone
 
@@ -2625,7 +2818,9 @@ class MainWindow(QMainWindow):
         if dur <= 0:
             self.preview_time_label.setText("")
             return
-        t = self.waveform.preview_t
+        t = self.waveform.playhead_t
+        if t is None:
+            t = self.waveform.preview_t
         if t is None:
             t = self.t0_spin.value()
         # dziesiąte sekundy wystarczą — surowa długość („20,0156s") jest nieczytelna
@@ -3360,6 +3555,9 @@ class MainWindow(QMainWindow):
         lrf = ffmpeg.find_lrf(path)
         self.lrf_path = str(lrf) if lrf else None
         audio_src = self.lrf_path or path
+        # Player gra na proxy LRF, jeśli jest — mały plik dekoduje się od ręki,
+        # a offsety nakładek i tak skalujemy do rozdzielczości ORYGINAŁU.
+        self._set_player_source(audio_src)
         self._show_loading(_TR("busy_audio_lrf") if self.lrf_path else _TR("busy_audio"))
 
         self.wave_worker = WaveformWorker(audio_src)
@@ -3371,7 +3569,7 @@ class MainWindow(QMainWindow):
 
     def _on_wave_done(self, env, dur, onsets):
         self.waveform.set_data(env, dur, onsets)
-        self.preview_stack.setCurrentWidget(self.preview_label)
+        self._show_preview_page()
         self._update_preview_time()
         for s in (self.trim_start_spin, self.trim_end_spin, self.t0_spin):
             s.setMaximum(max(dur, 1.0))
@@ -3748,6 +3946,10 @@ class MainWindow(QMainWindow):
     def _on_t0_spin(self, v: float):
         self.waveform.set_anchor(v)
         self._update_preview_time()
+        self._schedule_player_rebuild()   # T0 przesuwa okna czasowe nakładek
+        if (self._player_active() and not self._priming
+                and self.player.playbackState() != QMediaPlayer.PlayingState):
+            self._seek(v)     # w pauzie podgląd stoi na kotwicy — jak statyczny
         self._request_frame()  # nowy czas → nowa klatka w tle (debounced)
 
     def _apply_auto_trim(self, *_):
@@ -3791,8 +3993,17 @@ class MainWindow(QMainWindow):
             self.sync_msg.clear()
 
     def _on_preview_at(self, t: float) -> None:
-        """Ctrl+klik na waveformie → pokaż klatkę z nakładką odpowiednią dla czasu t."""
+        """Ctrl+klik na waveformie → przewinięcie podglądu do czasu t.
+
+        Gdy działa podgląd w ruchu, wystarczy `setPosition` (klatkę pokazuje
+        player) — nie uruchamiamy wtedy ekstrakcji FFmpeg ani drugiego markera
+        na osi. Bez playera (brak QtMultimedia, tryb edycji) zostaje stara
+        droga: kursor podglądu + klatka wyciągnięta w tle."""
         if not self.video_path:
+            return
+        if self._player_ready():
+            self.waveform.preview_t = None
+            self._seek(t)
             return
         self._scrubber_t = t
         self._update_preview_time()
@@ -3886,6 +4097,7 @@ class MainWindow(QMainWindow):
         """
         if not self.video_path:
             return
+        self._schedule_player_rebuild()
         if self._cached_frame is None:
             self._request_frame()  # brak cache → zainicjuj ekstrakcję
             return
@@ -3975,11 +4187,394 @@ class MainWindow(QMainWindow):
         frame.alpha_composite(clock, xy)
         self._preview_rects["clock"] = (xy[0], xy[1], clock.size[0], clock.size[1])
 
+    # ---------- podgląd w ruchu (QMediaPlayer + nakładki na scenie) ----------
+    # Nakładki NIE są malowane Pillow na każdą klatkę: `render.build_events` daje
+    # te same okna czasowe co render, każde zdarzenie ląduje raz jako pixmapa na
+    # scenie, a przy klatce przełączamy tylko widoczność. Zegar jest wyjątkiem
+    # (treść zależy od czasu) — renderujemy go co dziesiątą sekundy i keszujemy.
+
+    def _build_player(self) -> None:
+        self.player = None
+        self.player_page: VideoPlayerPage | None = None
+        self._audio_out = None
+        self._player_size: tuple[int, int] | None = None
+        self._player_failed = False
+        self._player_frames = 0            # licznik klatek (diagnostyka/weryfikacja)
+        self._playhead_t = 0.0
+        self._player_t0 = 0.0
+        self._player_style: OverlayStyle | None = None
+        self._player_session: Session | None = None
+        self._clock_cache: dict[float, tuple[QPixmap, tuple[int, int]]] = {}
+        self._clock_key: float | None = None
+        self._frame_step_ms = _DEFAULT_FRAME_MS
+        self._priming = False   # „rozgrzewanie": pierwsza klatka po wczytaniu pliku
+        self._primed = False    # rozgrzewanie robimy RAZ na plik
+        self._prime_pending = False
+        if not _HAS_MULTIMEDIA:
+            return
+        self.player_page = VideoPlayerPage()
+        self.player = QMediaPlayer(self)
+        self._audio_out = QAudioOutput(self)
+        self.player.setAudioOutput(self._audio_out)
+        self.player.setVideoOutput(self.player_page.video_item)
+        self.player.positionChanged.connect(self._on_player_position)
+        self.player.playbackStateChanged.connect(self._on_player_state)
+        self.player.errorOccurred.connect(self._on_player_error)
+        self.player.mediaStatusChanged.connect(self._on_media_status)
+        # Czas KLATKI (µs) jest dokładniejszy niż `position()` (ten idzie zegarem
+        # odtwarzania), a nakładki muszą zmieniać się razem z obrazem.
+        self.player_page.video_item.videoSink().videoFrameChanged.connect(
+            self._on_video_frame)
+
+    def _build_transport(self, bar: QHBoxLayout) -> None:
+        """Pasek transportu: skok do T0, ±1 s, play/pauza, skok do „Do", pętla."""
+        self.transport_btns: list[QToolButton] = []
+
+        def tbtn(key: str, tip_key: str, slot, checkable: bool = False,
+                 kind: str = "ghost") -> QToolButton:
+            btn = QToolButton()
+            btn.setText(_TR(key))
+            btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+            btn.setCheckable(checkable)
+            btn.setToolTip(_TR(tip_key))
+            set_kind(btn, kind)
+            (btn.toggled if checkable else btn.clicked).connect(slot)
+            bar.addWidget(btn)
+            self.transport_btns.append(btn)
+            return btn
+
+        tbtn("tr_t0", "tip_tr_t0", self._seek_t0)
+        tbtn("tr_back", "tip_tr_back", partial(self._seek_by, -_SEEK_STEP_S))
+        self.play_btn = tbtn("tr_play", "tip_tr_play", self._on_play_toggled,
+                             checkable=True, kind="secondary")
+        tbtn("tr_fwd", "tip_tr_fwd", partial(self._seek_by, _SEEK_STEP_S))
+        tbtn("tr_to", "tip_tr_to", self._seek_out)
+        self.loop_btn = tbtn("tr_loop", "tip_tr_loop", lambda *_: None, checkable=True)
+        self._refresh_transport()
+
+    def _refresh_transport(self) -> None:
+        enabled = self._player_active()
+        for btn in self.transport_btns:
+            btn.setEnabled(enabled)
+            if not _HAS_MULTIMEDIA:
+                btn.setToolTip(_TR("msg_no_multimedia"))
+
+    def _player_active(self) -> bool:
+        """Player ma sprawne źródło (jest moduł, jest plik, backend nie odmówił)."""
+        return (self.player is not None and not self._player_failed
+                and self._player_size is not None)
+
+    def _player_ready(self) -> bool:
+        """Dodatkowo: nie jesteśmy w trybie edycji pozycji (tam rządzi Pillow)."""
+        return self._player_active() and not self.edit_pos_btn.isChecked()
+
+    def _show_preview_page(self) -> None:
+        self.preview_stack.setCurrentWidget(
+            self.player_page if self._player_ready() else self.preview_label)
+
+    def _set_player_source(self, path: str) -> None:
+        """Podmienia plik w playerze. Stary MUSI zostać zwolniony (stop + pusty
+        QUrl), inaczej backend trzyma uchwyt i pamięć poprzedniego nagrania."""
+        if self.player is None:
+            return
+        self._release_player()
+        self._player_failed = False
+        self._player_frames = 0
+        self._priming = False
+        self._primed = False
+        self._prime_pending = False
+        self._playhead_t = 0.0
+        self.waveform.set_playhead(None)
+        try:
+            info = ffmpeg.probe(path)
+            height = min(info.height, _PLAYER_OVERLAY_H) or _PLAYER_OVERLAY_H
+            width = max(1, int(round(info.width * height / max(info.height, 1))))
+            self._player_size = (width, height)
+            self._frame_step_ms = (int(round(1000 / info.fps)) if info.fps
+                                   else _DEFAULT_FRAME_MS)
+        except Exception:  # noqa: BLE001 — bez metadanych nie ma czego odtwarzać
+            self._player_size = None
+            self._frame_step_ms = _DEFAULT_FRAME_MS
+        if self._player_size is not None:
+            self.player_page.set_canvas(self._player_size)
+            self.player.setSource(QUrl.fromLocalFile(str(Path(path).resolve())))
+        self._refresh_transport()
+
+    def _release_player(self) -> None:
+        if self.player is None:
+            return
+        self.player.stop()
+        self.player.setSource(QUrl())
+        if self.player_page is not None:
+            self.player_page.clear_overlays()
+        self._clock_cache.clear()
+        self._clock_key = None
+        self._player_size = None
+
+    # --- sterowanie ---
+    def _seek(self, t: float) -> None:
+        if not self._player_active():
+            return
+        limit = self.waveform.duration or t
+        t = max(0.0, min(t, limit))
+        self.player.setPosition(int(round(t * 1000)))
+        self._playhead_t = t
+        self.waveform.set_playhead(t)
+        self._update_preview_time()
+        # W pauzie klatka przyjdzie asynchronicznie — nakładki ustawiamy od razu,
+        # żeby panel nie „doganiał" obrazu o jedno zdarzenie.
+        self.player_page.update_time(t)
+        self._update_player_clock(t)
+
+    def _seek_by(self, delta: float) -> None:
+        self._seek(self._playhead_t + delta)
+
+    def _seek_frames(self, n: int) -> None:
+        self._seek(self._playhead_t + n * self._frame_step_ms / 1000.0)
+
+    def _seek_t0(self) -> None:
+        self._seek(self.t0_spin.value())
+
+    def _seek_out(self) -> None:
+        self._seek(self.trim_end_spin.value())
+
+    def _pause(self) -> None:
+        if (self._player_active()
+                and self.player.playbackState() == QMediaPlayer.PlayingState):
+            self.player.pause()
+
+    def _toggle_play(self) -> None:
+        """Spacja i przycisk mają jedno wejście — stan trzyma przycisk."""
+        if not self._player_active():
+            status_message(self.statusBar(), _TR("msg_no_multimedia"), "warning", 6000)
+            return
+        self.play_btn.toggle()
+
+    def _on_play_toggled(self, on: bool) -> None:
+        if not self._player_active():
+            self.play_btn.setChecked(False)
+            return
+        if on:
+            self._priming = False   # świadomy start użytkownika kończy rozgrzewanie
+            self._primed = True
+            self._prime_pending = False
+            self._audio_out.setMuted(False)
+            # Odtwarzanie i edycja pozycji wykluczają się (różne strony stosu).
+            if self.edit_pos_btn.isChecked():
+                self.edit_pos_btn.setChecked(False)
+            self.player.play()
+        else:
+            self.player.pause()
+
+    def _on_player_state(self, state) -> None:
+        playing = state == QMediaPlayer.PlayingState
+        self.play_btn.blockSignals(True)
+        self.play_btn.setChecked(playing)
+        self.play_btn.blockSignals(False)
+        self.play_btn.setText(_TR("tr_pause") if playing else _TR("tr_play"))
+
+    def _on_player_error(self, error, msg: str = "") -> None:
+        if error == QMediaPlayer.NoError:
+            return
+        # Funkcja jest DODATKIEM — awaria backendu nie może zabrać użytkownikowi
+        # podglądu klatki, więc wracamy na stronę statyczną i mówimy dlaczego.
+        self._player_failed = True
+        self.play_btn.setChecked(False)
+        self._refresh_transport()
+        self._show_preview_page()
+        status_message(self.statusBar(),
+                       _TR("msg_player_error").format(msg or str(error)), "warning", 10000)
+
+    def _on_media_status(self, status) -> None:
+        """Po wczytaniu pliku scena jest PUSTA, dopóki player czegoś nie zdekoduje —
+        „rozgrzewamy" go wyciszonym play→pauza, żeby podgląd pokazywał klatkę T0
+        od razu (jak podgląd statyczny), bez klikania „Odtwórz"."""
+        # `LoadedMedia` wraca też po przewinięciach — rozgrzewamy RAZ na plik,
+        # inaczej pauza z rozgrzewania potrafi przerwać odtwarzanie użytkownikowi.
+        if status != QMediaPlayer.LoadedMedia or self._primed or self._priming:
+            return
+        self._primed = True
+        self._priming = True
+        self._audio_out.setMuted(True)
+        self.player.play()
+
+    def _finish_prime(self) -> None:
+        self._prime_pending = False
+        if not self._priming or not self._player_active():
+            return
+        self._priming = False
+        self.player.pause()
+        self._audio_out.setMuted(False)
+        self._seek(self.t0_spin.value())
+
+    def _on_player_position(self, ms: int) -> None:
+        t = ms / 1000.0
+        self._playhead_t = t
+        self.waveform.set_playhead(t)
+        self._update_preview_time()
+        if self.player.playbackState() != QMediaPlayer.PlayingState:
+            return
+        end = self.trim_end_spin.value()
+        if end > 0 and t >= end - 0.03:
+            if self.loop_btn.isChecked():
+                self._seek(self.trim_start_spin.value())
+            else:
+                self.player.pause()
+
+    def _on_video_frame(self, frame) -> None:
+        if not frame.isValid():
+            return
+        self._player_frames += 1
+        if self._priming:
+            # Pauza i przewinięcie NIE mogą lecieć z wnętrza sygnału sinka
+            # (reentrancja w backendzie) — odkładamy je na pętlę zdarzeń.
+            # `_priming` gaśnie dopiero w `_finish_prime`: dopóki świeci, nikt
+            # (także zrzuty i testy) nie uzna rozgrzewania za zakończone.
+            if not self._prime_pending:
+                self._prime_pending = True
+                QTimer.singleShot(0, self._finish_prime)
+            return
+        start_us = frame.startTime()
+        t = (start_us / 1_000_000.0 if start_us >= 0
+             else self.player.position() / 1000.0)
+        self._playhead_t = t
+        self.player_page.update_time(t)
+        self._update_player_clock(t)
+
+    # --- nakładki ---
+    def _schedule_player_rebuild(self) -> None:
+        if self._player_active():
+            self._player_rebuild_timer.start(_PLAYER_REBUILD_MS)
+
+    def _rebuild_player_overlays(self) -> None:
+        """Buduje pixmapy nakładek dla bieżącej sesji/stylu/T0 (jedna funkcja —
+        wołana z `_update_preview`, zmiany T0 i po wczytaniu sesji)."""
+        if not self._player_active():
+            return
+        self.player_page.clear_overlays()
+        self._clock_cache.clear()
+        self._clock_key = None
+        self._player_session = None
+        self._player_style = None
+        session = self.session or self._safe_session()
+        if session is None or not session.shots:
+            return
+        try:
+            size = self._player_size
+            pstyle = self._scaled_style(self.current_style(), size[1])
+            t0 = audio_sync.resolve_t0(self.t0_spin.value(), self._anchor_mode(),
+                                       session.shots[0].czas)
+            duration = self.waveform.duration or (t0 + session.shots[-1].czas + 10)
+            items = []
+            for ev in render.build_events(session, t0, pstyle, size, duration):
+                x, y = render._overlay_xy(ev, pstyle, size)
+                items.append((_pil_to_pixmap(ev.image), x, y, ev.start, ev.end))
+            self.player_page.set_overlays(items)
+            self._player_session = session
+            self._player_style = pstyle
+            self._player_t0 = t0
+        except Exception:  # noqa: BLE001 — jak w podglądzie: ślad, nie modal
+            _log_ui_error("podgląd w ruchu")
+            return
+        self.player_page.update_time(self._playhead_t)
+        self._update_player_clock(self._playhead_t)
+
+    def _update_player_clock(self, t: float) -> None:
+        """Zegar w podglądzie w ruchu: treść co dziesiątą sekundy (jak w renderze),
+        zamrożony na ostatnim strzale, rozmiar stały (`clock_panel_max_size`)."""
+        style, session = self._player_style, self._player_session
+        if (style is None or session is None or not style.show_running_clock
+                or not session.shots):
+            self.player_page.set_clock(None)
+            return
+        if t < self._player_t0 - 1e-6:
+            self.player_page.set_clock(None)
+            self._clock_key = None
+            return
+        key = round(min(t - self._player_t0, session.shots[-1].czas), 1)
+        if key == self._clock_key:
+            return
+        self._clock_key = key
+        cached = self._clock_cache.get(key)
+        if cached is None:
+            size = self._player_size
+            fixed = overlay.clock_panel_max_size(style, size, session.shots[-1].czas)
+            panel = overlay.render_clock_panel(style, size, key, fixed)
+            if style.clock_position == "auto":
+                shot_fixed = overlay.shot_panel_max_size(session, style, size)
+                xy = render._clock_xy(style, size, panel.size, shot_fixed[1],
+                                      render._clock_gap(size, style))
+            else:
+                xy = render._clock_xy(style, size, panel.size, 0, 0)
+            cached = (_pil_to_pixmap(panel), xy)
+            if len(self._clock_cache) < _CLOCK_CACHE_MAX:
+                self._clock_cache[key] = cached
+        self.player_page.set_clock(*cached)
+
+    # --- skróty transportu ---
+    def _transport_shortcut(self, slot, is_space: bool = False) -> None:
+        """Skróty jednoliterowe i Spacja działają tylko poza polami (skill §11)."""
+        focused = QApplication.focusWidget()
+        if isinstance(focused, (QLineEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox)):
+            return
+        if is_space and isinstance(focused, QAbstractButton):
+            focused.click()   # Spacja na przycisku ma go kliknąć, nie odtwarzać
+            return
+        slot()
+
+    def _home_key(self) -> None:
+        # Na osi Home/End nadal ustawiają kotwicę na granicach zakresu — skrót
+        # okna nie może tego zabrać widżetowi, który ma fokus.
+        if QApplication.focusWidget() is self.waveform:
+            self.waveform.commit_anchor(self.waveform.trim_start)
+            return
+        self._seek(self.trim_start_spin.value())
+
+    def _end_key(self) -> None:
+        if QApplication.focusWidget() is self.waveform:
+            self.waveform.commit_anchor(self.waveform.trim_end)
+            return
+        self._seek(self.trim_end_spin.value())
+
+    def _on_wave_add_shot(self, t: float) -> None:
+        """M na osi → dopisz strzał w bieżącym czasie do ręcznej osi czasu.
+
+        Czas strzału jest WZGLĘDEM T0 (model czasu aplikacji), a numery i splity
+        przelicza `parser.format_timeline` — dzięki temu wstawienie strzału
+        w środek sesji nie zostawia niespójnej numeracji."""
+        if self._source_is_id():
+            self._notify("input", _TR("msg_shot_text_only"))
+            return
+        text = self.timeline_edit.toPlainText().strip()
+        try:
+            shots = parse_timeline(text) if text else []
+        except Exception:  # noqa: BLE001 — niedokończony tekst nie może zjeść klawisza
+            self._notify("input", _TR("timeline_invalid"))
+            return
+        first = shots[0].czas if shots else 0.0
+        t0 = audio_sync.resolve_t0(self.t0_spin.value(), self._anchor_mode(), first)
+        rel = t - t0
+        if rel < 0:
+            self._notify("sync", _TR("msg_shot_before_t0"))
+            return
+        shots = sorted([*shots, Shot(numer=0, czas=round(rel, 2))], key=lambda sh: sh.czas)
+        self.timeline_edit.setPlainText(format_timeline(shots))
+        self._set_source("text")
+        self._refresh_timeline_summary()
+        self._update_preview()
+        idx = next(i for i, sh in enumerate(shots) if abs(sh.czas - round(rel, 2)) < 1e-9)
+        self._ok(_TR("msg_shot_added").format(idx + 1, _fmt_time_s(round(rel, 2))))
+
     # --- edycja pozycji nakładek przez przeciąganie w podglądzie ---
     def _on_edit_pos_toggled(self, on: bool) -> None:
         self.preview_label.set_edit_mode(on)
         self.preview_label.setCursor(Qt.OpenHandCursor if on else Qt.ArrowCursor)
         self._grab = None
+        # Edycja pozycji dzieje się na statycznym podglądzie (Pillow = źródło
+        # prawdy WYSIWYG), więc na czas edycji player pauzuje i schodzi ze sceny.
+        if on:
+            self._pause()
+        self._show_preview_page()
         if on:
             status_message(
                 self.statusBar(),
@@ -4097,7 +4692,9 @@ class MainWindow(QMainWindow):
 
     def _show_image(self, pil_img):
         # Klatka bywa gotowa przed analizą audio — wtedy kończymy stan „ładowanie".
-        self.preview_stack.setCurrentWidget(self.preview_label)
+        # W trybie playera strona NIE jest przełączana (statyczny podgląd dalej
+        # liczy `_preview_rects` dla trybu edycji, ale nie zasłania odtwarzania).
+        self._show_preview_page()
         img = pil_img.convert("RGBA")
         fw, fh = img.size
         qim = ImageQt(img)
@@ -4511,6 +5108,9 @@ class MainWindow(QMainWindow):
         # następnym otwarciu — nawet bez renderu/kolejki.
         if self.video_path and self._file_settings_ready:
             self._save_file_settings()
+        # Player musi zwolnić plik i backend PRZED zamknięciem okna — inaczej
+        # zdarza się crash przy niszczeniu sceny z żywym strumieniem.
+        self._release_player()
         # Przerwij bezpośredni render, by nie niszczyć działającego QThread.
         if self.worker is not None and self.worker.isRunning():
             self.worker.cancel()
@@ -4909,6 +5509,34 @@ def main():
             win._update_preview_time()
             for _ in range(10):
                 app.processEvents()
+            # Podgląd w ruchu: rusz odtwarzanie, poczekaj na pierwszą klatkę,
+            # zapauzuj i stań na T0+1,5 s (panel strzału musi być widoczny).
+            if win._player_active():
+                def _wait(cond, limit=15.0):
+                    end = time.monotonic() + limit
+                    while time.monotonic() < end and not cond():
+                        app.processEvents()
+                        time.sleep(0.03)
+
+                win._rebuild_player_overlays()
+                # Player sam się „rozgrzewa" po wczytaniu pliku (play→pauza na
+                # pierwszej klatce); zrzut czeka, aż to się skończy.
+                _wait(lambda: win._primed and not win._priming)
+                if win._player_frames == 0:
+                    win.player.play()
+                    _wait(lambda: win._player_frames > 0)
+                    win.player.pause()
+                # Pauza i przewinięcie są ASYNCHRONICZNE — bez czekania na stan
+                # i na pozycję zrzut łapie losową klatkę (albo pustą scenę).
+                _wait(lambda: win.player.playbackState()
+                      != QMediaPlayer.PlayingState, 5.0)
+                target = win.t0_spin.value() + 1.5
+                win._seek(target)
+                _wait(lambda: abs(win.player.position() / 1000.0 - target) < 0.25, 5.0)
+                for _ in range(10):
+                    app.processEvents()
+                print(f"player: klatki={win._player_frames} "
+                      f"pos={win.player.position()} ms (cel {target:.2f} s)")
         for _ in range(5):
             app.processEvents()
         ok = win.grab().save(shot_path)
@@ -4940,6 +5568,7 @@ def main():
         for worker in (win._frame_worker, win.wave_worker):
             if worker is not None and worker.isRunning():
                 worker.wait(_THREAD_JOIN_MS)
+        win._release_player()
         return 0 if ok else 1
 
     app.aboutToQuit.connect(lambda: save_window_state(win, settings, win.splitter))

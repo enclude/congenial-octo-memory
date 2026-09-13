@@ -1,6 +1,12 @@
 import pytest
 
-from piro_overlay.parser import TimelineParseError, extract_start_delay, parse_timeline
+from piro_overlay.models import Shot
+from piro_overlay.parser import (
+    TimelineParseError,
+    extract_start_delay,
+    format_timeline,
+    parse_timeline,
+)
 
 SAMPLE_23 = (
     "1: 2.81s | 2: 4.63s (+1.82s) | 3: 6.28s (+1.65s) | 4: 7.81s (+1.53s) | "
@@ -74,3 +80,21 @@ def test_extract_start_delay_empty_text():
     rest, delay = extract_start_delay("")
     assert delay is None
     assert rest == ""
+
+
+def test_format_timeline_roundtrip():
+    text = "1: 2.81s | 2: 4.63s (+1.82s) | 3: 6.28s (+1.65s)"
+    shots = parse_timeline(text)
+    assert format_timeline(shots) == text
+    assert parse_timeline(format_timeline(shots)) == shots
+
+
+def test_format_timeline_recomputes_splits_and_numbers():
+    # Strzał wstawiony w środek: numery i splity liczone od nowa z czasów.
+    shots = [Shot(numer=1, czas=1.0), Shot(numer=9, czas=1.5, split=99.0),
+             Shot(numer=2, czas=2.25, split=None)]
+    assert format_timeline(shots) == "1: 1.00s | 2: 1.50s (+0.50s) | 3: 2.25s (+0.75s)"
+
+
+def test_format_timeline_single_shot_has_no_split():
+    assert format_timeline([Shot(numer=1, czas=0.9)]) == "1: 0.90s"

@@ -97,3 +97,20 @@ def _validate(shots: list[Shot]) -> None:
             raise TimelineParseError(
                 f"Czas strzału {shot.numer} ({shot.czas}s) jest mniejszy niż poprzedniego."
             )
+
+
+def format_timeline(shots: list[Shot]) -> str:
+    """Odwrotność `parse_timeline` — lista strzałów na tekst osi czasu.
+
+    Numeruje od 1 wg kolejności na liście, a splity przelicza z czasów (pole
+    `split` wejściowych strzałów jest ignorowane — po wstawieniu strzału
+    w środek sesji stare splity są i tak nieaktualne). Wynik jest zawsze
+    poprawnym wejściem `parse_timeline` (round-trip).
+    """
+    parts: list[str] = []
+    for i, shot in enumerate(shots):
+        token = f"{i + 1}: {shot.czas:.2f}s"
+        if i > 0:
+            token += f" (+{shot.czas - shots[i - 1].czas:.2f}s)"
+        parts.append(token)
+    return " | ".join(parts)

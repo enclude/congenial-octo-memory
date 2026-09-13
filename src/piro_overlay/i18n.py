@@ -160,11 +160,60 @@ _STRINGS: dict[str, dict[Lang, str]] = {
         Lang.PL: "Klik = ustaw kotwicę (snap do strzału) · Ctrl+klik = podgląd klatki · "
                  "kółko = zoom · prawy przycisk = przesuń · dwuklik = reset zoomu · "
                  "←/→ = kotwica o 0,05 s (Shift: 1 s) · Home/End = granice przycięcia · "
-                 "+/− = zoom, 0 = reset · O = znaczniki onsetów",
+                 "+/− = zoom, 0 = reset · Shift+O = znaczniki onsetów · "
+                 "I/O = Od/Do w bieżącym czasie · T = kotwica · M = dodaj strzał",
         Lang.EN: "Click = set anchor (snaps to a shot) · Ctrl+click = frame preview · "
                  "wheel = zoom · right button = pan · double click = reset zoom · "
                  "←/→ = anchor by 0.05 s (Shift: 1 s) · Home/End = trim bounds · "
-                 "+/− = zoom, 0 = reset · O = onset markers"},
+                 "+/− = zoom, 0 = reset · Shift+O = onset markers · "
+                 "I/O = in/out at the current time · T = anchor · M = add shot"},
+    # --- podgląd w ruchu: pasek transportu (iteracja VI) ---
+    # Przyciski transportu są glifowe (skill §9: ikony + tooltip ze skrótem) —
+    # pasek nad podglądem musi zmieścić je obok „Edytuj pozycje" i widoku osi.
+    "tr_t0": {Lang.PL: "|◀", Lang.EN: "|◀"},
+    "tr_back": {Lang.PL: "◀◀", Lang.EN: "◀◀"},
+    "tr_play": {Lang.PL: "▶", Lang.EN: "▶"},
+    "tr_pause": {Lang.PL: "❚❚", Lang.EN: "❚❚"},
+    "tr_fwd": {Lang.PL: "▶▶", Lang.EN: "▶▶"},
+    "tr_to": {Lang.PL: "▶|", Lang.EN: "▶|"},
+    "tr_loop": {Lang.PL: "↻", Lang.EN: "↻"},
+    "tip_tr_t0": {Lang.PL: "Przeskocz do sygnału startu (T0)",
+                  Lang.EN: "Jump to the start signal (T0)"},
+    "tip_tr_back": {Lang.PL: "Cofnij o sekundę (J) · przecinek = klatka wstecz",
+                    Lang.EN: "Back one second (J) · comma = one frame back"},
+    "tip_tr_play": {Lang.PL: "Odtwórz / pauza podglądu z nakładką (Spacja) · K = pauza",
+                    Lang.EN: "Play / pause the overlay preview (Space) · K = pause"},
+    "tip_tr_fwd": {Lang.PL: "Do przodu o sekundę (L) · kropka = klatka w przód",
+                   Lang.EN: "Forward one second (L) · period = one frame forward"},
+    "tip_tr_to": {Lang.PL: "Przeskocz do końca zakresu („Do”)",
+                  Lang.EN: "Jump to the end of the range (out point)"},
+    "tip_tr_loop": {Lang.PL: "Pętla Od–Do: po dojściu do „Do” wróć do „Od” zamiast pauzować",
+                    Lang.EN: "Loop in–out: at the out point return to the in point "
+                             "instead of pausing"},
+    "msg_no_multimedia": {
+        Lang.PL: "Podgląd w ruchu jest niedostępny: brak modułu QtMultimedia. "
+                 "Zostaje podgląd klatki (Ctrl+klik na osi).",
+        Lang.EN: "Motion preview unavailable: QtMultimedia module missing. "
+                 "The frame preview (Ctrl+click on the timeline) still works."},
+    "msg_player_error": {
+        Lang.PL: "Nie udało się odtworzyć nagrania w podglądzie ({}). "
+                 "Backend multimediów nie obsługuje tego pliku — "
+                 "podgląd klatki (Ctrl+klik na osi) działa dalej.",
+        Lang.EN: "The recording cannot be played in the preview ({}). "
+                 "The multimedia backend does not support this file — "
+                 "the frame preview (Ctrl+click on the timeline) still works."},
+    "msg_in_set": {Lang.PL: "„Od” ustawione na {}.", Lang.EN: "In point set to {}."},
+    "msg_out_set": {Lang.PL: "„Do” ustawione na {}.", Lang.EN: "Out point set to {}."},
+    "msg_shot_added": {Lang.PL: "Dodano strzał {} w czasie {} od T0.",
+                       Lang.EN: "Shot {} added at {} after T0."},
+    "msg_shot_text_only": {
+        Lang.PL: "Dodawanie strzałów działa tylko przy źródle „Tekst” "
+                 "(oś z API jest tylko do odczytu).",
+        Lang.EN: "Adding shots only works with the „Text” source "
+                 "(the API timeline is read-only)."},
+    "msg_shot_before_t0": {
+        Lang.PL: "Ten czas jest przed T0 — strzał musi wypaść po sygnale startu.",
+        Lang.EN: "This time is before T0 — a shot must fall after the start signal."},
     "act_edit_pos": {Lang.PL: "Edytuj pozycje", Lang.EN: "Edit positions"},
     "tip_edit_pos": {
         Lang.PL: "Tryb edycji: przeciągaj w podglądzie panel strzału, metadane i zegar, "
@@ -174,7 +223,7 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "preview_fit": {Lang.PL: "Dopasuj", Lang.EN: "Fit"},
     "tip_preview_fit": {Lang.PL: "Pokaż całe nagranie na osi (reset zoomu)",
                         Lang.EN: "Show the whole recording on the timeline (reset zoom)"},
-    "preview_zoom_range": {Lang.PL: "Zoom do zakresu", Lang.EN: "Zoom to range"},
+    "preview_zoom_range": {Lang.PL: "Zoom Od–Do", Lang.EN: "Zoom in–out"},
     "tip_preview_zoom_range": {
         Lang.PL: "Powiększ oś do zakresu przycięcia (Od…Do) z marginesem",
         Lang.EN: "Zoom the timeline to the trim range (From…To) with a margin"},

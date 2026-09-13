@@ -233,7 +233,16 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   dokładany przez `build.ps1 -WithFfmpeg`) → systemowy z NVENC → imageio-ffmpeg (CPU).
   Binarka imageio-ffmpeg NIE ma NVENC.
 - **Waveform:** `audio_sync.compute_waveform` → `gui.WaveformWidget` (klik=kotwica,
-  uchwyty=trim, znaczniki=onsety). Ctrl+klik = podgląd klatki z nakładką (scrubber).
+  uchwyty=trim, znaczniki=onsety). Ctrl+klik = podgląd klatki z nakładką (scrubber);
+  gdy działa podgląd w ruchu, Ctrl+klik tylko PRZEWIJA playera (bez ekstrakcji FFmpeg
+  i bez drugiego markera). Oś ma DWA kursory czasu: `preview_t` (klatka scrubbera —
+  linia przerywana, trójkąt konturowy, pastylka „⊹") i `playhead_t` (pozycja
+  odtwarzania — linia ciągła, trójkąt wypełniony, pastylka „▶"); `set_playhead`
+  przesuwa okno widoku dopiero, gdy playhead z niego wyjedzie (bez zmiany zoomu).
+  Klawiatura osi (v0.50.0): I/O = „Od"/„Do" w bieżącym czasie (`current_t()` =
+  playhead → kursor podglądu → kotwica → „Od"), T = kotwica, M = dodaj strzał
+  (sygnał `addShotAt`). UWAGA: samo O przejęło rolę punktu „Do" z konwencji edytorów
+  wideo, więc warstwa onsetów przeszła na **Shift+O**.
   Od v0.48.0 rysowanie idzie WYŁĄCZNIE z tokenów motywu (`current_tokens` czytane
   w `paintEvent`, bez kopii w polach), obwiednia jest w cache `QPixmap`
   (`_ensure_wave_cache`, klucz `(len(env), view_start, view_end, w, h, kolory)`),
@@ -440,6 +449,56 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   `QDialog` — `QShortcut(QKeySequence.Cancel, …)`) i wychodzi z trybu „Edytuj pozycje".
   Tryb `--screenshot` przyjmuje `--video PATH` (wczytuje plik i czeka pętlą
   `processEvents` na analizę audio — jedyne dopuszczalne użycie `processEvents`).
+- **Podgląd w ruchu + pasek transportu + skróty osi (v0.50.0):** czwarta strona
+  `preview_stack` — `gui.VideoPlayerPage` (`QGraphicsView` + `QGraphicsVideoItem`)
+  napędzana `QMediaPlayer`. DLACZEGO tak, a nie „klatka z QVideoSink przemalowana
+  Pillow": dekodowanie i skalowanie zostaje po stronie Qt (zero kopii przez Pythona
+  na każdą klatkę), a nakładki liczy RAZ `render.build_events` — te same okna czasowe
+  co render — i wrzuca jako `QGraphicsPixmapItem`; przy klatce przełączamy tylko
+  `setVisible` (odpowiednik `enable='between(t,a,b)'` z filtergrafu). Pozycje liczy
+  `render._overlay_xy`, więc player, `preview.compose_preview` i render nie mogą się
+  rozjechać. Układ współrzędnych sceny = płótno nakładek: `min(wysokość źródła,
+  _PLAYER_OVERLAY_H=540)` — panele rysujemy w 540p, nie w 4K. **Źródłem jest proxy LRF**
+  (`self.lrf_path or self.video_path`): mały plik dekoduje się od ręki, a offsety i tak
+  skalujemy przez `_scaled_style` do wysokości ORYGINAŁU (WYSIWYG jak dotąd).
+  Synchronizacja nakładek idzie z `QVideoSink.videoFrameChanged` →
+  `frame.startTime()` (µs) — dokładniejsze niż `positionChanged`, który zasila tylko
+  playhead i etykietę czasu. Zegar (`show_running_clock`) to jedyna nakładka zależna
+  od czasu: `render_clock_panel` z `fixed_size=clock_panel_max_size(...)`, treść
+  liczona co dziesiątą sekundy i keszowana po tej wartości (`_clock_cache`,
+  `_CLOCK_CACHE_MAX`), zamrożona na ostatnim strzale — jak w renderze. Przebudowa
+  nakładek: JEDNA funkcja `_rebuild_player_overlays()` przez debounce
+  `_PLAYER_REBUILD_MS` (zmiana stylu/sesji/T0) — bez tego każdy tick spinboxa
+  renderowałby N paneli Pillow. **Rozgrzewanie (`_priming`/`_primed`/`_prime_pending`):**
+  po `setSource` scena jest PUSTA, dopóki player czegoś nie zdekoduje, więc przy
+  `LoadedMedia` robimy RAZ wyciszone play→pauza→seek(T0); pauza i seek lecą przez
+  `QTimer.singleShot(0, …)`, bo wywołane z wnętrza sygnału sinka potrafią zawiesić
+  backend, a `_priming` gaśnie dopiero w `_finish_prime` (inaczej zrzut/test uzna
+  rozgrzewanie za skończone za wcześnie i jego `play()` dostanie pauzę z rozgrzewania).
+  Pasek transportu nad podglądem: glify (`|◀ ◀◀ ▶/❚❚ ▶▶ ▶| ↻`) z tooltipami niosącymi
+  skrót; skróty okna Spacja/J/K/L/,/. i Home/End przez `_transport_shortcut`
+  (odpuszcza, gdy fokus jest w polu tekstowym; Spacja na przycisku go KLIKA).
+  Home/End na osi zostaje przy kotwicy — `_home_key`/`_end_key` delegują do
+  `waveform.commit_anchor`, bo `QShortcut` okna ma pierwszeństwo przed `keyPressEvent`
+  widżetu. Pauza na „Do" albo pętla Od–Do (`loop_btn`). Tryb „Edytuj pozycje" pauzuje
+  player i wraca na stronę statyczną (Pillow zostaje źródłem prawdy WYSIWYG dla
+  przeciągania) — `_show_image` NIE przełącza już strony samo, robi to
+  `_show_preview_page()`. Import `PySide6.QtMultimedia*` jest w try/except
+  (`_HAS_MULTIMEDIA`), a `errorOccurred` ustawia `_player_failed` → transport gaśnie,
+  wracamy do podglądu klatki i mówimy dlaczego (`msg_player_error`): funkcja jest
+  ADDYTYWNA, jej awaria nie może zabrać niczego, co działało. `closeEvent` woła
+  `_release_player()` (stop + `setSource(QUrl())`) — żywy strumień przy niszczeniu
+  sceny potrafi wywalić proces. **PyInstaller:** hook PySide6 zbiera QtMultimedia
+  i pluginy (`PySide6/plugins/multimedia/`), ale moduły importujemy warunkowo, więc
+  `build_exe.spec` wymienia je JAWNIE w `hiddenimports`; po buildzie sprawdź, czy
+  w `dist/` jest `ffmpegmediaplugin.dll` / `windowsmediaplugin.dll` — bez nich player
+  zgłosi błąd i zostanie sam podgląd statyczny.
+- **`parser.format_timeline(shots)` (v0.50.0):** odwrotność `parse_timeline`
+  (round-trip, test w `tests/test_parser.py`) — numeruje od 1 i PRZELICZA splity
+  z czasów, bo po wstawieniu strzału w środek sesji stare splity są nieaktualne.
+  Używa jej skrót **M** na osi: czas względem T0 (`resolve_t0`), wstawienie,
+  sortowanie i zapis z powrotem do `timeline_edit`. Działa tylko przy źródle „Tekst"
+  (oś z API jest do odczytu — `msg_shot_text_only`).
 - **Płynący zegar od T0:** `OverlayStyle.show_running_clock` (checkbox „Płynący czas od T0").
   Nad nakładką ze strzałami tyka „T+x.xs" liczone od sygnału startu, widoczne od STARTU
   (t ≥ T0). `render.prepare_clock(style)` zwraca bool: `_clock_drawtext_seg` (filtr `drawtext`,

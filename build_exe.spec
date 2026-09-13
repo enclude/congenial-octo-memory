@@ -58,7 +58,12 @@ a = Analysis(
     datas=datas,
     # Wszystkie submoduły pakietu jawnie — importy w app.py są wewnątrz funkcji
     # (leniwe rozgałęzienie GUI/CLI), więc nie polegamy na samej analizie bytecode'u.
-    hiddenimports=["imageio_ffmpeg", *collect_submodules("piro_overlay")],
+    # QtMultimedia* (podgląd w ruchu) — hook PySide6 dokłada pluginy
+    # multimediów, ale same moduły importujemy warunkowo (try/except),
+    # więc analiza ich nie widzi: wymieniamy je JAWNIE.
+    hiddenimports=["imageio_ffmpeg", "PySide6.QtMultimedia",
+                   "PySide6.QtMultimediaWidgets",
+                   *collect_submodules("piro_overlay")],
     hookspath=[],
     runtime_hooks=[],
     excludes=["soundfile", "_soundfile"],
