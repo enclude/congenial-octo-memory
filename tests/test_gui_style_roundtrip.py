@@ -70,3 +70,36 @@ def test_source_segments_keep_settings_keys(app):
     win._set_source("id")
     assert win._source_is_id()
     assert win._collect_file_settings()["source"] == "id"
+
+
+def test_meta_override_applies_to_session_and_settings(app):
+    from piro_overlay.models import Session, Shot
+
+    win = gui.MainWindow()
+    api_session = Session(shots=[Shot(1, 1.0), Shot(2, 2.0, 1.0)],
+                          nazwa_toru="Z API", uczestnik="Ktoś")
+    win._on_session_fetched(api_session)
+    # Puste pola → sesja z API bez zmian, placeholdery pokazują wartości API.
+    assert (win.session.nazwa_toru, win.session.uczestnik) == ("Z API", "Ktoś")
+    assert win.meta_track_edit.placeholderText() == "Z API"
+
+    win.meta_track_edit.setText("Tor 3")
+    win.meta_participant_edit.setText("  Jaro ")
+    assert (win.session.nazwa_toru, win.session.uczestnik) == ("Tor 3", "Jaro")
+    assert win._api_session is api_session  # surowa kopia nietknięta
+
+    # Źródło „Tekst” buduje sesję z pól + nadpisania (metadane trafiają na film).
+    win._set_source("text")
+    win.timeline_edit.setPlainText("1: 1.0s | 2: 2.5s")
+    built = win._build_session()
+    assert [s.czas for s in built.shots] == [1.0, 2.5]
+    assert (built.nazwa_toru, built.uczestnik) == ("Tor 3", "Jaro")
+
+    settings = win._collect_file_settings()
+    assert settings["meta_track"] == "Tor 3"
+    assert settings["meta_participant"] == "  Jaro "
+    assert "--track-name" in win._build_cli_command()
+
+    # Wyczyszczenie pola przywraca wartość z API.
+    win.meta_track_edit.clear()
+    assert win.session.nazwa_toru == "Z API"

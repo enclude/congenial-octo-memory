@@ -2890,6 +2890,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.session: Session | None = None
+        # Surowa sesja z API — `self.session` to ona PO nałożeniu pól „Tor”/
+        # „Uczestnik” (edycja pól przelicza `self.session` z tej kopii).
+        self._api_session: Session | None = None
         self.video_path: str | None = None
         self.lrf_path: str | None = None
         # Proxy podglądu (540p) — patrz `_maybe_start_proxy`. `_proxy_path` jest
@@ -3660,6 +3663,22 @@ class MainWindow(QMainWindow):
                 key == "id" and bool(self.api_meta_label.text())
             )
         )
+        # Nadpisanie metadanych z API (albo uzupełnienie sesji z tekstu, która
+        # ich nie ma). Puste pole = wartość z API; placeholder pokazuje, co API
+        # podało, żeby było widać, CO się nadpisuje.
+        self.meta_track_edit = QLineEdit()
+        self.meta_participant_edit = QLineEdit()
+        for edit, what in ((self.meta_track_edit, "nazwę toru"),
+                           (self.meta_participant_edit, "uczestnika")):
+            edit.setClearButtonEnabled(True)
+            edit.setToolTip(
+                f"Nadpisuje {what} na nakładce (panel strzału, nakładka metadanych,\n"
+                "podsumowanie). Puste = wartość pobrana z API; przy źródle „Tekst”\n"
+                "to jedyne miejsce, skąd metadane trafiają na film.")
+            edit.textChanged.connect(self._on_meta_override_changed)
+        self._set_meta_placeholders(None)
+        sec.add_row("Tor", self.meta_track_edit)
+        sec.add_row("Uczestnik", self.meta_participant_edit)
         # Komunikaty dotyczące danych wejściowych (brak wideo, brak ID w audio…).
         self.input_msg = InlineMessage()
         sec.add_widget_row(self.input_msg)
@@ -4480,11 +4499,27 @@ class MainWindow(QMainWindow):
 
     def _build_session(self):
         if self._source_is_id():
-            return api.fetch_session(self.id_spin.value())
+            return self._with_meta_override(api.fetch_session(self.id_spin.value()))
         shots = parse_timeline(self.timeline_edit.toPlainText())
         if self.session is not None:
-            return replace(self.session, shots=shots)
-        return Session(shots=shots)
+            return replace(self.session, shots=shots)  # nadpisanie już nałożone
+        return self._with_meta_override(Session(shots=shots))
+
+    def _with_meta_override(self, session: Session) -> Session:
+        """Sesja z nałożonymi polami „Tor”/„Uczestnik” (puste = bez zmian)."""
+        return pipeline.apply_meta_override(
+            session, self.meta_track_edit.text(), self.meta_participant_edit.text())
+
+    def _set_meta_placeholders(self, session: Session | None) -> None:
+        api_track = session.nazwa_toru if session else None
+        api_part = session.uczestnik if session else None
+        self.meta_track_edit.setPlaceholderText(api_track or "z API (albo puste)")
+        self.meta_participant_edit.setPlaceholderText(api_part or "z API (albo puste)")
+
+    def _on_meta_override_changed(self) -> None:
+        if self._api_session is not None:
+            self.session = self._with_meta_override(self._api_session)
+        self._update_preview()
 
     # ---------- operacje w tle (detekcje, API) ----------
     # Jeden mechanizm dla WSZYSTKICH długich operacji okna: worker + busy na
@@ -4657,7 +4692,9 @@ class MainWindow(QMainWindow):
                      on_error=failed)
 
     def _on_session_fetched(self, session, then=None) -> None:
-        self.session = session
+        self._api_session = session
+        self.session = self._with_meta_override(session)
+        self._set_meta_placeholders(session)
         self.timeline_edit.setPlainText(
             " | ".join(self._shot_to_text(s) for s in session.shots))
         parts = []
@@ -5798,6 +5835,8 @@ class MainWindow(QMainWindow):
             "source": self.source_seg.value(),
             "id": self.id_spin.value(),
             "timeline": self.timeline_edit.toPlainText(),
+            "meta_track": self.meta_track_edit.text(),
+            "meta_participant": self.meta_participant_edit.text(),
             "anchor": self._anchor_mode().value,
             "t0": self.t0_spin.value(),
             "t0_detector": self._t0_detector,  # None = nieznana wersja detektora
@@ -5824,6 +5863,8 @@ class MainWindow(QMainWindow):
             self.id_spin.setValue(int(data["id"]))
         if data.get("timeline"):
             self.timeline_edit.setPlainText(data["timeline"])
+        self.meta_track_edit.setText(str(data.get("meta_track") or ""))
+        self.meta_participant_edit.setText(str(data.get("meta_participant") or ""))
         aidx = self.anchor_combo.findData(data.get("anchor", AnchorMode.START_SIGNAL.value))
         if aidx >= 0:
             self.anchor_combo.setCurrentIndex(aidx)
@@ -5872,6 +5913,12 @@ class MainWindow(QMainWindow):
                 tl = self.timeline_edit.toPlainText().strip()
                 if tl:
                     parts += ["--timeline", _cli_quote(tl)]
+            track = self.meta_track_edit.text().strip()
+            if track:
+                parts += ["--track-name", _cli_quote(track)]
+            part = self.meta_participant_edit.text().strip()
+            if part:
+                parts += ["--participant", _cli_quote(part)]
 
         mode = self._anchor_mode()
         if mode != AnchorMode.START_SIGNAL:
@@ -5925,8 +5972,8 @@ class MainWindow(QMainWindow):
         text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         lay.addWidget(text)
         note = QLabel(
-            "Uwaga: CLI odwzorowuje wideo, źródło osi (ID/tekst), T0, kotwicę, język,\n"
-            "przycięcie, enkoder, płynący zegar i tryb „bez nakładki”. Szczegóły wyglądu\n"
+            "Uwaga: CLI odwzorowuje wideo, źródło osi (ID/tekst), tor/uczestnika, T0,\n"
+            "kotwicę, język, przycięcie, enkoder, płynący zegar i tryb „bez nakładki”. Szczegóły wyglądu\n"
             "nakładki (kolory, skala, pozycja panelu, offsety, plansza START) NIE są\n"
             "obsługiwane w CLI i zostały pominięte.")
         note.setProperty("role", "muted")

@@ -34,7 +34,8 @@ def _default_output(video: str) -> str:
 
 def _build_session(args: argparse.Namespace) -> Session | None:
     """Sesja z osi czasu (tekst lub API). None gdy nie podano źródła."""
-    return pipeline.build_session(args.timeline, args.id)
+    return pipeline.build_session(args.timeline, args.id,
+                                  args.track_name, args.participant)
 
 
 def _resolve_t0(args: argparse.Namespace, session: Session | None,
@@ -87,6 +88,10 @@ def main(argv: list[str] | None = None) -> int:
     src = parser.add_mutually_exclusive_group()
     src.add_argument("--timeline", help="oś czasu strzałów jako tekst")
     src.add_argument("--id", type=int, help="ID wyniku z API kalkulatora")
+    parser.add_argument("--track-name", default=None,
+                        help="nazwa toru na nakładce (nadpisuje wartość z API)")
+    parser.add_argument("--participant", default=None,
+                        help="uczestnik na nakładce (nadpisuje wartość z API)")
     parser.add_argument("--t0", type=float, help="ręczny czas kotwicy (s); pomija auto-detekcję")
     parser.add_argument("--anchor", choices=[m.value for m in AnchorMode],
                         default=AnchorMode.START_SIGNAL.value, help="typ kotwicy")

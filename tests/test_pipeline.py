@@ -19,6 +19,33 @@ def test_build_session_none_without_source():
     assert pipeline.build_session("", None) is None
 
 
+def test_apply_meta_override_replaces_api_values():
+    base = Session(shots=[Shot(1, 1.0)], nazwa_toru="Z API", uczestnik="Ktoś")
+    out = pipeline.apply_meta_override(base, "Tor 3", " Jaro ")
+    assert (out.nazwa_toru, out.uczestnik) == ("Tor 3", "Jaro")
+    assert out.shots == base.shots
+    assert (base.nazwa_toru, base.uczestnik) == ("Z API", "Ktoś")  # bez mutacji
+
+
+def test_apply_meta_override_blank_keeps_api_values():
+    base = Session(shots=[Shot(1, 1.0)], nazwa_toru="Z API", uczestnik="Ktoś")
+    assert pipeline.apply_meta_override(base, None, None) is base
+    out = pipeline.apply_meta_override(base, "   ", "")
+    assert (out.nazwa_toru, out.uczestnik) == ("Z API", "Ktoś")
+
+
+def test_apply_meta_override_partial():
+    base = Session(shots=[Shot(1, 1.0)], nazwa_toru="Z API", uczestnik="Ktoś")
+    out = pipeline.apply_meta_override(base, None, "Jaro")
+    assert (out.nazwa_toru, out.uczestnik) == ("Z API", "Jaro")
+
+
+def test_build_session_from_timeline_with_override():
+    session = pipeline.build_session("1: 1.0s | 2: 2.5s", None, "Tor 3", "Jaro")
+    assert (session.nazwa_toru, session.uczestnik) == ("Tor 3", "Jaro")
+    assert len(session.shots) == 2
+
+
 def test_compute_t0_start_signal_keeps_anchor():
     session = Session(shots=[Shot(1, 2.0)])
     assert pipeline.compute_t0(10.0, AnchorMode.START_SIGNAL, session) == 10.0

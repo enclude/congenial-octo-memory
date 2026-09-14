@@ -123,6 +123,30 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Nadpisanie nazwy toru / uczestnika z API (v0.58.0):** czysta funkcja
+  `pipeline.apply_meta_override(session, nazwa_toru, uczestnik)` — puste/białe znaki =
+  zostaw wartość z sesji (z API), niepuste = `replace(...)` po `strip()`. ŚWIADOMIE bez
+  trybu „wyczyść” (ukrycie metadanych to sprawa stylu nakładki, nie danych).
+  `pipeline.build_session(timeline, id, nazwa_toru=None, uczestnik=None)` nakłada ją na
+  OBA źródła — przy tekście to jedyna droga, żeby sesja bez API miała metadane. CLI:
+  `--track-name`/`--participant` (`tests/test_cli.py` ma je w `_args`). GUI: pola „Tor”/
+  „Uczestnik” (`meta_track_edit`/`meta_participant_edit`, `QLineEdit` z przyciskiem
+  czyszczenia) w sekcji „Wejście” pod przyciskami ID; placeholder = wartość z API
+  (`_set_meta_placeholders`), więc widać CO się nadpisuje. Model stanu: `_api_session`
+  (surowa odpowiedź API, ustawiana w `_on_session_fetched`) i `self.session` = ta kopia
+  PO `_with_meta_override` — dzięki temu WSZYSTKIE istniejące odczyty `self.session`
+  (podgląd, player, scrubber, markery osi, kolejka, `render._diag_metadata_args`)
+  dostają nadpisane wartości bez zmian u siebie; `textChanged` → `_on_meta_override_changed` przelicza `self.session`
+  z `_api_session` i woła `_update_preview`. `_build_session`: gałąź ID owija
+  `api.fetch_session`, gałąź tekstowa bez `self.session` owija `Session(shots)`;
+  z `self.session` zostaje `replace(shots=…)` (nadpisanie już w środku). Pamięć
+  per-plik: klucze `meta_track`/`meta_participant` (surowy tekst pola, bez strip);
+  `_apply_file_settings` ustawia je PRZED cichym `_fetch_id`, więc wynik pobrania od
+  razu je nakłada. `_build_cli_command` dokłada obie flagi (nie przy „bez nakładki”).
+  Test GUI (PySide6, `.venv-win`): `test_meta_override_applies_to_session_and_settings`.
+  NIE zrobione (świadomie): wsad (`BatchDialog` — per-plik pole to inny UI, a wsad
+  bierze metadane wprost z API), web (`/session` nie ma jeszcze parametrów nadpisania).
+
 - **„Zapisz klatkę" — PNG z nakładką w pełnej rozdzielczości (v0.57.0):** przycisk
   icon-only (`camera`, nowa ikona `assets/icons/camera.svg`) w pasku nad podglądem,
   obok „Dopasuj"/„Zoom Od–Do", skrót **Ctrl+S** (skrót okna z modyfikatorem — działa

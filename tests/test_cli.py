@@ -17,6 +17,7 @@ def _args(**overrides) -> argparse.Namespace:
         trim_start=None, trim_end=None,
         auto=False, auto_trim=False, auto_window=None,
         lead_in=5.0, tail=5.0,
+        track_name=None, participant=None,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -38,6 +39,12 @@ def test_build_session_from_timeline():
 
 def test_build_session_none_without_source():
     assert cli._build_session(_args()) is None
+
+
+def test_build_session_timeline_with_meta_override():
+    session = cli._build_session(_args(timeline="1: 1.0s", track_name="Tor 3",
+                                       participant="  Jaro "))
+    assert (session.nazwa_toru, session.uczestnik) == ("Tor 3", "Jaro")
 
 
 def test_compute_trim_passthrough_without_auto():

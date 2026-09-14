@@ -7,6 +7,7 @@ HTTP) należą do warstw wejścia; tu tylko wartości i `PipelineError`.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from . import api, audio_sync, ffmpeg, render
@@ -21,13 +22,36 @@ class PipelineError(RuntimeError):
     """Błąd przepływu z komunikatem dla użytkownika końcowego."""
 
 
-def build_session(timeline: str | None, result_id: int | None) -> Session | None:
-    """Sesja z osi czasu (tekst lub API). None gdy nie podano źródła."""
+def build_session(timeline: str | None, result_id: int | None,
+                  nazwa_toru: str | None = None,
+                  uczestnik: str | None = None) -> Session | None:
+    """Sesja z osi czasu (tekst lub API). None gdy nie podano źródła.
+
+    `nazwa_toru`/`uczestnik` nadpisują metadane z API (albo uzupełniają sesję
+    z tekstu, która metadanych nie ma) — patrz `apply_meta_override`.
+    """
     if result_id is not None:
-        return api.fetch_session(result_id)
-    if timeline:
-        return Session(shots=parse_timeline(timeline))
-    return None
+        session = api.fetch_session(result_id)
+    elif timeline:
+        session = Session(shots=parse_timeline(timeline))
+    else:
+        return None
+    return apply_meta_override(session, nazwa_toru, uczestnik)
+
+
+def apply_meta_override(session: Session, nazwa_toru: str | None,
+                        uczestnik: str | None) -> Session:
+    """Nadpisuje nazwę toru / uczestnika w sesji.
+
+    Puste (None albo same białe znaki) = zostaw wartość z sesji (z API). Nie ma
+    trybu „wyczyść” — ukrycie metadanych to sprawa stylu nakładki, nie danych.
+    """
+    changes = {}
+    if nazwa_toru is not None and nazwa_toru.strip():
+        changes["nazwa_toru"] = nazwa_toru.strip()
+    if uczestnik is not None and uczestnik.strip():
+        changes["uczestnik"] = uczestnik.strip()
+    return replace(session, **changes) if changes else session
 
 
 def audio_source(video: str | Path) -> str:
