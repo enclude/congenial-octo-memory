@@ -171,6 +171,10 @@ input:focus, textarea:focus, select:focus {
 /* ── strzały ──────────────────────────────────────────────── */
 .shots { margin-top: 14px; }
 .shots-meta { color: var(--text-dim); font-size: .88rem; margin: 0 0 6px; }
+.meta-override { margin-top: 10px; }
+.field-inline { display: flex; flex-direction: column; gap: 4px; flex: 1 1 180px;
+  color: var(--text-dim); font-size: .85rem; }
+.field-inline input { width: 100%; }
 .shot-list {
   margin: 0; padding: 10px 14px; list-style: none;
   background: var(--bg-inset); border: 1px solid var(--line); border-radius: 6px;

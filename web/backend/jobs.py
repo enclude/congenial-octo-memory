@@ -76,6 +76,10 @@ class Job:
     duration: float | None = None
     video_size: tuple[int, int] | None = None
     session: Session | None = None
+    # Surowa sesja (API/tekst) i nadpisania toru/uczestnika — `session` to
+    # `session_raw` PO `pipeline.apply_meta_override` (jak `_api_session` w GUI).
+    session_raw: Session | None = None
+    meta_override: dict[str, str | None] = field(default_factory=dict)
     # ID API użyte w /session (source="id") — do zapamiętania dopasowania plik→ID
     # w filedb, dopiero po kliknięciu „Renderuj" (patrz api.start_render).
     session_source_id: int | None = None
@@ -123,8 +127,15 @@ class Job:
             "session_meta": {
                 "nazwa_toru": self.session.nazwa_toru,
                 "uczestnik": self.session.uczestnik,
+                # Wartości sprzed nadpisania — frontend pokazuje je jako placeholder.
+                "nazwa_toru_api": self.session_raw.nazwa_toru if self.session_raw else None,
+                "uczestnik_api": self.session_raw.uczestnik if self.session_raw else None,
                 "start_delay": self.session.start_delay,
             } if self.session is not None else None,
+            "meta_override": {
+                "nazwa_toru": self.meta_override.get("nazwa_toru") or "",
+                "uczestnik": self.meta_override.get("uczestnik") or "",
+            },
         }
 
     def snapshot_event(self) -> dict:

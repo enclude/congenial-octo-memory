@@ -101,6 +101,42 @@ def test_set_session_from_api_id(client: TestClient, tiny_video: Path,
     assert r.json()["session_meta"]["uczestnik"] == "Test"
 
 
+def test_session_meta_override_applies_and_clears(client: TestClient, tiny_video: Path,
+                                                 monkeypatch: pytest.MonkeyPatch):
+    from piro_overlay.models import Session, Shot
+    from piro_overlay import pipeline as pl
+    monkeypatch.setattr(pl.api, "fetch_session",
+                        lambda rid: Session(shots=[Shot(1, 2.0)], nazwa_toru="Z API",
+                                            uczestnik="Ktoś"))
+    job_id = _upload(client, tiny_video).json()["id"]
+    # Nadpisanie ustawione PRZED pobraniem sesji zostaje na zadaniu.
+    r = client.post(f"/api/jobs/{job_id}/session-meta",
+                    json={"nazwa_toru": "Tor 3", "uczestnik": ""})
+    assert r.status_code == 200, r.text
+    assert r.json()["shots"] is None
+    r = client.post(f"/api/jobs/{job_id}/session", json={"source": "id", "id": 5})
+    meta = r.json()["session_meta"]
+    assert (meta["nazwa_toru"], meta["uczestnik"]) == ("Tor 3", "Ktoś")
+    assert (meta["nazwa_toru_api"], meta["uczestnik_api"]) == ("Z API", "Ktoś")
+    # Zmiana bez ponownego pobrania; puste = powrót do wartości z API.
+    r = client.post(f"/api/jobs/{job_id}/session-meta",
+                    json={"nazwa_toru": "  ", "uczestnik": " Jaro "})
+    meta = r.json()["session_meta"]
+    assert (meta["nazwa_toru"], meta["uczestnik"]) == ("Z API", "Jaro")
+    assert r.json()["meta_override"] == {"nazwa_toru": "  ", "uczestnik": " Jaro "}
+
+
+def test_set_session_timeline_with_meta_override(client: TestClient, tiny_video: Path):
+    job_id = _upload(client, tiny_video).json()["id"]
+    r = client.post(f"/api/jobs/{job_id}/session",
+                    json={"source": "timeline", "timeline": "1: 1.0s",
+                          "nazwa_toru": "Tor 3", "uczestnik": "Jaro"})
+    assert r.status_code == 200, r.text
+    meta = r.json()["session_meta"]
+    assert (meta["nazwa_toru"], meta["uczestnik"]) == ("Tor 3", "Jaro")
+    assert meta["nazwa_toru_api"] is None
+
+
 def test_session_meta_carries_start_delay(client: TestClient, tiny_video: Path,
                                           monkeypatch: pytest.MonkeyPatch):
     from piro_overlay.models import Session, Shot

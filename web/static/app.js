@@ -199,6 +199,38 @@ $("duration-input").addEventListener("input", () => {
   schedulePreview();
 });
 
+function renderSessionMeta(data) {
+  const meta = data.session_meta || {};
+  $("shots-meta").textContent =
+    [meta.nazwa_toru, meta.uczestnik, `${data.shots.length} strzałów`]
+      .filter(Boolean).join(" · ");
+  // Placeholder = wartość z API, żeby było widać, CO się nadpisuje.
+  $("meta-track").placeholder = meta.nazwa_toru_api || "z API (albo puste)";
+  $("meta-participant").placeholder = meta.uczestnik_api || "z API (albo puste)";
+}
+
+async function setSessionMeta() {
+  if (!job.id) return;
+  const resp = await fetch(`/api/jobs/${job.id}/session-meta`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      nazwa_toru: $("meta-track").value,
+      uczestnik: $("meta-participant").value,
+    }),
+  });
+  if (!resp.ok) { toast(await apiError(resp)); return; }
+  const data = await resp.json();
+  if (data.shots) {
+    renderSessionMeta(data);
+    schedulePreview();
+  }
+}
+
+// `change` (nie `input`) — jedno żądanie po zakończeniu edycji, nie na każdy znak.
+$("meta-track").addEventListener("change", setSessionMeta);
+$("meta-participant").addEventListener("change", setSessionMeta);
+
 async function setSession(body) {
   const resp = await fetch(`/api/jobs/${job.id}/session`, {
     method: "POST",
@@ -208,10 +240,7 @@ async function setSession(body) {
   if (!resp.ok) { toast(await apiError(resp)); return false; }
   const data = await resp.json();
   job.hasSession = true;
-  const meta = data.session_meta || {};
-  $("shots-meta").textContent =
-    [meta.nazwa_toru, meta.uczestnik, `${data.shots.length} strzałów`]
-      .filter(Boolean).join(" · ");
+  renderSessionMeta(data);
   $("shot-list").innerHTML = data.shots.map((s) =>
     `<li><b>${s.numer}</b> ${s.czas.toFixed(2)}s` +
     (s.split != null ? ` <span>(+${s.split.toFixed(2)})</span>` : "") + "</li>"

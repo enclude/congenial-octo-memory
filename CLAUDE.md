@@ -1201,6 +1201,21 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   progress/cancel/on_process — sygnatury się zgadzają; `trim_video` NIE dostaje `session`,
   więc podana oś i tak nigdy nie trafia na obraz). `/preview` i `compose_preview` nie
   wymagały zmian: `session is None` już zwracał czystą klatkę bez nakładki.
+- **Nadpisanie nazwy toru / uczestnika (v0.59.0)** — odpowiednik pól „Tor”/„Uczestnik”
+  z GUI (v0.58.0). `Job.session_raw` (surowa sesja z `/session`) + `Job.meta_override`
+  (dict `nazwa_toru`/`uczestnik`, surowy tekst pól); `job.session` = `session_raw` po
+  `pipeline.apply_meta_override` (`api._apply_meta_override`, zeruje `preview_cache`) —
+  `/preview`, `/render`, `session_meta` czytają `job.session` bez zmian. NOWY endpoint
+  `POST /jobs/{id}/session-meta` (`SessionMetaBody`, 409 w trakcie renderu) ustawia
+  nadpisanie BEZ ponownego pobierania z API i działa też PRZED `/session` (zostaje na
+  zadaniu, nakłada się przy pobraniu). `SessionBody` przyjmuje opcjonalnie te same pola
+  (gdy podane, zastępują zapamiętane nadpisanie; frontend ich tam nie wysyła).
+  `session_meta` niesie dodatkowo `nazwa_toru_api`/`uczestnik_api` (wartości sprzed
+  nadpisania) — frontend wstawia je jako placeholder pól `#meta-track`/`#meta-participant`
+  (krok 02, pod listą strzałów; `renderSessionMeta` wspólne dla `/session` i
+  `/session-meta`), zdarzenie `change` (nie `input`) → jedno żądanie po edycji.
+  Odpowiedź niesie też `meta_override` (echo pól). Testy:
+  `test_session_meta_override_applies_and_clears`, `test_set_session_timeline_with_meta_override`.
 - **Stopka: wersja + link do repo (v0.24.0):** `GET /api/version` (`web/backend/api.py`)
   zwraca `{version: __version__, repo: _REPO_URL}` — jedno źródło prawdy, jak GUI
   (`from . import __version__`). Frontend (`app.js`, ładowane na starcie strony) uzupełnia

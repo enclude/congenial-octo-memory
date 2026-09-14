@@ -13,7 +13,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from piro_overlay import __version__, ffmpeg, pipeline, preview
@@ -160,6 +160,23 @@ class SessionBody(BaseModel):
     source: Literal["id", "timeline"]
     id: int | None = None
     timeline: str | None = None
+    nazwa_toru: str | None = Field(default=None, max_length=200)
+    uczestnik: str | None = Field(default=None, max_length=200)
+
+
+class SessionMetaBody(BaseModel):
+    nazwa_toru: str | None = Field(default=None, max_length=200)
+    uczestnik: str | None = Field(default=None, max_length=200)
+
+
+def _apply_meta_override(job: Job) -> None:
+    """`job.session` = surowa sesja z nałożonym nadpisaniem (puste = z API)."""
+    if job.session_raw is None:
+        return
+    job.session = pipeline.apply_meta_override(
+        job.session_raw, job.meta_override.get("nazwa_toru"),
+        job.meta_override.get("uczestnik"))
+    job.preview_cache = None
 
 
 @router.post("/jobs/{job_id}/session")
@@ -183,10 +200,28 @@ async def set_session(request: Request, job_id: str, body: SessionBody,
     if session is None or not session.shots:
         raise HTTPException(status_code=422,
                             detail="Nie rozpoznano żadnego strzału w osi czasu.")
-    job.session = session
-    job.preview_cache = None
+    job.session_raw = session
+    if body.nazwa_toru is not None or body.uczestnik is not None:
+        job.meta_override = {"nazwa_toru": body.nazwa_toru, "uczestnik": body.uczestnik}
+    _apply_meta_override(job)
     # Zapamiętane dopiero przy renderze (start_render) — same przymiarki się nie liczą.
     job.session_source_id = result_id
+    return job.to_dict()
+
+
+@router.post("/jobs/{job_id}/session-meta")
+def set_session_meta(request: Request, job_id: str, body: SessionMetaBody,
+                     sid: str = Depends(require_sid)) -> dict:
+    """Nadpisanie nazwy toru / uczestnika BEZ ponownego pobierania z API.
+
+    Puste pole = wartość z API. Działa też przed pobraniem sesji — nadpisanie
+    zostaje na zadaniu i nakłada się przy najbliższym `/session`.
+    """
+    job = _get_job(request, job_id, sid)
+    if job.state in (JobState.QUEUED, JobState.RENDERING):
+        raise HTTPException(status_code=409, detail="Zadanie jest w trakcie renderu.")
+    job.meta_override = {"nazwa_toru": body.nazwa_toru, "uczestnik": body.uczestnik}
+    _apply_meta_override(job)
     return job.to_dict()
 
 

@@ -66,6 +66,14 @@
           <p class="shots-meta" id="shots-meta"></p>
           <ol class="shot-list mono" id="shot-list"></ol>
         </div>
+        <div class="row meta-override">
+          <label class="field-inline">Tor
+            <input type="text" id="meta-track" maxlength="200" placeholder="z API (albo puste)"></label>
+          <label class="field-inline">Uczestnik
+            <input type="text" id="meta-participant" maxlength="200" placeholder="z API (albo puste)"></label>
+        </div>
+        <p class="hint">Puste pola = wartości pobrane z API. Wpisz, aby nadpisać nazwę toru
+          lub uczestnika na nakładce (przy wklejonej osi czasu to jedyne źródło metadanych).</p>
         <label class="check"><input type="checkbox" id="no-overlay-check">
           Bez nakładki — tylko przytnij wideo (oś czasu wpływa jedynie na auto-przycięcie)</label>
       </div>
