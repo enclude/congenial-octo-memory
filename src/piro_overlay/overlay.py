@@ -34,6 +34,16 @@ def _base_font_size(video_height: int, style: OverlayStyle) -> int:
     return max(12, int(video_height * 0.038 * style.scale))
 
 
+def ref_dim(video_size: tuple[int, int]) -> int:
+    """Wymiar odniesienia dla rozmiaru czcionek/paneli = KRÓTSZY bok kadru.
+
+    Dla wideo poziomego to wysokość (jak dotąd); dla pionowego (telefon,
+    1080×1920 po autorotacji) — szerokość, inaczej panele liczone od wysokości
+    1920 wychodziły poza 1080-pikselowy kadr (realny przypadek: plansza START
+    na nagraniu z Pixela)."""
+    return min(video_size)
+
+
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(font_path(bold=bold), size)
 
@@ -135,7 +145,7 @@ def render_shot_panel(session: Session, idx: int, style: OverlayStyle,
     tutaj sprawia, że render/preview/gui nie muszą znać trybu panelu."""
     if style.panel_mode == "list":
         return render_shot_list_panel(session, idx, style, video_size)
-    base = _base_font_size(video_size[1], style)
+    base = _base_font_size(ref_dim(video_size), style)
     return _render_panel(_shot_lines(session, idx, style, base), style, base, fixed_size)
 
 
@@ -144,7 +154,7 @@ def shot_panel_max_size(session: Session, style: OverlayStyle,
     """Maksymalny rozmiar panelu strzału po WSZYSTKICH strzałach sesji (px).
 
     Render.py renderuje każdy panel strzału z tym rozmiarem → stałe tło/obramowanie."""
-    base = _base_font_size(video_size[1], style)
+    base = _base_font_size(ref_dim(video_size), style)
     if style.panel_mode == "list":
         return _list_metrics(session, style, base).panel_size
     w = h = 0
@@ -294,7 +304,7 @@ def render_shot_list_panel(session: Session, idx: int, style: OverlayStyle,
     strzałów, zostaje PRZYPIĘTY w górnym slocie (stała czytelna alfa, bez
     wygaszania) z odstępem od reszty listy — czas pierwszego strzału jest
     widoczny przez cały przebieg (feedback: Bill drill na małym ekranie)."""
-    base = _base_font_size(video_size[1], style)
+    base = _base_font_size(ref_dim(video_size), style)
     m = _list_metrics(session, style, base)
     panel_w, panel_h = m.panel_size
 
@@ -332,7 +342,7 @@ def render_meta_panel(session: Session, style: OverlayStyle,
 
     Zwraca None, gdy sesja nie ma żadnych metadanych do pokazania."""
     tr = get_translator(style.lang)
-    base = _base_font_size(video_size[1], style)
+    base = _base_font_size(ref_dim(video_size), style)
     f_top = _font(base, bold=True)
     f_bot = _font(int(base * 0.85))
 
@@ -370,7 +380,7 @@ def render_summary_panel(session: Session, style: OverlayStyle,
                          video_size: tuple[int, int]) -> Image.Image:
     """Panel podsumowania: czas bazowy, suma kar, czas końcowy, hit factor."""
     tr = get_translator(style.lang)
-    base = _base_font_size(video_size[1], style)
+    base = _base_font_size(ref_dim(video_size), style)
 
     f_head = _font(int(base * 1.1), bold=True)
     f_body = _font(base)
@@ -409,7 +419,7 @@ def render_clock_panel(style: OverlayStyle, video_size: tuple[int, int],
                        fixed_size: tuple[int, int] | None = None) -> Image.Image:
     """Panel płynącego zegara „T+x.xs". `fixed_size` (zwykle `clock_panel_max_size`)
     daje stałe tło/obramowanie, by dolna/prawa krawędź nie skakały przy zmianie cyfr."""
-    base = _base_font_size(video_size[1], style)
+    base = _base_font_size(ref_dim(video_size), style)
     f_clock = _font(int(base * 1.2), bold=True)
     return _render_panel([_Line(clock_text(elapsed), f_clock, style.accent_color)],
                          style, base, fixed_size)
@@ -418,7 +428,7 @@ def render_clock_panel(style: OverlayStyle, video_size: tuple[int, int],
 def clock_panel_max_size(style: OverlayStyle, video_size: tuple[int, int],
                          max_elapsed: float) -> tuple[int, int]:
     """Maksymalny rozmiar panelu zegara (przy największym `max_elapsed` = najwięcej cyfr)."""
-    base = _base_font_size(video_size[1], style)
+    base = _base_font_size(ref_dim(video_size), style)
     f_clock = _font(int(base * 1.2), bold=True)
     return _panel_size([_Line(clock_text(max_elapsed), f_clock, style.accent_color)], style, base)
 
@@ -432,12 +442,18 @@ def render_start_banner(style: OverlayStyle, video_size: tuple[int, int]) -> Ima
     wersaliki „START" siadały optycznie za nisko."""
     tr = get_translator(style.lang)
     banner_style = replace(style, scale=style.scale * style.start_banner_scale)
-    base = _base_font_size(video_size[1], banner_style)
+    base = _base_font_size(ref_dim(video_size), banner_style)
     f_start = _font(int(base * 3.0), bold=True)
     text = tr("start")
 
     pad = int(base * _PAD)
     tw, th = _text_size(f_start, text)
+    # bezpiecznik: plansza nigdy szersza niż 92 % kadru (duża skala planszy + wąski kadr)
+    max_w = int(video_size[0] * 0.92)
+    while tw + 2 * pad > max_w and f_start.size > 12:
+        f_start = _font(int(f_start.size * 0.9), bold=True)
+        pad = int(f_start.size / 3.0 * _PAD)
+        tw, th = _text_size(f_start, text)
     panel_w, panel_h = tw + 2 * pad, th + 2 * pad
 
     img = Image.new("RGBA", (panel_w, panel_h), (0, 0, 0, 0))

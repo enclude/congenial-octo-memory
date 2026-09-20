@@ -1604,6 +1604,17 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   na sygnaturze `wej->wyj`. (Enkodery to inny format — 6 znaków, `available_encoders`.)
 - `ffmpeg.probe` parsuje stderr `ffmpeg -i` tylko z linii zawierającej `Video:` (wcześniejsza
   wersja łapała przypadkowe liczby — patrz `_RES_RE`/`_FPS_RE`).
+- **Wideo pionowe z telefonu (v0.64.1):** plik Pixela `PXL_…mp4` jest zakodowany 1920×1080 z
+  metadanym obrotem (`displaymatrix: rotation of -90.00 degrees`, starsze: tag `rotate`), a FFmpeg
+  AUTOROTUJE przy dekodowaniu (render, `extract_frame`, player) → kadr wyjściowy to 1080×1920.
+  `probe` zwracał wymiary kodowane, więc nakładki liczono dla poziomego kadru i plansza START
+  wychodziła poza obraz. Fix: `ffmpeg._rotated_size` (±90°/270° zamienia W↔H) w obu ścieżkach
+  probe (ffprobe: `stream_side_data=rotation`/`stream_tags=rotate`; regexy `_DISPLAYMATRIX_RE`/
+  `_ROTATE_TAG_RE`). Do tego `overlay.ref_dim(video_size) = min(w, h)` jako wymiar odniesienia
+  czcionek/paneli (dla poziomego = wysokość jak dotąd → snapshoty bez zmian; dla pionowego =
+  szerokość) we WSZYSTKICH `_base_font_size(...)` w overlay.py i render.py, plus bezpiecznik:
+  plansza START zmniejsza czcionkę, aż zmieści się w 92 % szerokości kadru. Zweryfikowane
+  `preview.render_still` na realnym PXL (START, panel strzału, zegar — w kadrze).
 - Snapshoty (`tests/snapshots/*.png`) zależą od bundlowanego fontu DejaVu i wersji Pillow;
   porównanie ma tolerancję `MAX_MEAN_DIFF`. Przy zmianie fontu/renderu — regeneruj.
 - Detekcja onsetów jest prosta (RMS); przy hałaśliwym audio użyj ręcznej korekty T0 w GUI.

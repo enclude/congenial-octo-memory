@@ -286,3 +286,22 @@ def test_meta_panel_language(session):
     pl = overlay.render_meta_panel(session, OverlayStyle(lang=Lang.PL), VIDEO_SIZE)
     en = overlay.render_meta_panel(session, OverlayStyle(lang=Lang.EN), VIDEO_SIZE)
     assert _png_bytes(pl) != _png_bytes(en)  # "strzałów" vs "shots"
+
+
+def test_portrait_video_panels_fit_inside_frame():
+    """Kadr pionowy 1080x1920 (telefon po autorotacji): wymiar odniesienia to
+    krótszy bok, więc plansza START i panele nie wychodzą poza 1080 px."""
+    from piro_overlay.models import OverlayStyle, Session, Shot
+    from piro_overlay import overlay
+    style = OverlayStyle()
+    portrait = (1080, 1920)
+    assert overlay.ref_dim(portrait) == 1080 == overlay.ref_dim((1920, 1080))
+    banner = overlay.render_start_banner(style, portrait)
+    assert banner.width <= int(1080 * 0.92)
+    assert banner.size == overlay.render_start_banner(style, (1920, 1080)).size
+    # ekstremalna skala planszy: bezpiecznik 92 % szerokości nadal trzyma
+    huge = OverlayStyle(start_banner_scale=6.0)
+    assert overlay.render_start_banner(huge, portrait).width <= int(1080 * 0.92)
+    session = Session(shots=[Shot(1, 1.0), Shot(2, 2.5, 1.5)], nazwa_toru="Tor", uczestnik="X")
+    panel = overlay.render_shot_panel(session, 1, style, portrait)
+    assert panel.width <= 1080

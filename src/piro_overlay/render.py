@@ -184,7 +184,7 @@ def _max_panel_h(events: list[_Event]) -> int:
 
 
 def _clock_gap(video_size: tuple[int, int], style: OverlayStyle) -> int:
-    return max(2, int(overlay._base_font_size(video_size[1], style) * 0.3))
+    return max(2, int(overlay._base_font_size(overlay.ref_dim(video_size), style) * 0.3))
 
 
 def _clock_drawtext_seg(cur: str, style: OverlayStyle, video_size: tuple[int, int],
@@ -196,8 +196,7 @@ def _clock_drawtext_seg(cur: str, style: OverlayStyle, video_size: tuple[int, in
     Wymaga filtra `drawtext` (libfreetype) — gdy go brak, używamy fallbacku PNG.
     Gdy znamy czas ostatniego strzału, zegar ZAMARZA na nim (nie płynie dalej).
     """
-    vh = video_size[1]
-    base = overlay._base_font_size(vh, style)
+    base = overlay._base_font_size(overlay.ref_dim(video_size), style)
     fontsize = max(12, int(base * 1.2))
     gap = _clock_gap(video_size, style)
     boxborderw = max(1, int(base * 0.25))

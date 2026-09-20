@@ -71,3 +71,15 @@ def test_probe_reports_empty_creation_time_for_synthetic_video(tiny_video):
     info = ffmpeg.probe(tiny_video)
     assert info.duration > 0
     assert info.creation_time == ""   # lavfi nie zapisuje tagu — pole istnieje i jest puste
+
+
+def test_rotated_size_and_regexes_swap_portrait_phone_video():
+    from piro_overlay.ffmpeg import _DISPLAYMATRIX_RE, _ROTATE_TAG_RE, _rotated_size
+    assert _rotated_size(1920, 1080, -90.0) == (1080, 1920)
+    assert _rotated_size(1920, 1080, 270) == (1080, 1920)
+    assert _rotated_size(1920, 1080, 180) == (1920, 1080)
+    assert _rotated_size(1920, 1080, 0) == (1920, 1080)
+    text = ("    Stream #0:0[0x1](eng): Video: hevc (Main), yuvj420p, 1920x1080, 29.97 fps\n"
+            "      Side data:\n        displaymatrix: rotation of -90.00 degrees\n")
+    assert float(_DISPLAYMATRIX_RE.search(text).group(1)) == -90.0
+    assert _ROTATE_TAG_RE.search("    Metadata:\n      rotate          : 90\n").group(1) == "90"

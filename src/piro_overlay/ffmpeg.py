@@ -148,6 +148,7 @@ def _probe_with_ffprobe(probe_exe: str, video_path: str) -> VideoInfo | None:
         probe_exe, *UNTRUSTED_INPUT_ARGS, "-v", "error", "-select_streams", "v:0",
         "-show_entries",
         "stream=width,height,avg_frame_rate,codec_name"
+        ":stream_side_data=rotation:stream_tags=rotate"
         ":format=duration:format_tags=creation_time",
         "-of", "json", video_path,
     ]
@@ -159,11 +160,18 @@ def _probe_with_ffprobe(probe_exe: str, video_path: str) -> VideoInfo | None:
         stream = data["streams"][0]
         num, den = stream["avg_frame_rate"].split("/")
         fps = float(num) / float(den) if float(den) else 0.0
+        rotation = 0.0
+        for sd in stream.get("side_data_list") or []:
+            if "rotation" in sd:
+                rotation = float(sd["rotation"])
+        if not rotation and (stream.get("tags") or {}).get("rotate"):
+            rotation = float(stream["tags"]["rotate"])
+        width, height = _rotated_size(int(stream["width"]), int(stream["height"]), rotation)
         return VideoInfo(
             duration=float(data["format"]["duration"]),
             fps=fps,
-            width=int(stream["width"]),
-            height=int(stream["height"]),
+            width=width,
+            height=height,
             codec=str(stream.get("codec_name") or ""),
             creation_time=str((data["format"].get("tags") or {})
                               .get("creation_time") or ""),
@@ -179,6 +187,20 @@ _FPS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*fps")
 _CODEC_RE = re.compile(r"Video:\s*([A-Za-z0-9_]+)")
 # `    creation_time   : 2026-07-07T16:06:24.000000Z` (pierwsze wystąpienie = kontener)
 _CREATION_RE = re.compile(r"creation_time\s*:\s*(\S+)")
+# Obrót z metadanych: nowsze FFmpeg `displaymatrix: rotation of -90.00 degrees`,
+# starsze tag `rotate          : 90`. FFmpeg AUTOROTUJE przy dekodowaniu (render,
+# extract_frame, player), więc kadr wyjściowy telefonu 1920x1080 z obrotem ±90° ma
+# w rzeczywistości 1080x1920 — bez zamiany nakładki liczone dla poziomego kadru
+# wychodziły poza obraz (Pixel, zawody 2026-09-20).
+_DISPLAYMATRIX_RE = re.compile(r"displaymatrix:\s*rotation of\s*(-?\d+(?:\.\d+)?)\s*degrees")
+_ROTATE_TAG_RE = re.compile(r"^\s*rotate\s*:\s*(-?\d+)", re.MULTILINE)
+
+
+def _rotated_size(width: int, height: int, rotation: float) -> tuple[int, int]:
+    """Wymiary kadru PO autorotacji FFmpeg: ±90°/270° zamienia szerokość z wysokością."""
+    if round(abs(rotation)) % 180 == 90:
+        return height, width
+    return width, height
 
 
 def _probe_with_ffmpeg(video_path: str) -> VideoInfo:
@@ -212,6 +234,8 @@ def _probe_with_ffmpeg(video_path: str) -> VideoInfo:
     cm = _CODEC_RE.search(video_line)
     codec = cm.group(1).lower() if cm else ""
     ct = _CREATION_RE.search(text)
+    rot = _DISPLAYMATRIX_RE.search(text) or _ROTATE_TAG_RE.search(text)
+    width, height = _rotated_size(width, height, float(rot.group(1)) if rot else 0.0)
 
     return VideoInfo(duration=duration, fps=fps, width=width, height=height,
                      codec=codec, creation_time=ct.group(1) if ct else "")
