@@ -88,6 +88,11 @@ _STRINGS: dict[str, dict[Lang, str]] = {
                           Lang.EN: "Detecting the start signal…"},
     "busy_detect_anchor": {Lang.PL: "Wykrywanie kotwicy…", Lang.EN: "Detecting the anchor…"},
     "busy_detect_id": {Lang.PL: "Wykrywanie ID z audio…", Lang.EN: "Detecting the ID from audio…"},
+    "busy_temp_id_lookup": {Lang.PL: "Szukam kodu w bazie…",
+                            Lang.EN: "Looking the code up in the database…"},
+    "status_temp_id_lookup": {
+        Lang.PL: "W audio jest kod tymczasowy {} — szukam wpisu w kalkulatorze…",
+        Lang.EN: "The audio carries temporary code {} — looking for the entry…"},
     "op_cancel": {Lang.PL: "Anuluj", Lang.EN: "Cancel"},
     "op_cancelled": {Lang.PL: "Operacja anulowana.", Lang.EN: "Operation cancelled."},
     "op_busy": {Lang.PL: "Trwa inna operacja — poczekaj albo kliknij „Anuluj” w pasku stanu.",

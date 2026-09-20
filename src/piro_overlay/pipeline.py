@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import api, audio_sync, ffmpeg, render, session_match
@@ -67,8 +67,12 @@ def detect_start_signal(video: str | Path) -> float | None:
     return audio_sync.detect_dji_start(audio_source(video))
 
 
-def detect_id_tone(video: str | Path) -> int | None:
-    """ID sesji z sygnału tonowego (timer odtwarza go po zapisie w bazie).
+def detect_id_tone(video: str | Path) -> audio_sync.IdToneCode | None:
+    """Ramka ID-tone v3 z audio: kanał + wartość (`audio_sync.IdToneCode`).
+
+    Kanał 0 = wartość jest ID wpisu w bazie kalkulatora; kanał 1-9 = wartość
+    jest KODEM TYMCZASOWYM sesji nagranej offline (rozwiązywany przez
+    `resolve_id_tone`).
 
     ZAWSZE analizuje oryginalny plik, NIE `audio_source()`/proxy LRF — pasmo
     5000-7000 Hz zweryfikowano pomiarem na oryginalnym pliku (DJI Osmo Nano),
@@ -76,6 +80,61 @@ def detect_id_tone(video: str | Path) -> int | None:
     używa (detekcja T0 na początku).
     """
     return audio_sync.decode_id_tone(str(video))
+
+
+@dataclass(frozen=True)
+class IdToneResult:
+    """Wynik rozwiązania ramki ID-tone do ID wpisu w bazie kalkulatora."""
+    code: audio_sync.IdToneCode
+    session_id: int | None            # None = nie dało się jednoznacznie ustalić
+    info: str = ""                    # tekst dla UI ("3-0147 → #1234") albo powód braku
+    match: session_match.MatchResult | None = None   # tylko gdy rozstrzygał czas/odcisk
+
+
+def resolve_id_tone(code: audio_sync.IdToneCode, video: str | Path, *,
+                    t0: float | None = None,
+                    info: ffmpeg.VideoInfo | None = None) -> IdToneResult:
+    """Zamienia ramkę ID-tone na ID wpisu w bazie kalkulatora.
+
+    Kanał 0 → wartość JEST tym ID (bez zapytań). Kanał 1-9 → kod tymczasowy:
+    pytamy kalkulator o wpisy z tym `temp_id`; jeden kandydat = trafienie,
+    kilku (licznik kodów zawija się po 9999) = rozstrzyga dopasowanie po czasie
+    nagrania i odcisku strzałów, jak przy nieczytelnym ID. Bez rozstrzygnięcia
+    `session_id` jest None — ZGADYWANIE jest gorsze od braku ID (nakładka
+    pokazałaby cudzą sesję).
+    """
+    if code.is_db_id:
+        return IdToneResult(code, code.value)
+    try:
+        cands = api.find_sessions_by_temp_id(code.temp_id)
+    except api.ApiUnsupported:
+        return IdToneResult(code, None,
+                            f"kod tymczasowy {code.label}: kalkulator nie obsługuje "
+                            "kodów tymczasowych — podaj ID ręcznie")
+    except api.ApiError as exc:
+        return IdToneResult(code, None,
+                            f"kod tymczasowy {code.label}: odpytanie bazy nie powiodło się ({exc})")
+    if not cands:
+        return IdToneResult(code, None,
+                            f"kod tymczasowy {code.label}: brak wpisu w bazie — "
+                            "wyślij sesje z timera i spróbuj ponownie")
+    if len(cands) == 1:
+        return IdToneResult(code, cands[0].id, f"{code.label} → #{cands[0].id}")
+    result = _match_candidates(video, cands, t0=t0, info=info)
+    if result.picked is None:
+        return IdToneResult(code, None,
+                            f"kod tymczasowy {code.label}: {len(cands)} wpisów w bazie, "
+                            "czas nagrania nie rozstrzyga — wybierz ID ręcznie", result)
+    picked = result.picked.candidate
+    return IdToneResult(code, picked.id, f"{code.label} → #{picked.id}", result)
+
+
+def detect_id(video: str | Path, *, t0: float | None = None,
+              info: ffmpeg.VideoInfo | None = None) -> IdToneResult | None:
+    """`detect_id_tone` + `resolve_id_tone` — jedno wejście dla GUI/WWW/wsadu.
+    None = w audio nie ma czytelnej ramki ID."""
+    code = detect_id_tone(video)
+    return None if code is None else resolve_id_tone(code, video, t0=t0, info=info)
 
 
 _POLISH_MAP = str.maketrans({
@@ -150,6 +209,21 @@ def find_session_by_time(video: str | Path, *, t0: float | None = None,
         cands = api.find_sessions(frm, to, tz_offset_s=tz_off)
     except api.ApiUnsupported:
         cands = api.find_sessions_by_scan(frm, to, hint_id=hint_id)
+    return _match_candidates(video, cands, t0=t0, info=info)
+
+
+def _match_candidates(video: str | Path, cands: list[api.SessionCandidate], *,
+                      t0: float | None,
+                      info: ffmpeg.VideoInfo | None) -> session_match.MatchResult:
+    """Ocena gotowej listy kandydatów względem nagrania (czas + odcisk strzałów).
+
+    Wspólne dla dopasowania po oknie czasu (`find_session_by_time`) i dla
+    rozstrzygania kilku wpisów o tym samym kodzie tymczasowym (`resolve_id_tone`).
+    """
+    info = info or ffmpeg.probe(video)
+    rec = session_match.recording_start(video, info.duration, info.creation_time)
+    if rec is None:
+        return session_match.MatchResult(None, (), None)
     matches = session_match.match_sessions(cands, rec, info.duration, t0)
     hits = [m for m in matches if m.in_window]
     if t0 is not None and len(hits) >= 2:

@@ -22,7 +22,11 @@ przyszły wariant WWW doda jedynie `web/` (backend + frontend) i zaimportuje ist
   Wspólny dla tekstu i pola `opis` z API.
 - `pipeline.py` — WSPÓLNA orkiestracja CLI+WWW (bez Qt/argparse/print): `build_session`,
   `audio_source` (proxy LRF), `detect_start_signal` (bzyczek=T0), `detect_anchor`,
-  `compute_t0`, `compute_trim` (+`DEFAULT_AUTO_WINDOW`, `PipelineError`). Helpery w `cli.py`
+  `compute_t0`, `compute_trim` (+`DEFAULT_AUTO_WINDOW`, `PipelineError`); ID z audio:
+  `detect_id_tone` (ramka ID-tone v3 → `audio_sync.IdToneCode`), `resolve_id_tone`
+  (kod tymczasowy → ID wpisu w bazie, `IdToneResult`), `detect_id` (jedno wejście dla
+  GUI/WWW/wsadu) oraz `_match_candidates` (wspólna ocena kandydatów po czasie i odcisku
+  strzałów — dla `find_session_by_time` i dla kodów tymczasowych). Helpery w `cli.py`
   są cienkimi wrapperami (zachowują printy i `SystemExit`); `tests/test_cli.py` pilnuje
   równoważności. NOWĄ logikę przepływu dodawaj TU, nie w cli/gui/web.
 - `preview.py` — domenowa kompozycja podglądu klatki (Pillow): `compose_preview(frame,
@@ -30,7 +34,10 @@ przyszły wariant WWW doda jedynie `web/` (backend + frontend) i zaimportuje ist
   ostatnim strzale, jak w renderze); `scaled_style` skaluje offsety do rozdzielczości
   podglądu (WYSIWYG). Odtwarza `gui._on_scrubber_frame_ready` — gui.py celowo NIE został
   przepięty (świadoma duplikacja, zero ryzyka regresji .exe).
-- `api.py` — `fetch_session(id)` + `session_from_payload(payload)`. Oś czasu czytana z
+- `api.py` — `fetch_session(id)` + `session_from_payload(payload)`;
+  `find_sessions(from, to)` i `find_sessions_by_temp_id(temp_id)`
+  (`api.php?temp_id=<5 cyfr>`, lista `SessionCandidate` — kod tymczasowy NIE jest
+  unikalny globalnie; pole `SessionCandidate.temp_id`). Oś czasu czytana z
   `data.opis`; metadane z `nazwa_toru`, `uczestnik`, `czasy.*`, `hit_factor`. Opcjonalny
   prefiks `opis` ("opoznienie startu Xs") jest odcinany `parser.extract_start_delay`
   PRZED `parse_timeline` — patrz `Session.start_delay` w sekcji „Funkcje po MVP".
@@ -74,6 +81,16 @@ CLI: `piro-overlay --version`.
 **Zasada:** przy każdej sesji z wprowadzonymi zmianami funkcjonalnymi lub naprawionymi bugami
 Claude Code **musi** zaproponować i wykonać bump wersji przed zakończeniem pracy.
 Nie odkładaj bumpów na „potem" — każdy build powinien mieć unikalną wersję.
+
+## Praca z subagentami (obowiązkowe)
+
+Każde zadanie, które dotyka więcej niż jednego pliku albo wymaga przeszukania repozytorium, prowadź przez subagentów (narzędzie Task/Agent), zamiast czytać wszystko w głównym kontekście:
+- **Rozpoznanie** („gdzie jest X", „które pliki dotyczą Y") → subagent typu Explore; główny kontekst dostaje wniosek, nie zrzuty plików.
+- **Zmiany w kilku niezależnych obszarach** (albo w kilku repozytoriach naraz: timer / kalkulator / Piro Overlay) → po jednym subagencie na obszar, uruchamiane równolegle w jednej wiadomości.
+- **Wspólne protokoły** (np. ID-tone) → najpierw spisz specyfikację i przekaż ją KAŻDEMU subagentowi dosłownie; inaczej repozytoria rozjadą się na stałych.
+- Subagent NIE commituje i NIE aktualizuje dokumentacji — commit, push i dokumentację robi sesja główna po zebraniu raportów.
+
+Wyjątek: pojedyncza, znana zmiana w jednym pliku — rób ją bez subagenta.
 
 ## Uruchamianie
 
@@ -123,6 +140,42 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Kody tymczasowe / ID-tone v3 (v0.65.0):** na zawodach bywa BRAK INTERNETU — timer nie
+  może wtedy zapisać sesji w kalkulatorze, więc nie ma jeszcze ID wpisu do zagrania
+  kamerze. Rozwiązanie: timer nadaje sesji **kod tymczasowy** lokalnie (bez sieci) i gra go
+  do mikrofonu kamery od razu po sesji; wpisy trafiają do bazy później (hurtem), a overlay
+  odnajduje je po kodzie. Ramka ID-tone dostała więc slot KANAŁU:
+  **kanał 0 = wartość jest ID wpisu w bazie kalkulatora (zachowanie v2),
+  kanał 1–9 = numer stanowiska, a wartość to 4-cyfrowy kod tymczasowy** (kanoniczna
+  postać w bazie/API to 5-cyfrowy string `temp_id`, np. `"30147"`; dla człowieka `3-0147`).
+  Szczegóły ramki i wymóg zgodności stałych w trzech repozytoriach — w sekcji
+  „Dekodowanie ID sesji z sygnału tonowego" niżej.
+  Ścieżka danych: `audio_sync.decode_id_tone` → `IdToneCode` → `pipeline.detect_id_tone`
+  → `pipeline.resolve_id_tone` → (kanał 1–9) `api.find_sessions_by_temp_id(temp_id)`
+  = `GET api.php?temp_id=<5 cyfr>` → `IdToneResult(code, session_id, info, match)`;
+  `pipeline.detect_id` łączy oba kroki i jest jednym wejściem dla GUI, wsadu i WWW.
+  **Rozstrzyganie i jego granica:** kanał 0 nie odpytuje bazy w ogóle; dla kodu
+  tymczasowego jeden kandydat = trafienie, a **kilku kandydatów z tym samym kodem**
+  (licznik kodów w przeglądarce timera zawija się po 9999) idzie przez istniejące
+  dopasowanie po czasie nagrania i odcisku strzałów (`pipeline._match_candidates`,
+  wspólne z `find_session_by_time`). **Gdy to nie rozstrzyga — `session_id` jest None
+  i powód ląduje w `IdToneResult.info`; ZGADYWANIE jest zakazane**, bo nakładka
+  pokazałaby cudzą sesję (ta sama zasada, co odrzucanie odczytu niezgodnego z checksumą).
+  Tak samo traktowane są: brak wpisu w bazie („wyślij sesje z timera"), błąd API
+  i stary kalkulator bez obsługi `temp_id` (`api.ApiUnsupported`).
+  GUI (`gui.py` + `i18n.py`): po wykryciu kodu tymczasowego leci drugie zadanie
+  (`_run_op` → `busy_temp_id_lookup` / `status_temp_id_lookup`, slot wolny bo `_end_op`
+  idzie przed callbackiem), a `_on_temp_id_resolved` albo wpisuje znalezione ID
+  (`_apply_detected_id`, wspólne z kanałem 0), albo — bez rozstrzygnięcia — zachowuje się
+  jak przy nieczytelnym sygnale. Wsad: `BatchIdDetectWorker` sam dolicza T0 z bzyczka,
+  żeby zawęzić rozstrzyganie, a wiersz dostaje NOWE źródło ID `"temp"` (własna ikona
+  i podpowiedź „ID z KODU TYMCZASOWEGO w audio (sesja offline) — sprawdź", etykieta
+  `3-0147 → #1234`) obok `"tone"`/`"time"`/ręcznego.
+  WWW: `/detect-id` zwraca `{id, temp_id, code, info}` (patrz sekcja o wersji webowej).
+  Testy: `tests/test_id_tone.py` (ramka v3), `tests/test_pipeline.py`
+  (`resolve_id_tone`: kanał 0 bez zapytania, jeden kandydat, brak wpisu, błąd API,
+  wieloznaczność), `tests/test_session_match.py` (`find_sessions_by_temp_id`: parsowanie
+  listy, stary serwer → `ApiUnsupported`, błąd → `ApiError`).
 - **Wsad: zmienne w prefiksie/sufiksie nazwy (v0.64.0):** `pipeline.expand_name_template(
   template, session, session_id)` podstawia `{id}`, `{uczestnik}`, `{tor}`, `{strzaly}`,
   `{czas}` (czas bazowy, kropka → `_`), `{hf}`; lista w `NAME_TEMPLATE_VARS`. Nieznane `{x}`
@@ -623,17 +676,27 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   GUI: przycisk „Wykryj sygnał startu" (obok „Wykryj kotwicę") wymusza
   `AnchorMode.START_SIGNAL` i ustawia wynik jako T0; zwykłe „Wykryj kotwicę" używa
   `detect_start` (bez filtra, pierwszy onset).
-- **Dekodowanie ID sesji z sygnału tonowego (v0.27.0, protokół v2 od v0.33.0):**
-  `audio_sync.decode_id_tone` odczytuje 4-cyfrowe ID sesji z pary timer↔kamera — timer
-  (www.timer.pifpaf.fun) i kalkulator (www.piro-kalkulator.pifpaf.fun, `id_tone.js`)
-  po zapisaniu sesji odtwarzają kod przez głośnik telefonu: marker 5000 Hz („tu zaczyna
-  się kod") + 4 cyfry + cyfra kontrolna (`_id_tone_checksum` = suma ważona pozycją 1–4
+- **Dekodowanie ID sesji z sygnału tonowego (v0.27.0, protokół v2 od v0.33.0,
+  v3 od v0.65.0):**
+  `audio_sync.decode_id_tone` odczytuje ramkę ID z pary timer↔kamera — timer
+  (www.timer.pifpaf.fun, `playIdToneFrame`) i kalkulator (www.piro-kalkulator.pifpaf.fun,
+  `id_tone.js`) odtwarzają kod przez głośnik telefonu: marker 5000 Hz („tu zaczyna
+  się kod") + **6 slotów: slot 0 = KANAŁ, sloty 1–4 = WARTOŚĆ (zero-padded), slot 5 =
+  cyfra kontrolna** (`_id_tone_checksum` = suma ważona pozycją 1–5 po `[kanał, 4 cyfry]`
   mod 10 — odczyt niezgodny z checksumą jest ODRZUCANY, żeby nie pobrać cudzej sesji),
-  każda jako jeden z 10 tonów 5200–7000 Hz (co 200 Hz), ton 300 ms + 50 ms ciszy,
-  sekwencja powtórzona 2× dla odporności. **Protokół v2 (v0.33.0) NIE jest kompatybilny
-  z v1 (5250–7500 Hz co 250 Hz, 200 ms, bez checksumy)** — nagrania sprzed zmiany nie
-  dekodują się nową wersją; wydawać RAZEM z aktualizacją timera i kalkulatora (stałe
-  `ID_TONE_*` + `idToneChecksum` muszą się zgadzać po obu stronach). Sufit pasma obniżony
+  każdy jako jeden z 10 tonów 5200–7000 Hz (co 200 Hz), ton 300 ms + 50 ms ciszy,
+  sekwencja powtórzona 2× dla odporności. Wynikiem jest `IdToneCode(channel, value)`
+  (własności `is_db_id`, `entry_id`, `temp_id` → `"30147"`, `label` → `#1234` / `3-0147`),
+  a NIE `int` jak w v2. **Protokół v3 (v0.65.0) NIE jest kompatybilny z v2** (ramka ma
+  slot więcej), a v2 (v0.33.0) nie był kompatybilny
+  z v1 (5250–7500 Hz co 250 Hz, 200 ms, bez checksumy) — nagrania sprzed zmiany nie
+  dekodują się nową wersją; wydawać RAZEM z aktualizacją timera i kalkulatora.
+  **STAŁE PROTOKOŁU MUSZĄ BYĆ IDENTYCZNE W TRZECH REPOZYTORIACH** — tu
+  (`audio_sync.py`, `_ID_TONE_*` + `_id_tone_checksum`), w timerze
+  (`www.timer.pifpaf.fun/index.php`, `playIdToneFrame` + `idToneChecksum`) i w kalkulatorze
+  (`www.piro-kalkulator.pifpaf.fun/id_tone.js`). Zmiana częstotliwości, czasów, liczby
+  slotów albo wag checksumy w JEDNYM z nich rozjeżdża cały łańcuch — poprawiaj wszystkie
+  trzy w jednej fali wydań. Sufit pasma obniżony
   z 7500 Hz, bo pomiar realnego nagrania DJI (odległy telefon) pokazał zanik tonów >7 kHz
   w łańcuchu głośnik → mikrofon → AAC; dłuższy ton przeżywa zjadanie ogona przez AAC.
   Mikrofon kamery nagrywa to razem z obrazem. Dekodowanie jest SLOT-owe (nie
@@ -657,8 +720,11 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   były czyste); (3) **duchy powtórzeń** — odstęp powtórzeń jest znany (2.4 s), więc
   wykryty marker czyta też sloty sąsiedniego powtórzenia, którego marker nie zrobił
   własnego runu; (4) **erasure recovery z checksumy** — dokładnie 1 nieczytelny slot
-  danych jest odzyskiwany (wagi 1/3 jednoznacznie; wagi 2/4 → 2 kandydatów, rozstrzyga
-  energia pasm, bez wyraźnego zwycięzcy → None); (5) **marker z edge-floor**
+  DANYCH jest odzyskiwany (od v0.65.0 slotów danych jest 5: kanał + 4 cyfry wartości);
+  wagi 1/3/5 nad 10: waga 1 i 3 dają jednego kandydata, wagi 2 i 4 → 2 kandydatów
+  (rozstrzyga energia pasm, bez wyraźnego zwycięzcy → None), a **waga 5 (ostatnia cyfra
+  wartości) → 5 kandydatów, więc odzysk jest tam z zasady ODMAWIANY**
+  (`_ID_TONE_RESCUE_MAX_CAND` = 2 — to już zgadywanie, nie odzysk); (5) **marker z edge-floor**
   (`_ID_TONE_MARKER_EDGE`) — miękki próg mostkuje dziury w runie, ale onset = pierwsze
   TWARDE okno (miękki onset z pre-echa przesuwał siatkę slotów → okno łapało ogon
   POPRZEDNIEJ cyfry). GUARDY przeciw fałszywym ID (każdy z realnego przypadku!):
@@ -675,8 +741,12 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   protokołu; szum poza pasmem ignorowany; dziura amplitudy w środku tonu; duchy;
   odzysk z checksumy + odmowa przy dwuznaczności; cichy fałszywy marker odfiltrowany;
   sekwencja tylko-z-duchów odrzucona; głosowanie per-slot; checksum błędna/wyciszona →
-  None); `conftest.id_tone_expr` ma parametry `skip_slots`/`slot_amps`/`checksum_offset`/
-  `skip_markers`/`t_start` i sam dolicza cyfrę kontrolną.
+  None; v3: `test_decode_id_tone_temp_code` = ramka z kanałem 1–9,
+  `test_decode_id_tone_checksum_recovers_missing_channel` = odzysk slotu kanału,
+  `test_decode_id_tone_weight5_recovery_refused` = odmowa przy wadze 5);
+  `conftest.id_tone_expr` ma parametry `skip_slots`/`slot_amps`/`checksum_offset`/
+  `skip_markers`/`t_start`/`channel` i sam dolicza cyfrę kontrolną (numery slotów liczą
+  się OD KANAŁU — slot 0 = kanał).
   Pasmo 5000–7000 Hz wybrano tak, by (1) NIE kolidować z pasmem bzyczka 2000–4800 Hz i
   (2) zmieścić się pod Nyquistem tej samej ekstrakcji audio 16 kHz (`_load_audio`, Nyquist
   8000 Hz) — bez potrzeby osobnej ścieżki ekstrakcji o wyższym sample rate; sufit 7000 Hz
@@ -980,9 +1050,12 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   czeka na żywe workery. Zmiana ID unieważnia przygotowanie wiersza.
   **Wykrywanie ID z audio we wsadzie (v0.31.0):** przycisk „Wykryj ID z audio" (górny
   pasek, obok importu ze schowka) dla wierszy bez ID (`NEEDS_ID`) odpala
-  `BatchIdDetectWorker` (QThread/plik) z `audio_sync.decode_id_tone` na ORYGINALNYM
+  `BatchIdDetectWorker` (QThread/plik) z `pipeline.detect_id_tone` na ORYGINALNYM
   pliku (nie LRF — jak `_detect_id_tone` w głównym oknie; sygnał ID gra pod koniec
-  nagrania). Wynik wpisywany do spinboxa wiersza (`set_session_id` → `_on_id_changed`
+  nagrania). Od v0.65.0 ramka może nieść KOD TYMCZASOWY (kanał 1–9) — wtedy worker
+  dolicza jeszcze T0 (`pipeline.detect_start_signal`) i woła `pipeline.resolve_id_tone`,
+  a wiersz dostaje źródło ID `"temp"` (ikona + „sprawdź"); brak rozstrzygnięcia zostawia
+  powód w `row.error` i wiersz wraca do `NEEDS_ID`. Wynik wpisywany do spinboxa wiersza (`set_session_id` → `_on_id_changed`
   → status PENDING) — BEZ auto-fetch: użytkownik weryfikuje ID przed „Przygotuj
   wszystkie" (błędnie zdekodowane ID pobrałoby cudzą sesję z API). Brak sygnału to
   nie błąd — wiersz wraca do `NEEDS_ID` z info „nie wykryto ID — podaj ręcznie"
@@ -1417,12 +1490,17 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   absurdalnych wartości na starcie). Snapshot SSE (`state` przy `queued`/`rendering`, np. po
   odświeżeniu karty w trakcie renderu) teraz też woła `setProgress`/`updateEta` z `data.progress`
   — wcześniej ten branch nie odświeżał wcale paska postępu po reconnect.
-- **Wykrywanie ID z sygnału tonowego (v0.28.0):** `POST /api/jobs/{id}/detect-id` woła
-  `pipeline.detect_id_tone` (patrz sekcja o `audio_sync.decode_id_tone` wyżej — timer
-  odtwarza ID jako marker 5000 Hz + 4 cyfry + cyfrę kontrolną, tony 5200–7000 Hz,
-  po zapisie sesji w bazie kalkulatora; protokół v2 od v0.33.0)
-  i zwraca `{id: int|None}` — brak sygnału to NIE błąd (jak `/analyze` dla T0), frontend
-  prosi o ręczne ID. Guard identyczny jak `/analyze`: 409 gdy zadanie `QUEUED`/`RENDERING`.
+- **Wykrywanie ID z sygnału tonowego (v0.28.0, kody tymczasowe od v0.65.0):**
+  `POST /api/jobs/{id}/detect-id` woła `pipeline.detect_id` (patrz sekcja
+  o `audio_sync.decode_id_tone` wyżej — timer odtwarza marker 5000 Hz + kanał + 4 cyfry
+  + cyfrę kontrolną, tony 5200–7000 Hz; protokół v2 od v0.33.0, v3 od v0.65.0)
+  i zwraca `{id: int|None, temp_id: str|None, code: str, info: str}` — `id` jest już
+  ID WPISU w bazie (dla kanału 1–9 po wyszukaniu `temp_id` w kalkulatorze), `code` to
+  postać dla człowieka (`3-0147`), a `info` niesie powód, gdy ID nie da się ustalić
+  (brak wpisu, kilku kandydatów z tym samym kodem, błąd/stare API). Brak sygnału ORAZ
+  brak rozstrzygnięcia to NIE błąd (jak `/analyze` dla T0), frontend prosi o ręczne ID —
+  `app.js` pokazuje wtedy `data.info` zamiast ogólnego komunikatu, a po sukcesie dopisuje
+  „(kod tymczasowy 3-0147)". Guard identyczny jak `/analyze`: 409 gdy zadanie `QUEUED`/`RENDERING`.
   Frontend: przycisk „🔎 Wykryj z audio" w kroku 02 (`pane-id`, obok „Pobierz") woła endpoint,
   wpisuje wynik do `#session-id` i AUTO-WOŁA `setSession()` (v0.29.2 — pierwotnie świadomie
   NIE auto-wołało, żeby błędnie zdekodowane ID nie ustawiło sesji bez potwierdzenia, ale to

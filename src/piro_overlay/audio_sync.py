@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import struct
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -331,20 +332,25 @@ def detect_dji_start(video_path: str | Path,
     return None
 
 
-# Protokół v2 (v0.33.0, BEZ kompatybilności z v1 — timer i kalkulator grają v2):
-# pasmo cyfr obniżone do 5200–7000 Hz (odstęp 200 Hz) — pomiar na realnym
+# Protokół v3 (BEZ kompatybilności z v2 — timer, kalkulator i overlay zmieniają
+# się razem): ramka niesie dodatkowy slot KANAŁU przed 4-cyfrową wartością.
+# Kanał 0 = wartość to ID wpisu w bazie kalkulatora (zachowanie v2), kanał 1-9 =
+# wartość to lokalnie wygenerowany KOD TYMCZASOWY stanowiska (timer offline nie
+# zna jeszcze ID wpisu; kalkulator trzyma kod w kolumnie `temp_id`).
+# Pasmo i czasy jak w v2: 5200–7000 Hz (odstęp 200 Hz) — pomiar na realnym
 # nagraniu DJI pokazał, że 7250/7500 Hz zanikały (głośnik/mikrofon/AAC tną
-# ciche wysokie tony); ton wydłużony do 300 ms (odporność na zjadanie ogona
-# przez AAC); 5. slot to cyfra kontrolna (suma ważona) — błędny odczyt jest
-# odrzucany zamiast pobrać cudzą sesję z API.
+# ciche wysokie tony); ton 300 ms (odporność na zjadanie ogona przez AAC);
+# ostatni slot to cyfra kontrolna (suma ważona) — błędny odczyt jest odrzucany
+# zamiast pobrać cudzą sesję z API.
 _ID_TONE_MARKER_FREQ = 5000.0                                  # start kodu ID
 _ID_TONE_DIGIT_FREQS = [5200.0 + 200.0 * d for d in range(10)]  # cyfry 0-9
 _ID_TONE_BAND_HALFWIDTH = 70.0    # Hz — przy odstępie 200 Hz zostaje 60 Hz marginesu
 _ID_TONE_TONE_DUR = 0.30          # s — czas trwania jednego tonu (marker/cyfra)
 _ID_TONE_GAP = 0.05               # s — cisza między tonami
 _ID_TONE_SLOT = _ID_TONE_TONE_DUR + _ID_TONE_GAP
-_ID_TONE_DIGITS = 4               # "IDxxxx" — 0-9999, timer wysyła zero-padded
-_ID_TONE_SLOTS = _ID_TONE_DIGITS + 1  # + cyfra kontrolna na końcu
+_ID_TONE_DIGITS = 4               # WARTOŚĆ: 0-9999, timer wysyła zero-padded
+_ID_TONE_DATA_SLOTS = 1 + _ID_TONE_DIGITS  # kanał + wartość
+_ID_TONE_SLOTS = _ID_TONE_DATA_SLOTS + 1   # + cyfra kontrolna na końcu
 _ID_TONE_CONC_MIN = 0.55          # próg koncentracji energii w paśmie tonu
 _ID_TONE_MARKER_MIN_RUN = 3       # ≥150 ms ciągłości markera (okna 50 ms)
 _ID_TONE_DOM_MIN = 0.30           # dominacja względna: min. poziom słabego tonu
@@ -354,35 +360,80 @@ _ID_TONE_MARKER_EDGE = 0.35       # miękki próg kontynuacji runu markera (edge
 _ID_TONE_REPEAT_GAP = 0.3         # s — przerwa między powtórzeniami (jak w playerach JS)
 _ID_TONE_RESCUE_MIN = 0.10        # odzysk z checksumy: min energia zwycięskiego kandydata
 _ID_TONE_RESCUE_RATIO = 2.0       # …i wymagana przewaga nad drugim kandydatem
+_ID_TONE_RESCUE_MAX_CAND = 2      # więcej kandydatów (waga 5 → 5 cyfr) = odmowa odzysku
 _ID_TONE_ENERGY_FLOOR = 0.01      # min energia okna (ułamek mediany okien markera) —
                                   # metryki względne nie mają sensu w niemal-ciszy
 _ID_TONE_MARKER_ENERGY_FRAC = 0.02  # run markera wielokrotnie cichszy od najgłośniejszego
                                     # to nie powtórzenie, tylko pisk tła (fałszywy marker)
 
 
-def _id_tone_checksum(digits: list[int]) -> int:
-    """Cyfra kontrolna protokołu ID: suma ważona pozycją (1-4) mod 10.
+@dataclass(frozen=True)
+class IdToneCode:
+    """Zdekodowana ramka protokołu ID-tone v3: cyfra kanału + 4-cyfrowa wartość.
 
-    Wagi wykrywają każdy błąd pojedynczej cyfry i większość podwójnych.
-    MUSI być identyczna z `idToneChecksum` w timerze i kalkulatorze.
+    Kanał 0 → wartość jest ID wpisu w bazie kalkulatora (`entry_id`).
+    Kanał 1-9 → wartość jest numerem KODU TYMCZASOWEGO stanowiska, a kanał
+    numerem stanowiska; kanoniczna postać kodu (baza/API) to 5-cyfrowy string
+    `temp_id` (`"30147"`), a dla człowieka `label` (`"3-0147"`).
+    """
+    channel: int
+    value: int
+
+    @property
+    def is_db_id(self) -> bool:
+        return self.channel == 0
+
+    @property
+    def entry_id(self) -> int | None:
+        """ID wpisu w bazie kalkulatora albo None (kod tymczasowy)."""
+        return self.value if self.channel == 0 else None
+
+    @property
+    def temp_id(self) -> str | None:
+        """Kanoniczny 5-cyfrowy kod tymczasowy (`"30147"`) albo None (kanał 0)."""
+        return None if self.channel == 0 else f"{self.channel}{self.value:0{_ID_TONE_DIGITS}d}"
+
+    @property
+    def label(self) -> str:
+        """Postać dla człowieka: `#1234` (ID bazy) albo `3-0147` (kod tymczasowy)."""
+        if self.channel == 0:
+            return f"#{self.value}"
+        return f"{self.channel}-{self.value:0{_ID_TONE_DIGITS}d}"
+
+
+def _id_tone_checksum(digits: list[int]) -> int:
+    """Cyfra kontrolna protokołu ID: suma ważona pozycją (1-5) mod 10.
+
+    Wejście to sloty DANYCH ramki v3: [kanał, cyfra1..cyfra4]. Wagi wykrywają
+    każdy błąd pojedynczej cyfry i większość podwójnych. MUSI być identyczna
+    z `idToneChecksum` w timerze (`playIdToneFrame`) i kalkulatorze (`id_tone.js`).
     """
     return sum((i + 1) * d for i, d in enumerate(digits)) % 10
 
 
+def _id_tone_code(decoded: list[int]) -> IdToneCode:
+    return IdToneCode(channel=decoded[0],
+                      value=int("".join(str(d) for d in decoded[1:_ID_TONE_DATA_SLOTS])))
+
+
 def decode_id_tone(video_path: str | Path,
                    start: float | None = None,
-                   end: float | None = None) -> int | None:
-    """Dekoduje 4-cyfrowe ID sesji z sygnału tonowego nagranego przez kamerę.
+                   end: float | None = None) -> IdToneCode | None:
+    """Dekoduje ramkę ID-tone v3 z sygnału nagranego przez kamerę.
 
-    Protokół v2: timer (www.timer.pifpaf.fun) i kalkulator po zapisaniu sesji
-    mogą odtworzyć ID jako sekwencję czystych tonów: marker (5000 Hz, „tu
-    zaczyna się kod") + 4 cyfry + cyfra kontrolna (`_id_tone_checksum`), każda
-    jako jeden z 10 tonów 5200–7000 Hz (co 200 Hz), ton 300 ms + 50 ms ciszy,
-    sekwencja powtórzona dwukrotnie. Pasmo leży bezpiecznie powyżej bzyczka
-    startu (2000–4800 Hz, `detect_dji_start`) i poniżej Nyquista tej ekstrakcji
-    audio (16 kHz → 8 kHz); górna granica obniżona z 7500 Hz (v1), bo pomiar na
-    realnym nagraniu DJI pokazał zanik cichych tonów >7 kHz w łańcuchu głośnik
-    telefonu → mikrofon kamery → AAC.
+    Protokół v3 (wspólny z `playIdToneFrame` w timerze www.timer.pifpaf.fun
+    i `id_tone.js` w kalkulatorze — stałe MUSZĄ być identyczne we wszystkich
+    trzech repozytoriach): marker (5000 Hz, „tu zaczyna się kod") + 6 slotów:
+    slot 0 = KANAŁ, sloty 1-4 = WARTOŚĆ (zero-padded), slot 5 = cyfra kontrolna
+    (`_id_tone_checksum`, wagi 1-5 po kanale i wartości). Każdy slot to jeden
+    z 10 tonów 5200–7000 Hz (co 200 Hz), ton 300 ms + 50 ms ciszy, sekwencja
+    powtórzona dwukrotnie. Kanał 0 = wartość to ID wpisu w bazie kalkulatora;
+    kanał 1-9 = numer stanowiska, a wartość to KOD TYMCZASOWY sesji nagranej
+    offline (kalkulator wyszukuje go po kolumnie `temp_id`). Pasmo leży
+    bezpiecznie powyżej bzyczka startu (2000–4800 Hz, `detect_dji_start`)
+    i poniżej Nyquista tej ekstrakcji audio (16 kHz → 8 kHz); górna granica
+    obniżona z 7500 Hz (v1), bo pomiar na realnym nagraniu DJI pokazał zanik
+    cichych tonów >7 kHz w łańcuchu głośnik telefonu → mikrofon kamery → AAC.
 
     Dekodowanie jest slot-owe: znajdujemy każdy marker (próg + ciągłość
     ≥150 ms, z miękkim progiem kontynuacji `_ID_TONE_MARKER_EDGE` jak przy
@@ -402,11 +453,13 @@ def decode_id_tone(video_path: str | Path,
     Złożony wynik przechodzi walidację cyfrą kontrolną — niezgodność = None
     (lepiej nie podpowiedzieć ID wcale niż podpowiedzieć cudzy). Dokładnie
     jeden nieczytelny slot DANYCH jest odzyskiwany z checksumy (erasure
-    recovery); przy dwuznaczności (wagi 2/4 mod 10) rozstrzyga energia pasm
-    kandydatów, a bez wyraźnego zwycięzcy odczyt jest odrzucany. Nieczytelna
-    sama checksuma = None (bez niej nie ma jak zweryfikować odczytu).
+    recovery); przy dwuznaczności (wagi 2 i 4 mod 10) rozstrzyga energia pasm
+    kandydatów, a bez wyraźnego zwycięzcy odczyt jest odrzucany. Slot 4 (waga
+    5) zostawia aż 5 kandydatów — tam odzysk jest z zasady odrzucany
+    (`_ID_TONE_RESCUE_MAX_CAND`). Nieczytelna sama checksuma = None (bez niej
+    nie ma jak zweryfikować odczytu).
 
-    Zwraca dekodowane ID albo None.
+    Zwraca `IdToneCode` albo None.
     """
     samples, sr = _load_audio(video_path)
 
@@ -534,9 +587,9 @@ def decode_id_tone(video_path: str | Path,
         return None
 
     if not empty:
-        if _id_tone_checksum(decoded[:_ID_TONE_DIGITS]) != decoded[_ID_TONE_DIGITS]:
+        if _id_tone_checksum(decoded[:_ID_TONE_DATA_SLOTS]) != decoded[_ID_TONE_DATA_SLOTS]:
             return None
-        return int("".join(str(d) for d in decoded[:_ID_TONE_DIGITS]))
+        return _id_tone_code(decoded)
 
     # Odzysk z checksumy (erasure recovery): dokładnie JEDEN nieczytelny slot
     # DANYCH da się odtworzyć z sumy kontrolnej. Wagi 1 i 3 są odwracalne
@@ -545,7 +598,7 @@ def decode_id_tone(video_path: str | Path,
     # ale tylko przy wyraźnym zwycięzcy (inaczej zgadywanie dałoby ID
     # przechodzące checksumę mimo braku dowodu w audio). Nieczytelna sama
     # checksuma = None (bez niej nie ma jak zweryfikować pozostałych cyfr).
-    if len(empty) != 1 or empty[0] >= _ID_TONE_DIGITS:
+    if len(empty) != 1 or empty[0] >= _ID_TONE_DATA_SLOTS:
         return None
     # Rescue tylko na mocnych podstawach: każdy ODCZYTANY slot musi mieć co
     # najmniej jeden odczyt pełnej jakości. Bez tego fałszywe markery + szum
@@ -557,10 +610,12 @@ def decode_id_tone(video_path: str | Path,
         return None
     gap_slot = empty[0]
     weight = gap_slot + 1
-    known = sum((i + 1) * decoded[i] for i in range(_ID_TONE_DIGITS) if i != gap_slot)
-    residual = (decoded[_ID_TONE_DIGITS] - known) % 10
+    known = sum((i + 1) * decoded[i] for i in range(_ID_TONE_DATA_SLOTS) if i != gap_slot)
+    residual = (decoded[_ID_TONE_DATA_SLOTS] - known) % 10
     candidates = [d for d in range(10) if (weight * d) % 10 == residual]
-    if not candidates:
+    # Waga 5 (ostatnia cyfra wartości) zostawia aż 5 kandydatów — to już
+    # zgadywanie, nie odzysk, więc odmawiamy (`_ID_TONE_RESCUE_MAX_CAND`).
+    if not candidates or len(candidates) > _ID_TONE_RESCUE_MAX_CAND:
         return None
     if len(candidates) == 1:
         decoded[gap_slot] = candidates[0]
@@ -578,7 +633,7 @@ def decode_id_tone(video_path: str | Path,
                 or strength[ranked[0]] < _ID_TONE_RESCUE_RATIO * strength[ranked[1]]):
             return None
         decoded[gap_slot] = ranked[0]
-    return int("".join(str(d) for d in decoded[:_ID_TONE_DIGITS]))
+    return _id_tone_code(decoded)
 
 
 def resolve_t0(anchor_time: float, mode: AnchorMode, first_shot_time: float) -> float:

@@ -147,7 +147,8 @@ $("detect-id-btn").addEventListener("click", async () => {
     const out = $("detect-id-result");
     out.hidden = false;
     if (data.id == null) {
-      out.textContent = "Nie znaleziono sygnału ID w audio — wpisz ID ręcznie.";
+      // Kod tymczasowy bez rozstrzygnięcia (sesja offline) niesie powód w `info`.
+      out.textContent = data.info || "Nie znaleziono sygnału ID w audio — wpisz ID ręcznie.";
       out.classList.add("warn");
     } else {
       $("session-id").value = data.id;
@@ -156,9 +157,10 @@ $("detect-id-btn").addEventListener("click", async () => {
       // samo wpisanie ID w pole bez pobrania sesji zostawiało "Renderuj" zablokowane
       // (wymaga job.hasSession), co wyglądało na ukończony krok, a nie było.
       const ok = await setSession({ source: "id", id: data.id });
+      const from = data.temp_id ? ` (kod tymczasowy ${data.code})` : "";
       out.textContent = ok
-        ? `✓ Wykryto i pobrano ID ${data.id}.`
-        : `✓ Wykryto ID ${data.id}, ale pobranie sesji nie powiodło się — kliknij „Pobierz”.`;
+        ? `✓ Wykryto i pobrano ID ${data.id}${from}.`
+        : `✓ Wykryto ID ${data.id}${from}, ale pobranie sesji nie powiodło się — kliknij „Pobierz”.`;
     }
   } finally {
     btn.disabled = false;

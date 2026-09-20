@@ -2,6 +2,7 @@
 
 GET https://piro-kalkulator.pifpaf.fun/api.php?id=<id>
 GET https://piro-kalkulator.pifpaf.fun/api.php?from=<unix UTC>&to=<unix UTC>&tz_offset=<s>
+GET https://piro-kalkulator.pifpaf.fun/api.php?temp_id=<CNNNN>
 
 Oś czasu strzałów znajduje się w polu `data.opis` (ten sam format co tekst wklejany
 ręcznie), pozostałe pola wzbogacają nagłówek i podsumowanie nakładki.
@@ -48,6 +49,7 @@ class SessionCandidate:
     timer_sn: str = ""
     timer_sess_id: int = 0           # start sesji NA TIMERZE, unixtime w czasie lokalnym; 0 = wpis ręczny
     opis: str = ""                   # surowa oś czasu (do odcisku strzałów w session_match)
+    temp_id: str = ""                # kod tymczasowy z sesji offline (5 cyfr `CNNNN`), "" = brak
 
 
 def parse_data_zapisu(text: str) -> datetime:
@@ -69,6 +71,7 @@ def candidate_from_payload(data: dict[str, Any]) -> SessionCandidate:
         timer_sn=str(data.get("timer_sn") or ""),
         timer_sess_id=int(data.get("timer_sess_id") or 0),
         opis=str(data.get("opis") or ""),
+        temp_id=str(data.get("temp_id") or ""),
     )
 
 
@@ -105,6 +108,32 @@ def find_sessions(from_utc: datetime, to_utc: datetime, *, tz_offset_s: int,
     items = payload.get("data")
     if not isinstance(items, list):
         raise ApiError("Odpowiedź API w trybie listy nie zawiera tablicy `data`.")
+    try:
+        return [candidate_from_payload(it) for it in items]
+    except (KeyError, ValueError, TypeError) as exc:
+        raise ApiError(f"Niepoprawny element listy w odpowiedzi API: {exc}") from exc
+
+
+def find_sessions_by_temp_id(temp_id: str, *, base_url: str = API_BASE_URL,
+                             timeout: int = DEFAULT_TIMEOUT) -> list[SessionCandidate]:
+    """Wpisy oznaczone KODEM TYMCZASOWYM `temp_id` (protokół ID-tone v3, kanał 1-9).
+
+    Timer offline nie zna jeszcze ID wpisu, więc gra do mikrofonu kamery kod
+    `CNNNN` (kanał = stanowisko + 4-cyfrowy licznik); kalkulator zapisuje go
+    w kolumnie `temp_id`. Kod nie jest unikalny globalnie (licznik przeglądarki
+    zawija się po 9999), więc zwracamy LISTĘ — rozstrzyga `session_match`.
+    Podnosi `ApiUnsupported`, gdy serwer nie zna tego trybu (stary kalkulator).
+    """
+    status, payload = _get_json({"temp_id": temp_id}, base_url=base_url, timeout=timeout)
+    if not payload.get("ok"):
+        message = str((payload.get("error") or {}).get("message") or "")
+        # stary api.php ignoruje temp_id i skarży się na brak `id`
+        if status == 400 and '"id"' in message:
+            raise ApiUnsupported("API kalkulatora nie obsługuje kodów tymczasowych.")
+        raise ApiError(f"API zwróciło błąd (HTTP {status}): {message or 'ok=false'}")
+    items = payload.get("data")
+    if not isinstance(items, list):
+        raise ApiError("Odpowiedź API dla kodu tymczasowego nie zawiera tablicy `data`.")
     try:
         return [candidate_from_payload(it) for it in items]
     except (KeyError, ValueError, TypeError) as exc:

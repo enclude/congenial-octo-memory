@@ -259,16 +259,22 @@ async def detect_id(request: Request, job_id: str,
                     sid: str = Depends(require_sid)) -> dict:
     """Dekoduje ID sesji z sygnału tonowego (timer po zapisie w bazie).
 
-    Brak sygnału to nie błąd — zwracamy id=null, frontend prosi o ręczne ID.
+    Ramka v3 niesie kanał: 0 = ID wpisu wprost, 1-9 = KOD TYMCZASOWY sesji
+    nagranej offline — wtedy ID wpisu jest dopiero szukane w bazie po `temp_id`
+    (`pipeline.detect_id`). Brak sygnału albo brak rozstrzygnięcia to nie błąd —
+    zwracamy id=null, frontend prosi o ręczne ID.
     """
     job = _get_job(request, job_id, sid)
     if job.state in (JobState.QUEUED, JobState.RENDERING):
         raise HTTPException(status_code=409, detail="Zadanie jest w trakcie renderu.")
     try:
-        detected = await _in_analyze_pool(request, pipeline.detect_id_tone, job.video_path)
+        result = await _in_analyze_pool(request, pipeline.detect_id, job.video_path)
     except Exception as exc:  # noqa: BLE001 — analiza audio nie może ubić zadania
         raise HTTPException(status_code=500, detail=f"Analiza audio nie powiodła się: {exc}")
-    return {"id": detected}
+    if result is None:
+        return {"id": None, "temp_id": None, "info": ""}
+    return {"id": result.session_id, "temp_id": result.code.temp_id,
+            "code": result.code.label, "info": result.info}
 
 
 def _extract_preview_frame(job: Job, t: float, h: int):

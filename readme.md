@@ -371,11 +371,22 @@ Po samym **wczytaniu pliku** aplikacja również od razu wykrywa T0 i ustawia pr
 Przycisk **„Wykryj ID z audio"** (pod polem ID) odczytuje ID sesji prosto z nagrania —
 przydatne, gdy timer (np. [timer.pifpaf.fun](https://timer.pifpaf.fun)) po zapisaniu
 sesji w bazie kalkulatora odtworzył sygnał tonowy ID, a mikrofon kamery go nagrał.
-Rozpoznaje marker 5000 Hz + 4 cyfry i cyfrę kontrolną (5200–7000 Hz), wpisuje wykryte ID
-do pola i **od razu pobiera dane z API oraz przycina film** (jak „Pobierz i przytnij" —
-wykryte ID przeszło checksumę, więc dodatkowe kliknięcie było zbędne; od v0.38.0).
+Rozpoznaje marker 5000 Hz, cyfrę kanału, 4 cyfry wartości i cyfrę kontrolną
+(5200–7000 Hz), wpisuje wykryte ID do pola i **od razu pobiera dane z API oraz przycina
+film** (jak „Pobierz i przytnij" — wykryte ID przeszło checksumę, więc dodatkowe
+kliknięcie było zbędne; od v0.38.0).
 Gdy nie znajdzie sygnału (timer go nie odtworzył albo mikrofon nie nagrał), pokazuje
 komunikat i nic nie zmienia — ID wpisujesz ręcznie.
+
+**Kody tymczasowe — strzelanie bez internetu (od v0.65.0).** Na zawodach często nie ma
+zasięgu, więc timer nie może od razu zapisać sesji w kalkulatorze i nie zna jeszcze ID
+wpisu. Zamiast niego nadaje **kod tymczasowy** — numer stanowiska + czterocyfrowy licznik,
+pokazywany jako `3-0147` — i to jego gra do mikrofonu kamery zaraz po sesji. Sesje
+wysyłasz do kalkulatora później, gdy wróci internet. Aplikacja rozpoznaje w audio kod
+tymczasowy, sama odpytuje kalkulator o wpis z tym kodem i wpisuje znalezione ID.
+Gdy ten sam kod ma w bazie kilka wpisów, rozstrzyga czas nagrania i rozkład strzałów;
+jeśli to nie wystarcza, aplikacja **świadomie nie zgaduje** — pokazuje powód, a ID
+wpisujesz ręcznie (lepiej brak ID niż cudza sesja na nakładce).
 Analizuje zawsze oryginalny plik wideo (nie proxy `.LRF`).
 
 ## Testy

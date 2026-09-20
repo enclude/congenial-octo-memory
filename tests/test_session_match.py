@@ -204,6 +204,37 @@ def test_find_sessions_other_error_is_plain_api_error(monkeypatch):
     assert not isinstance(ei.value, api.ApiUnsupported)
 
 
+def test_find_sessions_by_temp_id_parses_list(monkeypatch):
+    seen = {}
+
+    def fake_get(url, params=None, timeout=None):
+        seen.update(params)
+        return _Resp(200, {"ok": True, "data": [
+            {"id": 1234, "data_zapisu": "2026-09-20 10:00:00", "czas_bazowy": 12.0,
+             "timer_sess_id": 0, "temp_id": "30147"}]})
+
+    monkeypatch.setattr(api.requests, "get", fake_get)
+    out = api.find_sessions_by_temp_id("30147")
+    assert [(c.id, c.temp_id) for c in out] == [(1234, "30147")]
+    assert seen == {"temp_id": "30147"}
+
+
+def test_find_sessions_by_temp_id_old_server_raises_unsupported(monkeypatch):
+    monkeypatch.setattr(api.requests, "get", lambda *a, **k: _Resp(400, {
+        "ok": False, "error": {"code": 400, "message":
+                               'Brak lub nieprawidłowy parametr "id". Wymagana dodatnia liczba'}}))
+    with pytest.raises(api.ApiUnsupported):
+        api.find_sessions_by_temp_id("30147")
+
+
+def test_find_sessions_by_temp_id_error_is_plain_api_error(monkeypatch):
+    monkeypatch.setattr(api.requests, "get", lambda *a, **k: _Resp(500, {
+        "ok": False, "error": {"code": 500, "message": "boom"}}))
+    with pytest.raises(api.ApiError) as ei:
+        api.find_sessions_by_temp_id("30147")
+    assert not isinstance(ei.value, api.ApiUnsupported)
+
+
 def _fake_db(n=400, gap=(150, 151, 152), start=datetime(2026, 1, 1, tzinfo=timezone.utc)):
     """ID 1..n co 10 minut; `gap` = usunięte wpisy (404)."""
     calls = []

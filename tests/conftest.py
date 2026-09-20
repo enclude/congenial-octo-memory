@@ -4,7 +4,7 @@
 obraz testsrc + ton 2700 Hz w oknie 0.5–0.9 s udający bzyczek shot-timera
 (pozwala testować detekcję T0 end-to-end, bez mockowania FFmpeg — AGENTS.md).
 
-`id_tone_video` — jak wyżej, ale z sygnałem tonowym ID (marker + 4 cyfry,
+`id_tone_video` — jak wyżej, ale z sygnałem tonowym ID (marker + kanał + 4 cyfry,
 patrz `audio_sync.decode_id_tone`) w ścieżce audio — do testów end-to-end
 dekodowania ID z audio (endpoint `/detect-id`, GUI „Wykryj ID z audio”).
 """
@@ -40,12 +40,16 @@ def id_tone_expr(session_id: int, repeats: int = 2, amp: float = 0.8,
                  slot_amps: dict[int, float] | None = None,
                  checksum_offset: int = 0,
                  skip_markers: tuple[int, ...] = (),
-                 t_start: float = 0.0) -> tuple[str, float]:
-    """Wyrażenie `aevalsrc` grające `session_id` protokołem decode_id_tone (v2).
+                 t_start: float = 0.0,
+                 channel: int = 0) -> tuple[str, float]:
+    """Wyrażenie `aevalsrc` grające ramkę protokołu decode_id_tone (v3).
 
     Zwraca (wyrażenie, czas_trwania_s) — harmonogram MUSI się zgadzać ze
-    stałymi `_ID_TONE_*` w `audio_sync.py` (marker + 4 cyfry + cyfra
-    kontrolna, ten sam slot). `skip_slots` — pary (nr_powtórzenia, nr_slotu)
+    stałymi `_ID_TONE_*` w `audio_sync.py` (marker + slot kanału + 4 cyfry
+    wartości + cyfra kontrolna, ten sam slot). `channel` — cyfra kanału
+    (0 = ID wpisu w bazie, 1-9 = kod tymczasowy stanowiska), a numery slotów
+    w `skip_slots`/`slot_amps` liczą się OD KANAŁU (slot 0 = kanał).
+    `skip_slots` — pary (nr_powtórzenia, nr_slotu)
     do wyciszenia (test głosowania per-slot); `slot_amps` — nadpisanie
     amplitudy cyfry w danym slocie we WSZYSTKICH powtórzeniach (test dominacji
     względnej); `checksum_offset` — celowe zepsucie cyfry kontrolnej (mod 10)
@@ -54,7 +58,7 @@ def id_tone_expr(session_id: int, repeats: int = 2, amp: float = 0.8,
     całej sekwencji w czasie (nakładanie kilku sekwencji w jednym pliku).
     Zwracany czas trwania jest absolutny (uwzględnia `t_start`).
     """
-    data_digits = [int(ch) for ch in f"{session_id:04d}"]
+    data_digits = [channel] + [int(ch) for ch in f"{session_id:04d}"]
     checksum = (_id_tone_checksum(data_digits) + checksum_offset) % 10
     digits = data_digits + [checksum]
     terms = []

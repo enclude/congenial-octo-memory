@@ -51,6 +51,18 @@ Po zmianie `__init__.py` zaktualizuj **też** `pyproject.toml` (pole `version`).
 
 ---
 
+## Praca z subagentami (obowiązkowe)
+
+Każde zadanie, które dotyka więcej niż jednego pliku albo wymaga przeszukania repozytorium, prowadź przez subagentów (narzędzie Task/Agent), zamiast czytać wszystko w głównym kontekście:
+- **Rozpoznanie** („gdzie jest X", „które pliki dotyczą Y") → subagent typu Explore; główny kontekst dostaje wniosek, nie zrzuty plików.
+- **Zmiany w kilku niezależnych obszarach** (albo w kilku repozytoriach naraz: timer / kalkulator / Piro Overlay) → po jednym subagencie na obszar, uruchamiane równolegle w jednej wiadomości.
+- **Wspólne protokoły** (np. ID-tone) → najpierw spisz specyfikację i przekaż ją KAŻDEMU subagentowi dosłownie; inaczej repozytoria rozjadą się na stałych.
+- Subagent NIE commituje i NIE aktualizuje dokumentacji — commit, push i dokumentację robi sesja główna po zebraniu raportów.
+
+Wyjątek: pojedyncza, znana zmiana w jednym pliku — rób ją bez subagenta.
+
+---
+
 ## Wbudowane narzędzia / środowisko
 
 | Narzędzie | Cel | Uwaga |
@@ -72,6 +84,10 @@ FFmpeg: `PIRO_FFMPEG` env → `assets/bin` (full) → systemowy → imageio-ffmp
 - Nie pomijaj bumpu wersji gdy zmieniałeś funkcjonalność.
 - Nie buduj `.exe` podczas pracy — iteruj ze źródła (`python app.py`).
 - Nie ignoruj czerwonych testów — napraw je lub wyjaśnij, zanim zaproponujesz merge.
+- Nie zmieniaj stałych protokołu ID-tone (`_ID_TONE_*`, `_id_tone_checksum` w `audio_sync.py`)
+  w oderwaniu od dwóch pozostałych repozytoriów — `playIdToneFrame`/`idToneChecksum`
+  w `www.timer.pifpaf.fun/index.php` i `id_tone.js` w `www.piro-kalkulator.pifpaf.fun`
+  muszą mieć IDENTYCZNE częstotliwości, czasy, liczbę slotów i wagi checksumy.
 - Nie commituj plików `.env`, kluczy API ani dużych binariów.
 
 ---

@@ -207,3 +207,71 @@ def test_expand_name_template_variables_and_unknown_kept():
     assert x("_PiRoOverlay", s, 1) == "_PiRoOverlay"
     # brak sesji / ID → puste podstawienia, szablon nie wybucha
     assert x("{id}_{uczestnik}_{czas}", None, None) == "__"
+
+
+# --- ID-tone v3: rozwiązanie kodu tymczasowego do ID wpisu w bazie ---
+
+def _cand(entry_id: int, temp_id: str = "30147"):
+    from datetime import datetime, timezone
+    from piro_overlay.api import SessionCandidate
+    return SessionCandidate(id=entry_id,
+                            data_zapisu=datetime(2026, 9, 20, 10, 0, tzinfo=timezone.utc),
+                            temp_id=temp_id)
+
+
+def test_resolve_id_tone_channel_zero_is_entry_id(monkeypatch):
+    from piro_overlay.audio_sync import IdToneCode
+
+    def boom(*a, **k):  # kanał 0 nie może odpytywać bazy
+        raise AssertionError("kanał 0 nie pyta o temp_id")
+
+    monkeypatch.setattr(pipeline.api, "find_sessions_by_temp_id", boom)
+    out = pipeline.resolve_id_tone(IdToneCode(0, 1234), "brak.mp4")
+    assert out.session_id == 1234 and out.info == ""
+
+
+def test_resolve_id_tone_single_temp_candidate(monkeypatch):
+    from piro_overlay.audio_sync import IdToneCode
+    seen = []
+
+    def fake(temp_id):
+        seen.append(temp_id)
+        return [_cand(1234)]
+
+    monkeypatch.setattr(pipeline.api, "find_sessions_by_temp_id", fake)
+    out = pipeline.resolve_id_tone(IdToneCode(3, 147), "brak.mp4")
+    assert seen == ["30147"]
+    assert out.session_id == 1234 and out.info == "3-0147 → #1234"
+
+
+def test_resolve_id_tone_no_entry_gives_no_id(monkeypatch):
+    from piro_overlay.audio_sync import IdToneCode
+    monkeypatch.setattr(pipeline.api, "find_sessions_by_temp_id", lambda t: [])
+    out = pipeline.resolve_id_tone(IdToneCode(3, 147), "brak.mp4")
+    assert out.session_id is None and "3-0147" in out.info
+
+
+def test_resolve_id_tone_api_error_does_not_raise(monkeypatch):
+    from piro_overlay.audio_sync import IdToneCode
+
+    def fake(temp_id):
+        raise pipeline.api.ApiUnsupported("stary serwer")
+
+    monkeypatch.setattr(pipeline.api, "find_sessions_by_temp_id", fake)
+    out = pipeline.resolve_id_tone(IdToneCode(3, 147), "brak.mp4")
+    assert out.session_id is None and out.info
+
+
+def test_resolve_id_tone_ambiguous_candidates_need_recording(monkeypatch):
+    # Dwa wpisy z tym samym kodem (licznik kodów zawija się po 9999) i nagranie,
+    # którego czasu nie da się ustalić → brak ID, bez zgadywania.
+    from piro_overlay.audio_sync import IdToneCode
+    from piro_overlay import session_match
+    monkeypatch.setattr(pipeline.api, "find_sessions_by_temp_id",
+                        lambda t: [_cand(1234), _cand(1250)])
+    monkeypatch.setattr(pipeline.ffmpeg, "probe",
+                        lambda v: pipeline.ffmpeg.VideoInfo(
+                            duration=30.0, fps=30.0, width=320, height=240))
+    monkeypatch.setattr(session_match, "recording_start", lambda *a, **k: None)
+    out = pipeline.resolve_id_tone(IdToneCode(3, 147), "brak.mp4")
+    assert out.session_id is None and "2 wpis" in out.info

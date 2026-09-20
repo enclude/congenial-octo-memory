@@ -37,6 +37,10 @@ Krok 05: pasek postępu na 100%, status „Gotowe" i przycisk pobrania wyniku.
    auto-przycięcie. Przycisk **„🔎 Wykryj z audio”** próbuje odczytać ID prosto z nagrania —
    działa, gdy timer (np. [timer.pifpaf.fun](https://timer.pifpaf.fun)) po zapisaniu sesji
    odtworzył sygnał tonowy ID, a mikrofon kamery go nagrał; brak sygnału — wpisz ID ręcznie.
+   Gdy na stanowisku nie było internetu, timer gra **kod tymczasowy** (np. `3-0147`)
+   zamiast ID wpisu — backend sam odszukuje wtedy wpis w kalkulatorze po tym kodzie
+   i pokazuje go przy wykrytym ID. Jeśli kod pasuje do kilku wpisów i czas nagrania tego
+   nie rozstrzyga, aplikacja nie zgaduje — wypisuje powód i prosi o ręczne ID.
 3. **Sygnał startu** — auto-detekcja bzyczka shot-timera (T0) + automatyczne przycięcie;
    gdy bzyczka nie słychać, T0 ustawia się ręcznie w kroku 4.
 4. **Podgląd i korekta** — klatka z nakładką dokładnie taką, jaka będzie w wyniku
@@ -138,7 +142,7 @@ nie ma jeszcze cookie sesji.
 | `GET /api/version` | `{version, repo}` — stopka frontendu |
 | `POST /api/jobs` | upload (body = plik, nagłówek `X-Filename`) → JSON zadania + `suggested_id` |
 | `POST /api/jobs/{id}/session` | `{source:"id"\|"timeline", id?, timeline?}` |
-| `POST /api/jobs/{id}/detect-id` | dekodowanie ID z sygnału tonowego (`id:null` gdy brak sygnału) |
+| `POST /api/jobs/{id}/detect-id` | dekodowanie ID z sygnału tonowego → `{id, temp_id, code, info}` (`id:null` gdy brak sygnału albo kodu tymczasowego nie da się jednoznacznie rozwiązać — powód w `info`) |
 | `POST /api/jobs/{id}/analyze` | detekcja T0 + auto-przycięcie (`t0:null` gdy brak bzyczka) |
 | `GET /api/jobs/{id}/preview?t=&t0=&lang=&clock=&h=` | PNG klatki z nakładką |
 | `POST /api/jobs/{id}/render` | `{format, lang, clock, t0, trim_start, trim_end, no_overlay}` → 202 |

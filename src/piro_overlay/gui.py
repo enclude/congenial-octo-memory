@@ -1090,7 +1090,8 @@ class BatchIdDetectWorker(QThread):
     wtedy None i wiersz wraca do „podaj ID". (Pułapki QThread jak w
     `BatchPrepWorker`: worker trzymany do `finished`.)
     """
-    # (row_id, int | None, info: "" | opis dopasowania po czasie, source: "tone" | "time" | "")
+    # (row_id, int | None, info: "" | opis kodu tymczasowego/dopasowania po czasie,
+    #  source: "tone" | "temp" | "time" | "")
     done = Signal(str, object, str, str)
 
     def __init__(self, row_id: str, video_path: str, match_time: bool = False):
@@ -1101,13 +1102,27 @@ class BatchIdDetectWorker(QThread):
 
     def run(self):
         try:
-            detected = audio_sync.decode_id_tone(self.video_path)
+            code = pipeline.detect_id_tone(self.video_path)
         except Exception:  # noqa: BLE001
-            detected = None
-        info = ""
-        source = "tone" if detected is not None else ""
+            code = None
+        detected, info, source = None, "", ""
+        if code is not None and code.is_db_id:
+            detected, source = code.value, "tone"
+        elif code is not None:
+            # Kod tymczasowy (sesja nagrana offline): ID wpisu trzeba dopiero
+            # znaleźć w bazie po `temp_id`; T0 z bzyczka zawęża rozstrzyganie,
+            # gdy ten sam kod ma kilka wpisów.
+            try:
+                t0 = pipeline.detect_start_signal(self.video_path)
+            except Exception:  # noqa: BLE001
+                t0 = None
+            result = pipeline.resolve_id_tone(code, self.video_path, t0=t0)
+            info = result.info
+            if result.session_id is not None:
+                detected, source = result.session_id, "temp"
         if detected is None and self.match_time:
-            detected, info = self._match_by_time()
+            detected, match_info = self._match_by_time()
+            info = match_info or info
             if detected is not None:
                 source = "time"
         self.done.emit(self.row_id, detected, info, source)
@@ -1160,7 +1175,8 @@ class BatchRow:
     session_id: int = 0
     prep:       dict | None = None     # wynik BatchPrepWorker
     error:      str = ""
-    id_source:  str = ""               # "tone" (sygnał audio) | "time" (dopasowanie po czasie) | "" (ręcznie)
+    id_source:  str = ""               # "tone" (ID z sygnału audio) | "temp" (kod tymczasowy z audio)
+                                       # | "time" (dopasowanie po czasie) | "" (ręcznie)
 
 
 class BatchRowWidget(QWidget):
@@ -1268,6 +1284,7 @@ class BatchRowWidget(QWidget):
 
     _ID_SOURCE_ICONS = {
         "tone": ("detect", "🔊", "ID odczytane z sygnału tonowego w audio"),
+        "temp": ("detect", "🔊", "ID z KODU TYMCZASOWEGO w audio (sesja offline) — sprawdź"),
         "time": ("clock", "⏱", "ID z dopasowania po czasie nagrania — sprawdź"),
     }
 
@@ -5012,7 +5029,7 @@ class MainWindow(QMainWindow):
         """
         if not self._require_video():
             return
-        self._run_op(partial(audio_sync.decode_id_tone, self.video_path),
+        self._run_op(partial(pipeline.detect_id_tone, self.video_path),
                      button=self.detect_id_btn, busy_text=_TR("busy_detect_id"),
                      status_text=_TR("busy_detect_id"),
                      on_result=self._on_id_tone_detected)
@@ -5029,9 +5046,32 @@ class MainWindow(QMainWindow):
                     return
             self._notify("input", _TR("msg_no_id_tone"))
             return
-        self.id_spin.setValue(detected)
+        if detected.is_db_id:
+            self._apply_detected_id(detected.value, str(detected.value))
+            return
+        # Kod tymczasowy (sesja nagrana offline): ID wpisu trzeba dopiero znaleźć
+        # w bazie po `temp_id`. Poprzednia operacja właśnie się skończyła
+        # (`_end_op` przed callbackiem), więc slot `_run_op` jest wolny.
+        t0 = self.t0_spin.value()
+        fn = partial(pipeline.resolve_id_tone, detected, self.video_path,
+                     t0=t0 if t0 > 0 else None, info=self._video_info)
+        self._run_op(fn, button=self.detect_id_btn,
+                     busy_text=_TR("busy_temp_id_lookup"),
+                     status_text=_TR("status_temp_id_lookup").format(detected.label),
+                     on_result=self._on_temp_id_resolved)
+
+    def _on_temp_id_resolved(self, result) -> None:
+        """Wynik zapytania o kod tymczasowy: jedno ID → jak wykryte ID, brak
+        rozstrzygnięcia → jak nieczytelny sygnał (bez zgadywania)."""
+        if result.session_id is None:
+            self._notify("input", result.info or _TR("msg_no_id_tone"))
+            return
+        self._apply_detected_id(result.session_id, result.info)
+
+    def _apply_detected_id(self, session_id: int, label: str) -> None:
+        self.id_spin.setValue(session_id)
         self._set_source("id")  # render ma użyć sesji z API, nie pola tekstowego
-        self._ok(_TR("msg_id_detected").format(detected))
+        self._ok(_TR("msg_id_detected").format(label))
         self._fetch_id_and_trim()
 
     def _match_session_by_time(self) -> bool:
