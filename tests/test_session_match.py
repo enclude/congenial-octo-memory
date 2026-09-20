@@ -35,6 +35,14 @@ def test_time_from_filename_dji_and_generic():
     assert sm.time_from_filename("DJI_99999999999999_0001_D.MP4", CEST) is None
 
 
+def test_time_from_filename_pixel_is_utc():
+    # PXL_20260920_101908466.mp4 z zawodów: 10:19:08 UTC = 12:19:08 CEST
+    t = sm.time_from_filename("PXL_20260920_101908466.mp4", CEST)
+    assert t == datetime(2026, 9, 20, 12, 19, 8, tzinfo=CEST)
+    assert sm.time_from_filename("PXL_20260920_101908466.RAW-01.COVER.jpg", CEST) == t
+    assert sm.time_from_filename("PXL_2026.mp4", CEST) is None
+
+
 def test_parse_creation_time_utc_z_and_naive():
     z = sm.parse_creation_time("2026-07-07T16:06:24.000000Z")
     assert z == datetime(2026, 7, 7, 16, 6, 24, tzinfo=timezone.utc)

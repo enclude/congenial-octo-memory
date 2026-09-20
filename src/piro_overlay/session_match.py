@@ -47,6 +47,10 @@ QUERY_TAIL_S = SAVE_MAX_S + 120.0
 # `DJI_20260812195106_0035_D.MP4`, ogólnie `..._20260812_195106...` / `20260812195106`
 _DJI_RE = re.compile(r"^DJI_(\d{14})(?:_|$)")
 _GENERIC_RE = re.compile(r"(?<!\d)(\d{8})[_\-T ]?(\d{6})(?!\d)")
+# Google Pixel: `PXL_20260920_101908466.mp4` = start nagrania w UTC z milisekundami
+# (zmierzone: 10:19:08Z przy zawodach o 12:19 CEST). UWAGA: `creation_time` Pixela to
+# KONIEC nagrania (+ kilka s finalizacji), więc nazwa pliku ma pierwszeństwo.
+_PXL_RE = re.compile(r"^PXL_(\d{8})_(\d{6})\d{3}(?:\D|$)")
 
 
 @dataclass(frozen=True)
@@ -103,6 +107,12 @@ def parse_creation_time(text: str) -> datetime | None:
 def time_from_filename(path: str | Path, tz: tzinfo | None = None) -> datetime | None:
     """Czas startu nagrania z nazwy pliku (DJI, potem ogólny `YYYYMMDD[_]HHMMSS`), w strefie `tz`."""
     stem = Path(path).stem
+    if px := _PXL_RE.match(stem):
+        try:
+            utc = datetime.strptime(px.group(1) + px.group(2), "%Y%m%d%H%M%S")
+        except ValueError:
+            return None
+        return utc.replace(tzinfo=timezone.utc).astimezone(tz or local_tz())
     m = _DJI_RE.match(stem)
     digits = m.group(1) if m else None
     if digits is None:

@@ -158,7 +158,9 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   jako JEDYNE wejście dla GUI/CLI/wsadu (zwraca `MatchResult(recording, matches, picked)`).
   - **Czas po stronie nagrania** (`recording_start`, kolejność): nazwa pliku DJI
     `DJI_YYYYMMDDHHMMSS_NNNN_D` = czas LOKALNY kamery (`time_from_filename`, jest też ogólny
-    wzorzec `YYYYMMDD[_]HHMMSS`) → tag kontenera `creation_time` (NOWE pole
+    wzorzec `YYYYMMDD[_]HHMMSS`; **Pixel `PXL_YYYYMMDD_HHMMSSmmm` = UTC**, v0.63.1 — zmierzone na
+    `PXL_20260920_101908466.mp4`: nazwa 10:19:08Z, a `creation_time` 10:20:09Z to KONIEC nagrania
+    52 s + finalizacja, więc bez nazwy start był o ~60 s za późno) → tag kontenera `creation_time` (NOWE pole
     `ffmpeg.VideoInfo.creation_time`, ffprobe `format_tags` albo regex `_CREATION_RE` na
     stderr; DJI zapisuje UTC z „Z", naiwny czas traktujemy jako UTC) → mtime pliku (to KONIEC
     nagrania → minus długość). Pomiar `DJI_20260707180623_0051_D.MP4`: nazwa 18:06:23 CEST,
