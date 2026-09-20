@@ -144,7 +144,8 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
     NIE konwertuje z UTC) — dokładny co do sekund, tylko dla wpisów z timera.
   - **Ocena (`match_sessions`)**: znany T0 → oczekiwany start sesji = start nagrania + T0;
     bez T0 sesja może być gdziekolwiek w nagraniu (tolerancje + długość nagrania).
-    Kandydat z timera: Δ = start na timerze − oczekiwany start, okno `±TIMER_TOL_S` (45 s).
+    Kandydat z timera: Δ = start na timerze − oczekiwany start, okno `±TIMER_TOL_S` (120 s —
+    zegar timera z 2026-09-20 szedł ~1 min do przodu względem serwera; v0.60.1).
     Kandydat tylko z `data_zapisu`: Δ = zapis − (oczekiwany start + `czas_bazowy`), okno
     `[SAVE_MIN_S=-15, SAVE_MAX_S=300]` — zapis pada PO końcu sesji. Sortowanie: w oknie →
     timer przed saved → mniejsze |Δ|. **`pick` (jednoznaczność):** jedno trafienie → ono;
@@ -1089,7 +1090,12 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   pierwszym tokenie — realna regresja, nie tylko kosmetyka). `api.session_from_payload`
   woła to PRZED `parse_timeline` i ustawia wynik na `Session.start_delay` (nowe pole,
   wliczone w `to_dict`/`from_dict` — przetrwa zapis/odczyt kolejki renderów w AppData).
-  ŚWIADOMIE trzymane, ale NIEUŻYWANE jeszcze w żadnej logice (T0/przycięcie/render) — GUI
+  **Prefiks daty sesji (v0.60.1):** timer od 2026-09-20 dokłada PRZED opóźnieniem datę startu
+  w formacie `toLocaleString('pl-PL')`: `"20.09.2026, 13:00:08 | opoznienie startu 3s | 1: …"`
+  — `_SESSION_DATE_RE` odcina ją (nie interpretuje; czas startu niesie `timer_sess_id`), bez
+  tego KAŻDA sesja z timera padała „Nie rozpoznano tokenu strzału: '20.09.2026, …'"
+  (realny błąd z dnia premiery). ŚWIADOMIE trzymane, ale NIEUŻYWANE jeszcze w żadnej logice
+  (T0/przycięcie/render) — GUI
   (`self.session.start_delay`) i web (`job.session.start_delay`, patrz `session_meta` w
   sekcji webowej) mają do niego dostęp, ale nic nie zmienia się w zachowaniu. Manualne
   wklejanie tekstu (bez prefiksu) działa jak dotychczas — `extract_start_delay` na tekście

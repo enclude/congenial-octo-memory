@@ -27,8 +27,10 @@ from pathlib import Path
 from .api import SessionCandidate
 
 # start sesji na timerze poprzedza bzyczek (T0) o `start_delay` (~1–2 s) i klik
-# „Start" — tolerancja szeroka, bo zegar timera bywa ustawiony z grubsza
-TIMER_TOL_S = 45.0
+# „Start" — tolerancja szeroka, bo zegar timera bywa ustawiony z grubsza: sesje
+# z 2026-09-20 miały start na timerze ~1 min PO data_zapisu (zegar timera ~1 min
+# do przodu względem serwera), kamera może dryfować podobnie
+TIMER_TOL_S = 120.0
 # zapis w bazie pada PO końcu sesji: od razu (timer „Zapisz w bazie") do kilku minut
 # (ręczne wpisanie do kalkulatora między strzelcami)
 SAVE_MIN_S = -15.0

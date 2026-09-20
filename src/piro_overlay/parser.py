@@ -39,16 +39,24 @@ _START_DELAY_RE = re.compile(
     (?P<delay>\d+(?:\.\d+)?) \s* s \s* \|? \s*""",
     re.VERBOSE,
 )
+# Timer (od 2026-09-20) dokłada PRZED wszystkim datę startu sesji w formacie
+# `toLocaleString('pl-PL')`: "20.09.2026, 13:00:08 | opoznienie startu 3s | 1: …".
+# Odcinana, nie interpretowana (czas startu sesji niesie `timer_sess_id` z API).
+_SESSION_DATE_RE = re.compile(
+    r"""^\s*\d{1,2}\.\d{1,2}\.\d{4},?\s*\d{1,2}:\d{2}(?::\d{2})?\s*\|\s*""")
 
 
 def extract_start_delay(text: str) -> tuple[str, float | None]:
-    """Odcina opcjonalny prefiks „opoznienie startu Xs” z tekstu osi czasu.
+    """Odcina opcjonalne prefiksy z tekstu osi czasu: datę sesji (timer) i
+    „opoznienie startu Xs”.
 
     Zwraca (reszta_tekstu, opóźnienie_w_s_albo_None) — reszta trafia bez
-    zmian do `parse_timeline`. Brak prefiksu → tekst niezmieniony, `None`.
+    zmian do `parse_timeline`. Brak prefiksów → tekst niezmieniony, `None`.
     """
     if not text:
         return text, None
+    if d := _SESSION_DATE_RE.match(text):
+        text = text[d.end():]
     m = _START_DELAY_RE.match(text)
     if not m:
         return text, None

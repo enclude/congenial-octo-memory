@@ -72,6 +72,18 @@ def test_extract_start_delay_strips_prefix():
     assert parse_timeline(rest)[1].split == 0.48
 
 
+def test_extract_start_delay_strips_session_date_prefix():
+    # realny `opis` z API (ID 359, timer od 2026-09-20): data sesji PRZED opóźnieniem
+    rest, delay = extract_start_delay(
+        "20.09.2026, 13:00:08 | opoznienie startu 3s | 1: 3.76s | 2: 4.76s (+1.00s)")
+    assert delay == 3.0
+    assert rest == "1: 3.76s | 2: 4.76s (+1.00s)"
+    # sama data, bez opóźnienia
+    rest, delay = extract_start_delay("20.09.2026, 13:00 | 1: 3.76s")
+    assert (rest, delay) == ("1: 3.76s", None)
+    assert len(parse_timeline(rest)) == 1
+
+
 def test_extract_start_delay_no_prefix_returns_none():
     text = "1: 1.0s | 2: 2.5s (+1.5s)"
     rest, delay = extract_start_delay(text)
