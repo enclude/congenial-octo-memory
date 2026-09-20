@@ -295,3 +295,18 @@ def test_batch_variant_suffix_only_for_multiple_variants():
     assert pipeline.batch_variant_suffix(single, single[0]) == ""
     multi = pipeline.batch_variants(overlay=True, timer=False, trim=True)
     assert [pipeline.batch_variant_suffix(multi, v) for v in multi] == ["_overlay", "_trim"]
+
+
+def test_batch_output_name_typ_variable_and_subdirs():
+    from piro_overlay.pipeline import BATCH_VARIANTS, batch_output_name
+    from piro_overlay.models import Session, Shot
+    sess = Session(shots=[Shot(1, 1.0, None)], uczestnik="Jan K.")
+    ov, tm, tr = BATCH_VARIANTS
+    both = [ov, tm]
+    # bez {typ}: automatyczny sufiks wariantu przy >1 wariancie
+    assert batch_output_name("", "clip", "_x", sess, 5, both, tm, ".mp4") == "clip_x_timer.mp4"
+    assert batch_output_name("", "clip", "_x", sess, 5, [tr], tr, ".mp4") == "clip_x.mp4"
+    # {typ} w prefiksie: podstawiony, automatyczny sufiks NIE dochodzi, \\ → podkatalog
+    assert (batch_output_name("{typ}\\{uczestnik}_", "clip", "", sess, 5, both, ov, ".mp4")
+            == "overlay/Jan_K_clip.mp4")
+    assert batch_output_name("", "clip", "_{typ}", sess, 5, both, tm, ".mp4") == "clip_timer.mp4"

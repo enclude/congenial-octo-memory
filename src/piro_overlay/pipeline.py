@@ -163,18 +163,20 @@ def sanitize_filename_part(text: str) -> str:
 
 # Zmienne szablonu nazwy pliku (prefiks/sufiks we wsadzie). Nieznane `{x}` zostają
 # dosłownie — ktoś może chcieć nawiasów w nazwie, a literówka nie może wywalić wsadu.
-NAME_TEMPLATE_VARS = ("id", "uczestnik", "tor", "strzaly", "czas", "hf")
+NAME_TEMPLATE_VARS = ("id", "uczestnik", "tor", "strzaly", "czas", "hf", "typ")
 _VAR_RE = re.compile(r"\{(" + "|".join(NAME_TEMPLATE_VARS) + r")\}")
 
 
 def expand_name_template(template: str, session: Session | None,
-                         session_id: int | None) -> str:
+                         session_id: int | None, variant_key: str = "") -> str:
     """Podstawia `{id}`, `{uczestnik}`, `{tor}`, `{strzaly}`, `{czas}` (czas bazowy),
-    `{hf}` (hit factor) — wartości sanityzowane; brak danych → pusty tekst."""
+    `{hf}` (hit factor), `{typ}` (wariant wsadu: overlay/timer/trim) — wartości
+    sanityzowane; brak danych → pusty tekst."""
     if "{" not in template:
         return template
     czas = session.base_time if session else None
     values = {
+        "typ": variant_key,
         "id": str(session_id) if session_id else "",
         "uczestnik": sanitize_filename_part((session.uczestnik or "") if session else ""),
         "tor": sanitize_filename_part((session.nazwa_toru or "") if session else ""),
@@ -212,6 +214,25 @@ def batch_variant_suffix(variants: list[BatchVariant], variant: BatchVariant) ->
     """Sufiks wariantu w nazwie pliku — tylko gdy wariantów jest więcej niż jeden
     (przy jednym nazwa zostaje jak dotąd, bez `_overlay`)."""
     return "" if len(variants) <= 1 else "_" + variant.key
+
+
+_TYP_VAR = "{typ}"
+
+
+def batch_output_name(prefix: str, stem: str, suffix: str, session: Session | None,
+                      session_id: int | None, variants: list[BatchVariant],
+                      variant: BatchVariant, ext: str) -> str:
+    """Względna nazwa pliku wyjściowego wsadu: prefiks + stem + sufiks (szablony
+    rozwinięte dla `variant`) + ext. Automatyczny sufiks wariantu (`_overlay`…) dochodzi
+    tylko gdy wariantów jest >1 I użytkownik NIE użył `{typ}` w szablonie (sam wybrał,
+    gdzie wariant ma stać). Ukośniki `/` `\\` w szablonie = podkatalogi (np. prefiks
+    `{typ}\\` daje `overlay\\plik.mp4`); katalogi tworzy wołający (`Path.mkdir`).
+    Wartości zmiennych nigdy nie zawierają separatorów (`sanitize_filename_part`)."""
+    name = (expand_name_template(prefix, session, session_id, variant.key) + stem
+            + expand_name_template(suffix, session, session_id, variant.key))
+    if _TYP_VAR not in prefix and _TYP_VAR not in suffix:
+        name += batch_variant_suffix(variants, variant)
+    return name.replace("\\", "/") + ext
 
 
 def find_session_by_time(video: str | Path, *, t0: float | None = None,

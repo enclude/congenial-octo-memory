@@ -1496,7 +1496,10 @@ class BatchDialog(QWidget):
         vars_tip = ("Zmienne: " + " ".join(f"{{{v}}}" for v in pipeline.NAME_TEMPLATE_VARS)
                     + "\n{id} = ID sesji, {uczestnik}/{tor} z API (diakrytyki → ASCII, "
                     "spacje → _), {strzaly} = liczba strzałów, {czas} = czas bazowy, "
-                    "{hf} = hit factor.\nPrzykład sufiksu: _PiRoOverlay_{id}_{uczestnik}")
+                    "{hf} = hit factor, {typ} = wariant wyjścia (overlay/timer/trim; gdy użyty, "
+                    "automatyczny sufiks _overlay/_timer/_trim nie jest dodawany).\n"
+                    "Ukośnik \\ lub / w szablonie tworzy podkatalog, np. prefiks {typ}\\ "
+                    "→ overlay\\plik.mp4.\nPrzykład sufiksu: _PiRoOverlay_{id}_{uczestnik}")
         self._prefix_edit = QLineEdit(QSettings().value("ui/batch/prefix", "", type=str))
         self._prefix_edit.setPlaceholderText("np. {tor}_")
         self._prefix_edit.setToolTip(vars_tip)
@@ -2037,15 +2040,14 @@ class BatchDialog(QWidget):
         for row in ready:
             p = row.prep
             session = p["session"]
-            base_name = (
-                pipeline.expand_name_template(prefix, session, row.session_id)
-                + Path(row.video_path).stem
-                + pipeline.expand_name_template(suffix, session, row.session_id))
             t0 = audio_sync.resolve_t0(p["t0"], AnchorMode.START_SIGNAL,
                                        session.shots[0].czas)
             for variant in variants:
-                out_path = out_dir / (
-                    base_name + pipeline.batch_variant_suffix(variants, variant) + ext)
+                out_path = out_dir / pipeline.batch_output_name(
+                    prefix, Path(row.video_path).stem, suffix, session, row.session_id,
+                    variants, variant, ext)
+                # `{typ}\` w prefiksie = podkatalog per wariant — FFmpeg go nie utworzy
+                out_path.parent.mkdir(parents=True, exist_ok=True)
                 style = replace(self._base_style, show_running_clock=variant.clock)
                 kwargs = dict(
                     video_path=row.video_path, session=session, t0=t0,

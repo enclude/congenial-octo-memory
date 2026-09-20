@@ -151,6 +151,13 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   jak dotąd. Zero wariantów → przycisk nieaktywny + ostrzeżenie w pasku stanu. Logika bez Qt:
   `pipeline.BatchVariant`, `BATCH_VARIANTS`, `batch_variants(overlay=, timer=, trim=)`
   (stała kolejność), `batch_variant_suffix(variants, variant)`; testy w `tests/test_pipeline.py`.
+  **Zmienna `{typ}` (v0.66.0):** `expand_name_template(..., variant_key)` podstawia klucz
+  wariantu (`overlay`/`timer`/`trim`); `pipeline.batch_output_name(prefix, stem, suffix,
+  session, id, variants, variant, ext)` składa nazwę i dokłada automatyczny `_typ` TYLKO gdy
+  `{typ}` nie występuje w prefiksie ani sufiksie (użytkownik sam wybrał miejsce). Ukośniki
+  `\`/`/` w szablonie = PODKATALOGI (`{typ}\` → `overlay\plik.mp4`); wartości zmiennych ich
+  nigdy nie zawierają (`sanitize_filename_part`), a `_enqueue_ready` robi `mkdir(parents=True)`
+  przed dodaniem zadania (FFmpeg nie tworzy katalogów). Test `test_batch_output_name_*`.
   Checkbox GPU USUNIĘTY — enkoder wsadu zawsze `"auto"` (render sam spada na CPU). Zegar we
   wsadzie NIE dziedziczy już checkboxa „Płynący czas" z głównego okna (`_show_batch_window`
   odświeża tylko `_base_style`). Cel: jedna partia = komplet typów plików bez trzech przebiegów.
