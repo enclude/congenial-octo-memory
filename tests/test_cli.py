@@ -85,3 +85,44 @@ def test_compute_trim_end_clamped_to_duration():
     _, end = cli._compute_trim(
         _args(auto=True, auto_window=75.0), t0=10.0, session=None, duration=30.0)
     assert end == 30.0
+
+
+def _match_result(picked_id=None, hits=(), recording=True):
+    from datetime import datetime, timezone
+    from piro_overlay import session_match as sm
+    from piro_overlay.api import SessionCandidate
+    rec = sm.RecordingTime(datetime(2026, 8, 12, 19, 51, 6, tzinfo=timezone.utc),
+                           "filename") if recording else None
+    matches = tuple(
+        sm.Match(SessionCandidate(id=i, data_zapisu=rec.start, nazwa_toru="T", uczestnik="U"),
+                 "saved", 3.0, True) for i in hits)
+    picked = next((m for m in matches if m.candidate.id == picked_id), None)
+    return sm.MatchResult(rec, matches, picked)
+
+
+def test_match_time_picks_session_and_builds_it(monkeypatch, capsys):
+    from piro_overlay import pipeline
+    monkeypatch.setattr(pipeline, "find_session_by_time",
+                        lambda video, **kw: _match_result(326, (326, 327)))
+    monkeypatch.setattr(pipeline, "build_session",
+                        lambda timeline, rid, tn, pa: ("built", rid, tn))
+    args = _args(video="DJI_x.MP4", track_name="Tor Z")
+    assert cli._match_session_by_time(args, info=None, t0=32.0) == ("built", 326, "Tor Z")
+    assert "ID 326" in capsys.readouterr().out
+
+
+def test_match_time_ambiguous_lists_ids_and_exits(monkeypatch):
+    from piro_overlay import pipeline
+    monkeypatch.setattr(pipeline, "find_session_by_time",
+                        lambda video, **kw: _match_result(None, (326, 327)))
+    with pytest.raises(SystemExit) as ei:
+        cli._match_session_by_time(_args(video="v.mp4"), info=None, t0=None)
+    assert "--id 326" in str(ei.value) and "--id 327" in str(ei.value)
+
+
+def test_match_time_no_recording_time_exits(monkeypatch):
+    from piro_overlay import pipeline
+    monkeypatch.setattr(pipeline, "find_session_by_time",
+                        lambda video, **kw: _match_result(recording=False))
+    with pytest.raises(SystemExit, match="czasu nagrania"):
+        cli._match_session_by_time(_args(video="v.mp4"), info=None, t0=None)

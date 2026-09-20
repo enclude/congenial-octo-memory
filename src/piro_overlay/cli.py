@@ -20,7 +20,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import __version__, ffmpeg, pipeline, render
+from . import __version__, api, ffmpeg, pipeline, render
 from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session
 
 # Alias dla zgodności (testy/importy); źródło prawdy w pipeline.
@@ -36,6 +36,32 @@ def _build_session(args: argparse.Namespace) -> Session | None:
     """Sesja z osi czasu (tekst lub API). None gdy nie podano źródła."""
     return pipeline.build_session(args.timeline, args.id,
                                   args.track_name, args.participant)
+
+
+def _match_session_by_time(args: argparse.Namespace, info,
+                           t0: float | None) -> Session:
+    """`--match-time`: sesja z API dopasowana po czasie nagrania (printy + SystemExit)."""
+    try:
+        result = pipeline.find_session_by_time(args.video, t0=t0, info=info)
+    except api.ApiError as exc:
+        raise SystemExit(f"Dopasowanie po czasie nie powiodło się: {exc}") from None
+    if result.recording is None:
+        raise SystemExit("Nie udało się ustalić czasu nagrania (nazwa pliku, "
+                         "creation_time ani mtime) — podaj --id ręcznie.")
+    rec = result.recording
+    print(f"Start nagrania: {rec.start:%Y-%m-%d %H:%M:%S} ({rec.source})")
+    if result.picked is None:
+        hits = [m for m in result.matches if m.in_window]
+        if not hits:
+            raise SystemExit("Brak sesji w API pasującej do czasu nagrania — podaj --id ręcznie.")
+        lines = "\n".join(
+            f"  --id {m.candidate.id}: {m.candidate.nazwa_toru} / {m.candidate.uczestnik} "
+            f"({m.basis}, Δ {m.delta_s:+.0f} s)" for m in hits)
+        raise SystemExit("Kilka sesji pasuje do czasu nagrania — wybierz ręcznie:\n" + lines)
+    m = result.picked
+    print(f"Dopasowano po czasie: ID {m.candidate.id} — {m.candidate.nazwa_toru} / "
+          f"{m.candidate.uczestnik} ({m.basis}, Δ {m.delta_s:+.0f} s)")
+    return pipeline.build_session(None, m.candidate.id, args.track_name, args.participant)
 
 
 def _resolve_t0(args: argparse.Namespace, session: Session | None,
@@ -88,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
     src = parser.add_mutually_exclusive_group()
     src.add_argument("--timeline", help="oś czasu strzałów jako tekst")
     src.add_argument("--id", type=int, help="ID wyniku z API kalkulatora")
+    parser.add_argument("--match-time", action="store_true",
+                        help="bez --id/--timeline: dopasuj sesję z API po czasie nagrania "
+                             "(nazwa DJI / creation_time / mtime); z --auto najpierw "
+                             "wykrywany jest T0, co zawęża dopasowanie do sekund")
     parser.add_argument("--track-name", default=None,
                         help="nazwa toru na nakładce (nadpisuje wartość z API)")
     parser.add_argument("--participant", default=None,
@@ -131,15 +161,23 @@ def main(argv: list[str] | None = None) -> int:
 
     mode = AnchorMode.START_SIGNAL if args.auto else AnchorMode(args.anchor)
     session = _build_session(args)
-    if not args.no_overlay and not (session and session.shots):
-        raise SystemExit("Nakładka wymaga osi czasu — podaj --timeline lub --id "
-                         "(albo użyj --no-overlay).")
+    match_time = args.match_time and session is None
+    if not args.no_overlay and not (session and session.shots) and not match_time:
+        raise SystemExit("Nakładka wymaga osi czasu — podaj --timeline, --id lub "
+                         "--match-time (albo użyj --no-overlay).")
 
-    duration = ffmpeg.probe(args.video).duration or None
+    info = ffmpeg.probe(args.video)
+    duration = info.duration or None
 
     # T0 potrzebny do nakładki oraz do auto-przycięcia.
     needs_t0 = (not args.no_overlay) or args.auto or args.auto_trim or args.auto_window is not None
+    # --match-time liczy T0 PRZED sesją (bzyczek zawęża dopasowanie do sekund),
+    # więc kotwica nie może zależeć od osi strzałów (FIRST_SHOT) — tylko --auto/--t0.
+    if match_time and needs_t0 and not (args.auto or args.t0 is not None):
+        raise SystemExit("--match-time wymaga --auto albo --t0 (kotwica bez osi strzałów).")
     t0 = _resolve_t0(args, session, mode) if needs_t0 else None
+    if match_time:
+        session = _match_session_by_time(args, info, t0)
 
     trim_start, trim_end = _compute_trim(args, t0, session, duration)
     output = args.output or _default_output(args.video)

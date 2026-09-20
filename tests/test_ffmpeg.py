@@ -55,3 +55,19 @@ def test_resolution_and_fps_regex_on_video_line():
     assert (int(rm.group(1)), int(rm.group(2))) == (3840, 2160)
     fm = ffmpeg._FPS_RE.search(video_line)
     assert float(fm.group(1)) == 29.97
+
+
+def test_creation_time_regex_on_ffmpeg_stderr():
+    from piro_overlay.ffmpeg import _CREATION_RE
+    text = ("  Metadata:\n    creation_time   : 2026-07-07T16:06:24.000000Z\n"
+            "  Duration: 00:00:33.00, start: 0.000000, bitrate: 66708 kb/s\n"
+            "    Stream #0:0: Video: hevc, 3840x2880, 50 fps\n"
+            "    Metadata:\n      creation_time   : 2026-07-07T16:06:25.000000Z\n")
+    assert _CREATION_RE.search(text).group(1) == "2026-07-07T16:06:24.000000Z"
+
+
+def test_probe_reports_empty_creation_time_for_synthetic_video(tiny_video):
+    from piro_overlay import ffmpeg
+    info = ffmpeg.probe(tiny_video)
+    assert info.duration > 0
+    assert info.creation_time == ""   # lavfi nie zapisuje tagu — pole istnieje i jest puste

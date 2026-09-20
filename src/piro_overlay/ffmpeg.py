@@ -31,6 +31,9 @@ class VideoInfo:
     width: int
     height: int
     codec: str = ""   # nazwa kodeka wideo (np. "h264", "hevc") — pusta gdy nieznana
+    # tag kontenera `creation_time` (ISO 8601, DJI zapisuje UTC z "Z") — pusty gdy brak;
+    # używany do dopasowania nagrania do sesji po czasie (session_match)
+    creation_time: str = ""
 
 
 # Bezpieczeństwo: plik wejściowy pochodzi od użytkownika (upload w wersji WWW),
@@ -144,7 +147,8 @@ def _probe_with_ffprobe(probe_exe: str, video_path: str) -> VideoInfo | None:
     cmd = [
         probe_exe, *UNTRUSTED_INPUT_ARGS, "-v", "error", "-select_streams", "v:0",
         "-show_entries",
-        "stream=width,height,avg_frame_rate,codec_name:format=duration",
+        "stream=width,height,avg_frame_rate,codec_name"
+        ":format=duration:format_tags=creation_time",
         "-of", "json", video_path,
     ]
     res = _run(cmd)
@@ -161,6 +165,8 @@ def _probe_with_ffprobe(probe_exe: str, video_path: str) -> VideoInfo | None:
             width=int(stream["width"]),
             height=int(stream["height"]),
             codec=str(stream.get("codec_name") or ""),
+            creation_time=str((data["format"].get("tags") or {})
+                              .get("creation_time") or ""),
         )
     except (KeyError, IndexError, ValueError, ZeroDivisionError):
         return None
@@ -171,6 +177,8 @@ _RES_RE = re.compile(r"\b(\d{2,5})x(\d{2,5})\b")
 _FPS_RE = re.compile(r"(\d+(?:\.\d+)?)\s*fps")
 # `Stream #0:0(eng): Video: hevc (Main) (hvc1 / …), yuv420p, 3840x2880, …`
 _CODEC_RE = re.compile(r"Video:\s*([A-Za-z0-9_]+)")
+# `    creation_time   : 2026-07-07T16:06:24.000000Z` (pierwsze wystąpienie = kontener)
+_CREATION_RE = re.compile(r"creation_time\s*:\s*(\S+)")
 
 
 def _probe_with_ffmpeg(video_path: str) -> VideoInfo:
@@ -203,9 +211,10 @@ def _probe_with_ffmpeg(video_path: str) -> VideoInfo:
         fps = float(fm.group(1))
     cm = _CODEC_RE.search(video_line)
     codec = cm.group(1).lower() if cm else ""
+    ct = _CREATION_RE.search(text)
 
     return VideoInfo(duration=duration, fps=fps, width=width, height=height,
-                     codec=codec)
+                     codec=codec, creation_time=ct.group(1) if ct else "")
 
 
 def extract_audio(video_path: str | Path, out_wav: str | Path,

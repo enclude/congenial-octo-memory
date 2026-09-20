@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QDialog, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGraphicsPixmapItem,
     QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton,
+    QListWidget, QListWidgetItem,
     QScrollArea, QSizePolicy, QSpinBox, QSplitter, QStackedWidget, QPlainTextEdit,
     QStatusBar, QToolBar, QToolButton, QVBoxLayout, QWidget,
 )
@@ -1089,19 +1090,43 @@ class BatchIdDetectWorker(QThread):
     wtedy None i wiersz wraca do „podaj ID". (Pułapki QThread jak w
     `BatchPrepWorker`: worker trzymany do `finished`.)
     """
-    done = Signal(str, object)   # (row_id, int | None)
+    done = Signal(str, object, str)   # (row_id, int | None, info: "" | opis dopasowania po czasie)
 
-    def __init__(self, row_id: str, video_path: str):
+    def __init__(self, row_id: str, video_path: str, match_time: bool = False):
         super().__init__()
         self.row_id = row_id
         self.video_path = video_path
+        self.match_time = match_time
 
     def run(self):
         try:
             detected = audio_sync.decode_id_tone(self.video_path)
         except Exception:  # noqa: BLE001
             detected = None
-        self.done.emit(self.row_id, detected)
+        info = ""
+        if detected is None and self.match_time:
+            detected, info = self._match_by_time()
+        self.done.emit(self.row_id, detected, info)
+
+    def _match_by_time(self) -> tuple[int | None, str]:
+        """Opcja awaryjna: sesja dopasowana po czasie nagrania (bez T0 — wsad go
+        jeszcze nie zna, więc okno = całe nagranie). Przyjmujemy TYLKO trafienie
+        jednoznaczne; info trafia do `row.error` jako podpowiedź dla użytkownika."""
+        try:
+            result = pipeline.find_session_by_time(self.video_path)
+        except Exception as exc:  # noqa: BLE001 — sieć/API: wiersz wraca do „podaj ID"
+            return None, f"dopasowanie po czasie nie powiodło się: {exc}"
+        if result.recording is None:
+            return None, "nie wykryto ID, a czas nagrania jest nieznany — podaj ręcznie"
+        if result.picked is not None:
+            c = result.picked.candidate
+            return c.id, (f"ID z dopasowania po czasie: {c.nazwa_toru or '—'} / "
+                          f"{c.uczestnik or '—'} (Δ {result.picked.delta_s:+.0f} s) — sprawdź")
+        hits = [m.candidate.id for m in result.matches if m.in_window]
+        if hits:
+            return None, ("kilka sesji pasuje po czasie (ID "
+                          + ", ".join(str(h) for h in hits) + ") — podaj ręcznie")
+        return None, "nie wykryto ID ani sesji z czasu nagrania — podaj ręcznie"
 
 
 class BatchRowStatus(Enum):
@@ -1242,9 +1267,16 @@ class BatchRowWidget(QWidget):
             # po nieudanej detekcji `row.error` niesie „nie wykryto ID — podaj ręcznie"
             self._info.setText(row.error or "podaj ID")
             set_role(self._info, "warning")
+        elif row.status == BatchRowStatus.PENDING and row.error:
+            # ID z dopasowania po czasie (nie z sygnału tonowego) — podpowiedź do
+            # sprawdzenia przed „Przygotuj wszystkie"; znika przy ręcznej zmianie ID
+            self._info.setText(row.error)
+            set_role(self._info, "warning")
+            self._info.setToolTip(row.error)
         else:
             self._info.setText("gotowe do przygotowania")
             set_role(self._info, "muted")
+            self._info.setToolTip("")
 
 
 _POLISH_MAP = str.maketrans({
@@ -1314,8 +1346,15 @@ class BatchDialog(QWidget):
         self._recursive_chk = QCheckBox(_TR("batch_auto_recursive"))
         self._recursive_chk.setToolTip(
             "Skanuje też katalogi wewnątrz wskazanego (np. kam1/ i kam2/).")
+        self._match_time_chk = QCheckBox(_TR("batch_match_time"))
+        self._match_time_chk.setToolTip(_TR("batch_match_time_tip"))
+        self._match_time_chk.setChecked(
+            QSettings().value("ui/batch/match_by_time", True, type=bool))
+        self._match_time_chk.toggled.connect(
+            lambda on: QSettings().setValue("ui/batch/match_by_time", on))
         auto_row.addWidget(self._auto_btn)
         auto_row.addWidget(self._recursive_chk)
+        auto_row.addWidget(self._match_time_chk)
         auto_row.addStretch(1)
         root.addLayout(auto_row)
 
@@ -1742,14 +1781,15 @@ class BatchDialog(QWidget):
             row.status = BatchRowStatus.DETECTING
             row.error = ""
             self._sync_row(row)
-            worker = BatchIdDetectWorker(row.id, row.video_path)
+            worker = BatchIdDetectWorker(row.id, row.video_path,
+                                         match_time=self._match_time_chk.isChecked())
             worker.done.connect(self._on_id_detected)
             worker.finished.connect(lambda rid=row.id: self._finish_worker(rid))
             self._workers[row.id] = worker
             worker.start()
         self._refresh()
 
-    def _on_id_detected(self, row_id: str, detected: object) -> None:
+    def _on_id_detected(self, row_id: str, detected: object, info: str = "") -> None:
         row = self._rows.get(row_id)
         if row is None:
             return
@@ -1757,13 +1797,19 @@ class BatchDialog(QWidget):
         # przyjął wartość ustawianą przez spinbox
         row.status = BatchRowStatus.NEEDS_ID
         if not detected:
-            row.error = "nie wykryto ID — podaj ręcznie"
+            row.error = info or "nie wykryto ID — podaj ręcznie"
             self._sync_row(row)
         elif w := self._row_widgets.get(row_id):
-            w.set_session_id(int(detected))   # → _on_id_changed → PENDING
+            w.set_session_id(int(detected))   # → _on_id_changed → PENDING (czyści error)
+            if info:
+                # ID z dopasowania po czasie: podpowiedź zostaje w wierszu, żeby
+                # użytkownik sprawdził je przed „Przygotuj wszystkie"
+                row.error = info
+                self._sync_row(row)
         else:
             row.session_id = int(detected)
             row.status = BatchRowStatus.PENDING
+            row.error = info
         self._refresh()
 
     # --- przygotowanie (fetch + detekcja T0) ---
@@ -2914,6 +2960,7 @@ class MainWindow(QMainWindow):
         self._op_buttons: list[QPushButton] = []
         self._op_gen: int = 0
         self._video_size: tuple[int, int] | None = None  # (w, h) — do skalowania podglądu
+        self._video_info: ffmpeg.VideoInfo | None = None  # pełny probe (dopasowanie po czasie)
         # Zapisane ustawienia tego pliku, czekające na zastosowanie po analizie audio
         # (spiny czasu mają sensowny zakres dopiero po poznaniu długości nagrania).
         self._pending_file_settings: dict | None = None
@@ -3103,6 +3150,8 @@ class MainWindow(QMainWindow):
             _apply_icon(self.zoom_range_btn, "zoom-range", 18, _TR("preview_zoom_range"))
         if getattr(self, "save_frame_btn", None) is not None:
             _apply_icon(self.save_frame_btn, "camera", 18, _TR("save_frame"))
+        if getattr(self, "match_time_btn", None) is not None:
+            _apply_icon(self.match_time_btn, "clock", 18, "⏱")
         if getattr(self, "op_cancel_btn", None) is not None:
             self.op_cancel_btn.setIcon(ui_theme.icon("cancel", size=16))
         if getattr(self, "_queue_window", None) is not None:
@@ -3316,6 +3365,7 @@ class MainWindow(QMainWindow):
         # Przyciski, które zmieniałyby wejście długiej operacji — blokowane na jej czas
         # (nie cały inspektor: zmiana koloru panelu w trakcie detekcji nikomu nie szkodzi).
         self._op_buttons = [self.fetch_btn, self.fetch_trim_btn, self.detect_id_btn,
+                            self.match_time_btn,
                             self.detect_btn, self.next_btn, self.start_sig_btn,
                             self.autotrim_btn, self.save_frame_btn]
         # Escape wychodzi z trybu „Edytuj pozycje" (skill §11: tryb zawsze z wyjściem).
@@ -3646,9 +3696,33 @@ class MainWindow(QMainWindow):
         self.detect_id_btn = detect_id_tone
         # Paski przycisków idą na pełną szerokość wiersza (jak w `add_widget_row`
         # ze skilla) — w kolumnie kontrolek polskie etykiety byłyby ucinane.
+        # „Dopasuj po czasie" jako icon-only (zegar): trzeci przycisk Z TEKSTEM
+        # w tym pasku podnosił minimalną szerokość inspektora 401→443 px
+        # (poziomy pasek przewijania); opis niesie tooltip, jak w transporcie.
+        match_time = QToolButton()
+        match_time.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        match_time.setIconSize(QSize(18, 18))
+        set_kind(match_time, "ghost")
+        match_time.setToolTip(f"{_TR('match_time')} — {_TR('tip_match_time')}")
+        match_time.clicked.connect(self._match_session_by_time)
+        self.match_time_btn = match_time
         idbtns = QHBoxLayout(); idbtns.setContentsMargins(0, 0, 0, 0)
         idbtns.addWidget(fetch_trim, 1); idbtns.addWidget(detect_id_tone, 1)
+        idbtns.addWidget(match_time)
         sec.add_widget_row(_wrap(idbtns))
+
+        # Opcja awaryjna dla nagrań bez czytelnego sygnału ID: zamiast szukać
+        # nagrania ręcznie w kalkulatorze, dopasowujemy po czasie (nazwa DJI /
+        # creation_time / mtime vs start sesji na timerze i chwila zapisu).
+        # Pełna szerokość wiersza (`add_widget_row`), nie kolumna kontrolek —
+        # etykieta w kolumnie przekraczała minimalną szerokość inspektora.
+        self.match_time_chk = QCheckBox(_TR("opt_match_time"))
+        self.match_time_chk.setToolTip(_TR("tip_opt_match_time"))
+        self.match_time_chk.setChecked(
+            QSettings().value("ui/match_by_time", True, type=bool))
+        self.match_time_chk.toggled.connect(
+            lambda on: QSettings().setValue("ui/match_by_time", on))
+        sec.add_widget_row(self.match_time_chk)
 
         self.api_meta_label = QLabel()
         self.api_meta_label.setProperty("role", "muted")
@@ -4228,6 +4302,7 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             info = None
             self._video_size = None
+        self._video_info = info   # cały VideoInfo (duration/creation_time) dla dopasowania po czasie
 
         # Zapamiętane ustawienia dla tego pliku (zastosujemy po analizie audio).
         self._pending_file_settings = config.load_file_settings(path)
@@ -4826,12 +4901,103 @@ class MainWindow(QMainWindow):
 
     def _on_id_tone_detected(self, detected) -> None:
         if detected is None:
+            if self.match_time_chk.isChecked() and self.video_path:
+                # Opcja awaryjna: brak sygnału ID → dopasowanie po czasie nagrania.
+                # Poprzednia operacja właśnie się skończyła (`_end_op` przed
+                # callbackiem), więc slot `_run_op` jest wolny.
+                status_message(self.statusBar(), _TR("status_no_tone_match_time"),
+                               "info", 0)
+                if self._match_session_by_time():
+                    return
             self._notify("input", _TR("msg_no_id_tone"))
             return
         self.id_spin.setValue(detected)
         self._set_source("id")  # render ma użyć sesji z API, nie pola tekstowego
         self._ok(_TR("msg_id_detected").format(detected))
         self._fetch_id_and_trim()
+
+    def _match_session_by_time(self) -> bool:
+        """Dopasowanie nagrania do sesji z kalkulatora PO CZASIE (w tle, sieć).
+
+        T0 ze spinboxa (gdy > 0) zawęża dopasowanie do sekund — bez niego sesja
+        może być gdziekolwiek w nagraniu. `hint_id` = bieżące ID (skraca awaryjny
+        skan po ID na starym serwerze). Zwraca False, gdy inna operacja trwa.
+        """
+        if not self._require_video():
+            return False
+        t0 = self.t0_spin.value()
+        fn = partial(pipeline.find_session_by_time, self.video_path,
+                     t0=t0 if t0 > 0 else None,
+                     info=self._video_info,
+                     hint_id=self.id_spin.value() or None)
+        # busy_text pusty: przycisk jest icon-only, tekst „Dopasowywanie…" wlazłby
+        # obok ikony; komunikat idzie paskiem stanu (`status_text`).
+        return self._run_op(fn, button=self.match_time_btn,
+                            status_text=_TR("busy_match_time"),
+                            on_result=self._on_time_match)
+
+    def _on_time_match(self, result) -> None:
+        if result.recording is None:
+            self._notify("input", _TR("msg_time_match_no_rec"))
+            return
+        start = result.recording.start.strftime("%Y-%m-%d %H:%M:%S")
+        if result.picked is not None:
+            self._apply_time_match(result.picked)
+            return
+        if not result.ambiguous:
+            self._notify("input", _TR("msg_time_match_none").format(
+                start, result.recording.source))
+            return
+        hits = [m for m in result.matches if m.in_window]
+        chosen = self._pick_time_match(hits, start)
+        if chosen is None:
+            self._notify("input", _TR("msg_time_match_cancelled"))
+            return
+        self._apply_time_match(chosen)
+
+    def _apply_time_match(self, m) -> None:
+        """Jak po udanym ID z audio: wpisz ID, przełącz źródło, pobierz i przytnij."""
+        c = m.candidate
+        self.id_spin.setValue(c.id)
+        self._set_source("id")
+        self._ok(_TR("msg_time_matched").format(
+            c.id, c.nazwa_toru or "—", c.uczestnik or "—",
+            _TR(f"time_match_basis_{m.basis}"), f"{m.delta_s:+.0f}"))
+        self._fetch_id_and_trim()
+
+    def _pick_time_match(self, hits, start: str):
+        """Modalny wybór spośród kilku pasujących sesji; None = anulowano."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(_TR("time_match_dialog_title"))
+        dlg.setMinimumWidth(620)
+        lay = QVBoxLayout(dlg)
+        info = QLabel(_TR("msg_time_match_ambiguous").format(start))
+        info.setWordWrap(True)
+        lay.addWidget(info)
+        lst = QListWidget()
+        for m in hits:
+            c = m.candidate
+            item = QListWidgetItem(_TR("time_match_row").format(
+                c.id, c.nazwa_toru or "—", c.uczestnik or "—", c.liczba_strzalow,
+                _fmt_time_s(round(c.czas_bazowy, 2)),
+                _TR(f"time_match_basis_{m.basis}"), f"{m.delta_s:+.0f}"))
+            item.setData(Qt.UserRole, m)
+            lst.addItem(item)
+        lst.setCurrentRow(0)
+        lst.itemDoubleClicked.connect(lambda _i: dlg.accept())
+        lay.addWidget(lst)
+        btns = QHBoxLayout()
+        ok_btn = QPushButton("OK"); set_kind(ok_btn, "primary")
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn = QPushButton("Anuluj"); set_kind(cancel_btn, "ghost")
+        cancel_btn.clicked.connect(dlg.reject)
+        btns.addStretch(1); btns.addWidget(cancel_btn); btns.addWidget(ok_btn)
+        lay.addLayout(btns)
+        dlg.show()
+        _dark_titlebar(dlg)
+        if dlg.exec() != QDialog.Accepted or lst.currentItem() is None:
+            return None
+        return lst.currentItem().data(Qt.UserRole)
 
     def _next_candidate(self):
         """Proponuje kolejny wykryty onset (po aktualnej kotwicy) jako kotwicę."""

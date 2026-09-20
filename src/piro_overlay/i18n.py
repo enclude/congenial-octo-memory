@@ -125,6 +125,76 @@ _STRINGS: dict[str, dict[Lang, str]] = {
                  "w kalkulatorze, pod koniec nagrania. Wpisz ID ręcznie i kliknij „Pobierz”.",
         Lang.EN: "No ID tone found. The tone is played only after the session is saved, "
                  "near the end of the recording. Type the ID manually and click “Fetch”."},
+    # --- dopasowanie sesji po czasie nagrania (gdy brak ID z audio) ---
+    "match_time": {Lang.PL: "Dopasuj po czasie", Lang.EN: "Match by time"},
+    "tip_match_time": {
+        Lang.PL: "Szuka w kalkulatorze sesji zapisanej w czasie tego nagrania. Czas startu "
+                 "nagrania bierze z nazwy pliku DJI (DJI_RRRRMMDDGGMMSS_…), z tagu "
+                 "creation_time albo z daty modyfikacji pliku; po stronie bazy porównuje "
+                 "start sesji na timerze i chwilę zapisu. Znany T0 zawęża dopasowanie do "
+                 "sekund. Jednoznaczne trafienie od razu pobiera sesję i przycina film.",
+        Lang.EN: "Looks up the calculator for a session saved during this recording. The "
+                 "recording start comes from the DJI file name (DJI_YYYYMMDDHHMMSS_…), the "
+                 "creation_time tag or the file's modification time; on the database side "
+                 "the timer session start and the save time are compared. A known T0 "
+                 "narrows the match to seconds. A unique hit fetches the session and trims."},
+    "busy_match_time": {Lang.PL: "Dopasowywanie po czasie…", Lang.EN: "Matching by time…"},
+    "status_no_tone_match_time": {
+        Lang.PL: "Brak ID z audio — dopasowuję po czasie nagrania…",
+        Lang.EN: "No ID tone — matching by recording time…"},
+    "opt_match_time": {
+        Lang.PL: "Brak ID z audio → dopasuj po czasie",
+        Lang.EN: "No ID tone → match by time"},
+    "tip_opt_match_time": {
+        Lang.PL: "Po nieudanym „Wykryj ID z audio” aplikacja sama szuka w kalkulatorze "
+                 "sesji z czasu nagrania (nazwa pliku DJI / creation_time / data pliku "
+                 "vs start sesji na timerze i chwila zapisu). Przy kilku pasujących sesjach "
+                 "pyta, którą wybrać.",
+        Lang.EN: "After a failed “Detect ID from audio” the app looks up the calculator "
+                 "for a session from the recording time (DJI file name / creation_time / "
+                 "file date vs. timer session start and save time). With several matching "
+                 "sessions it asks which one to use."},
+    "msg_time_matched": {
+        Lang.PL: "Dopasowano po czasie: ID {} — {} / {} ({}, Δ {} s)",
+        Lang.EN: "Matched by time: ID {} — {} / {} ({}, Δ {} s)"},
+    "msg_time_match_none": {
+        Lang.PL: "Brak sesji pasującej do czasu nagrania (start {}, źródło: {}). Sesja "
+                 "mogła nie zostać zapisana w kalkulatorze albo zegar kamery/timera jest "
+                 "przestawiony. Wpisz ID ręcznie i kliknij „Pobierz”.",
+        Lang.EN: "No session matches the recording time (start {}, source: {}). The session "
+                 "may not have been saved in the calculator or the camera/timer clock is "
+                 "off. Type the ID manually and click “Fetch”."},
+    "msg_time_match_no_rec": {
+        Lang.PL: "Nie udało się ustalić czasu nagrania. Nazwa pliku nie ma daty "
+                 "(DJI_RRRRMMDDGGMMSS_…), a plik nie ma tagu creation_time ani daty "
+                 "modyfikacji. Wpisz ID ręcznie i kliknij „Pobierz”.",
+        Lang.EN: "Could not determine the recording time. The file name has no date "
+                 "(DJI_YYYYMMDDHHMMSS_…) and the file has no creation_time tag or "
+                 "modification date. Type the ID manually and click “Fetch”."},
+    "msg_time_match_ambiguous": {
+        Lang.PL: "Kilka sesji pasuje do czasu nagrania (start {}). Wybierz właściwą z listy "
+                 "albo anuluj i wpisz ID ręcznie.",
+        Lang.EN: "Several sessions match the recording time (start {}). Pick the right one "
+                 "from the list or cancel and type the ID manually."},
+    "msg_time_match_cancelled": {
+        Lang.PL: "Nie wybrano sesji. Wpisz ID ręcznie i kliknij „Pobierz”.",
+        Lang.EN: "No session chosen. Type the ID manually and click “Fetch”."},
+    "time_match_dialog_title": {Lang.PL: "Sesje pasujące do czasu nagrania",
+                                Lang.EN: "Sessions matching the recording time"},
+    "time_match_basis_timer": {Lang.PL: "start na timerze", Lang.EN: "timer start"},
+    "time_match_basis_saved": {Lang.PL: "chwila zapisu", Lang.EN: "save time"},
+    "time_match_row": {
+        Lang.PL: "ID {} · {} · {} · {} strz. · {} s · {} · Δ {} s",
+        Lang.EN: "ID {} · {} · {} · {} shots · {} s · {} · Δ {} s"},
+    "batch_match_time": {Lang.PL: "bez ID z audio: dopasuj po czasie",
+                         Lang.EN: "no ID tone: match by time"},
+    "batch_match_time_tip": {
+        Lang.PL: "Gdy sygnał ID w audio jest nieczytelny, wiersz dostaje ID sesji "
+                 "dopasowanej po czasie nagrania — tylko przy JEDNOZNACZNYM trafieniu. "
+                 "Sprawdź takie ID przed „Przygotuj wszystkie” (podpowiedź w wierszu).",
+        Lang.EN: "When the ID tone is unreadable, the row gets the ID of the session "
+                 "matched by recording time — only for an UNAMBIGUOUS hit. Check such "
+                 "IDs before “Prepare all” (hint on the row)."},
     "busy_recheck_t0": {Lang.PL: "Sprawdzanie zapisanego T0…",
                         Lang.EN: "Checking the saved T0…"},
     "msg_t0_stale": {

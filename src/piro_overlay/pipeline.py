@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from . import api, audio_sync, ffmpeg, render
+from . import api, audio_sync, ffmpeg, render, session_match
 from .models import AnchorMode, Session
 from .parser import parse_timeline
 
@@ -74,6 +74,33 @@ def detect_id_tone(video: str | Path) -> int | None:
     używa (detekcja T0 na początku).
     """
     return audio_sync.decode_id_tone(str(video))
+
+
+def find_session_by_time(video: str | Path, *, t0: float | None = None,
+                         info: ffmpeg.VideoInfo | None = None,
+                         hint_id: int | None = None) -> session_match.MatchResult:
+    """Dopasowuje nagranie do wpisu w kalkulatorze PO CZASIE (opcja awaryjna, gdy
+    sygnał ID z audio jest nieczytelny) — jedno wejście dla GUI/CLI/wsadu.
+
+    Start nagrania: `session_match.recording_start` (nazwa DJI → `creation_time`
+    → mtime). Kandydaci: `api.find_sessions` (tryb listy — widzi też
+    `timer_sess_id`, więc łapie wpisy wysłane hurtowo z timera), a gdy serwer
+    jeszcze nie ma trybu listy (`ApiUnsupported`) — `api.find_sessions_by_scan`
+    po pojedynczych `?id=` (tylko `data_zapisu`). `t0` (bzyczek) zawęża okno
+    do sekund; bez niego sesja może być gdziekolwiek w nagraniu.
+    `recording=None` w wyniku = nie dało się ustalić czasu nagrania.
+    """
+    info = info or ffmpeg.probe(video)
+    rec = session_match.recording_start(video, info.duration, info.creation_time)
+    if rec is None:
+        return session_match.MatchResult(None, (), None)
+    frm, to, tz_off = session_match.query_window(rec, info.duration)
+    try:
+        cands = api.find_sessions(frm, to, tz_offset_s=tz_off)
+    except api.ApiUnsupported:
+        cands = api.find_sessions_by_scan(frm, to, hint_id=hint_id)
+    matches = session_match.match_sessions(cands, rec, info.duration, t0)
+    return session_match.MatchResult(rec, matches, session_match.pick(matches))
 
 
 def detect_anchor(video: str | Path, start: float | None = None,

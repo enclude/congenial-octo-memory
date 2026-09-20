@@ -123,6 +123,92 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Dopasowanie nagrania do sesji PO CZASIE (v0.60.0)** — opcja awaryjna, gdy sygnał ID
+  z audio jest nieczytelny (brak tonu, telefon za daleko, wiatr): zamiast ręcznie szukać
+  wpisu w `wyniki.php`, aplikacja pyta API o wpisy z okna czasu nagrania. Moduł domenowy
+  `session_match.py` (bez Qt) + `pipeline.find_session_by_time(video, *, t0, info, hint_id)`
+  jako JEDYNE wejście dla GUI/CLI/wsadu (zwraca `MatchResult(recording, matches, picked)`).
+  - **Czas po stronie nagrania** (`recording_start`, kolejność): nazwa pliku DJI
+    `DJI_YYYYMMDDHHMMSS_NNNN_D` = czas LOKALNY kamery (`time_from_filename`, jest też ogólny
+    wzorzec `YYYYMMDD[_]HHMMSS`) → tag kontenera `creation_time` (NOWE pole
+    `ffmpeg.VideoInfo.creation_time`, ffprobe `format_tags` albo regex `_CREATION_RE` na
+    stderr; DJI zapisuje UTC z „Z", naiwny czas traktujemy jako UTC) → mtime pliku (to KONIEC
+    nagrania → minus długość). Pomiar `DJI_20260707180623_0051_D.MP4`: nazwa 18:06:23 CEST,
+    `creation_time` 16:06:24Z, mtime 18:06:59 przy 33 s — trzy źródła zgodne co do sekundy.
+  - **Czas po stronie bazy — DWA komplementarne pola** (`api.SessionCandidate`):
+    `data_zapisu` = UTC (SQLite `CURRENT_TIMESTAMP`; sprawdzone: ID 326 zapisane
+    17:52:12 UTC = 19:52:12 CEST, plik `_0035` startuje 19:51:06 + T0 32 s + 30,5 s sesji)
+    — zawsze obecne, ale to chwila ZAPISU, więc przy hurtowej wysyłce z cache timera pod
+    koniec dnia nie ma nic wspólnego ze strzelaniem; `timer_sess_id` = start sesji NA
+    TIMERZE (unixtime w czasie LOKALNYM urządzenia — `timer_start` skleja go z lokalną strefą,
+    NIE konwertuje z UTC) — dokładny co do sekund, tylko dla wpisów z timera.
+  - **Ocena (`match_sessions`)**: znany T0 → oczekiwany start sesji = start nagrania + T0;
+    bez T0 sesja może być gdziekolwiek w nagraniu (tolerancje + długość nagrania).
+    Kandydat z timera: Δ = start na timerze − oczekiwany start, okno `±TIMER_TOL_S` (45 s).
+    Kandydat tylko z `data_zapisu`: Δ = zapis − (oczekiwany start + `czas_bazowy`), okno
+    `[SAVE_MIN_S=-15, SAVE_MAX_S=300]` — zapis pada PO końcu sesji. Sortowanie: w oknie →
+    timer przed saved → mniejsze |Δ|. **`pick` (jednoznaczność):** jedno trafienie → ono;
+    kilka → timer rozstrzyga nad saved; przy tej samej podstawie najlepszy musi wyprzedzać
+    następnego o `PICK_MARGIN_S` (60 s), inaczej `None` (GUI: dialog wyboru, CLI: lista
+    `--id`). Skąd margines: realne dane — kolejny strzelec zapisuje wynik 40 s – 3 min po
+    poprzednim (ID 327 saved +165 s po 326), więc samo „w oknie 300 s" NIE rozstrzyga,
+    a |Δ| 3 s vs 165 s już tak. Zweryfikowane na żywym API dla `_0035`: picked = 326.
+  - **API (repo `www.piro-kalkulator.pifpaf.fun`, `api.php`)**: NOWY tryb listy
+    `?from=<unix UTC>&to=<unix UTC>&tz_offset=<s>` → `{ok, data:[{id, nazwa_toru, uczestnik,
+    opis, data_zapisu, liczba_strzalow, czas_bazowy, timer_sn, timer_sess_id}]}`; filtr SQL
+    `data_zapisu ∈ [from,to] OR timer_sess_id ∈ [from+tz_offset, to+tz_offset]` (okno ≤ 7 dni,
+    ≤ 200 wierszy, usunięte pomijane); `?id=` zwraca dodatkowo `timer_sn`/`timer_sess_id`.
+    Klient: `api.find_sessions(from_utc, to_utc, tz_offset_s=...)`; okno buduje
+    `session_match.query_window` (−120 s … +długość+420 s). **Stary serwer** (przed `git pull`
+    w katalogu kontenera) odpowiada 400 „Brak … parametru "id"" → `api.ApiUnsupported` →
+    `api.find_sessions_by_scan(from, to, fetch=fetch_candidate, hint_id=...)`: wyszukiwanie
+    BINARNE po ID (AUTOINCREMENT, `data_zapisu` rośnie z ID, usunięte ID nie wracają):
+    podwajanie od `hint_id` do końca bazy (`_SCAN_GAP`=8 sąsiadów mostkuje dziury po
+    usuniętych), binarnie w `[0, hi)` (PUŁAPKA: dolna granica NIE może zostać z podwajania —
+    podpowiedź bywa wyżej niż okno), potem w dół po oknie; limit `_SCAN_MAX_REQUESTS`=150.
+    Pomiar na żywym API: 26–33 żądania, ~1,5 s. Skan widzi TYLKO `data_zapisu` (bez wpisów
+    wysłanych hurtowo) — docelowo tryb listy.
+  - **CLI:** `--match-time` (bez `--id`/`--timeline`): T0 liczony PRZED sesją, więc wymaga
+    `--auto` albo `--t0` (kotwica FIRST_SHOT zależy od osi); niejednoznaczność → `SystemExit`
+    z listą `--id N: tor / uczestnik (podstawa, Δ)`. Testy: `tests/test_session_match.py`
+    (w tym realny przypadek 326/327 i hurtowa wysyłka z `timer_sess_id`), `test_cli.py`,
+    `test_ffmpeg.py` (`creation_time`). Web: NIE zrobione (świadomie — `/detect-id` zostaje
+    bez fallbacku; upload zna nazwę pliku z `X-Filename`, więc można dodać później).
+  - **GUI, okno główne:** `match_time_btn` — `QToolButton` ICON-ONLY (nowa ikona
+    `assets/icons/clock.svg`, fallback „⏱", przemalowywana w `_refresh_icons`) w pasku
+    `idbtns` obok „Pobierz i przytnij"/„Wykryj ID z audio", w `_op_buttons`; checkbox
+    `match_time_chk` „Brak ID z audio → dopasuj po czasie" (`QSettings("ui/match_by_time")`,
+    domyślnie ON) w `add_widget_row` pod paskiem. `_on_id_tone_detected` przy `None` +
+    checkbox → `_match_session_by_time()` (zwraca False, gdy slot `_run_op` zajęty → wtedy
+    stary `msg_no_id_tone`). `_match_session_by_time` → `_run_op(partial(pipeline.
+    find_session_by_time, video, t0=t0_spin>0|None, info=self._video_info, hint_id=id_spin
+    |None), button=match_time_btn, status_text=…)` — BEZ `busy_text` (na icon-only tekst
+    wlazłby obok ikony). NOWE pole `MainWindow._video_info` (cały `VideoInfo` z `probe`
+    w `_set_video`; dotąd trzymano tylko `_video_size`). `_on_time_match`: `picked` →
+    `_apply_time_match` (id_spin → `_set_source("id")` → `msg_time_matched` →
+    `_fetch_id_and_trim()`, jak po udanym ID z audio); `ambiguous` → `_pick_time_match`
+    (modalny `QDialog` + `QListWidget`, wiersz `time_match_row`, dwuklik = OK, `Match`
+    w `Qt.UserRole`, anulowanie → `msg_time_match_cancelled`); brak trafień →
+    `msg_time_match_none` (start nagrania + źródło); brak czasu → `msg_time_match_no_rec`.
+    `_build_cli_command` celowo bez `--match-time`. **PUŁAPKA szerokości inspektora:**
+    baseline `minimumSizeHint` 401 px przy viewport 412 — trzeci przycisk Z TEKSTEM w
+    `idbtns` dawał 443, przycisk w kolumnie kontrolek wiersza „ID" 513, długa etykieta
+    checkboxa w `add_row` 533 (poziomy pasek); icon-only + krótka etykieta w
+    `add_widget_row` wracają do 401.
+  - **GUI, wsad:** checkbox `_match_time_chk` „bez ID z audio: dopasuj po czasie"
+    (`batch_match_time`, `QSettings("ui/batch/match_by_time")`, domyślnie ON) w wierszu
+    „Automat z folderu…". `BatchIdDetectWorker(row_id, video_path, match_time)` — `done`
+    to teraz `Signal(str, object, str)` = `(row_id, id|None, info)`; gdy ton da None,
+    `_match_by_time()` woła `pipeline.find_session_by_time(video)` BEZ T0 (wsad go jeszcze
+    nie zna → okno = całe nagranie) i przyjmuje TYLKO `result.picked`. `info` ląduje
+    w `row.error` jako podpowiedź („ID z dopasowania po czasie: tor / uczestnik (Δ) —
+    sprawdź", „kilka sesji pasuje… — podaj ręcznie", błąd sieci) — `_on_id_detected`
+    ustawia je PO `set_session_id` (bo `_on_id_changed` zeruje `error`); nowa gałąź
+    `BatchRowWidget.update_row` `PENDING and row.error` pokazuje ją w roli `warning`
+    (ręczna zmiana ID czyści). Auto-fetch nadal NIE ma — użytkownik weryfikuje przed
+    „Przygotuj wszystkie". Bez testu Qt (WSL bez PySide6); zrzuty offscreen z `.venv-win`
+    obejrzane, nie w repo.
+
 - **Nadpisanie nazwy toru / uczestnika z API (v0.58.0):** czysta funkcja
   `pipeline.apply_meta_override(session, nazwa_toru, uczestnik)` — puste/białe znaki =
   zostaw wartość z sesji (z API), niepuste = `replace(...)` po `strip()`. ŚWIADOMIE bez
