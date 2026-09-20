@@ -1090,7 +1090,8 @@ class BatchIdDetectWorker(QThread):
     wtedy None i wiersz wraca do „podaj ID". (Pułapki QThread jak w
     `BatchPrepWorker`: worker trzymany do `finished`.)
     """
-    done = Signal(str, object, str)   # (row_id, int | None, info: "" | opis dopasowania po czasie)
+    # (row_id, int | None, info: "" | opis dopasowania po czasie, source: "tone" | "time" | "")
+    done = Signal(str, object, str, str)
 
     def __init__(self, row_id: str, video_path: str, match_time: bool = False):
         super().__init__()
@@ -1104,9 +1105,12 @@ class BatchIdDetectWorker(QThread):
         except Exception:  # noqa: BLE001
             detected = None
         info = ""
+        source = "tone" if detected is not None else ""
         if detected is None and self.match_time:
             detected, info = self._match_by_time()
-        self.done.emit(self.row_id, detected, info)
+            if detected is not None:
+                source = "time"
+        self.done.emit(self.row_id, detected, info, source)
 
     def _match_by_time(self) -> tuple[int | None, str]:
         """Opcja awaryjna: sesja dopasowana po czasie nagrania (bez T0 — wsad go
@@ -1151,6 +1155,7 @@ class BatchRow:
     session_id: int = 0
     prep:       dict | None = None     # wynik BatchPrepWorker
     error:      str = ""
+    id_source:  str = ""               # "tone" (sygnał audio) | "time" (dopasowanie po czasie) | "" (ręcznie)
 
 
 class BatchRowWidget(QWidget):
@@ -1158,6 +1163,7 @@ class BatchRowWidget(QWidget):
     remove_requested  = Signal(str)
     play_requested    = Signal(str)
     prepare_requested = Signal(str)   # „Pobierz" — przygotuj TEN wiersz (fetch+T0)
+    redetect_requested = Signal(str)  # „Wykryj ponownie" — reset wiersza + detekcja od zera
     id_changed        = Signal(str, int)
 
     _STATUS_ROLES = {
@@ -1172,6 +1178,7 @@ class BatchRowWidget(QWidget):
     def __init__(self, row: BatchRow, parent=None):
         super().__init__(parent)
         self._row_id = row.id
+        self._id_source = ""
         self._name_full = Path(row.video_path).name
         lay = QHBoxLayout(self)
         lay.setContentsMargins(4, 2, 4, 2)
@@ -1200,6 +1207,12 @@ class BatchRowWidget(QWidget):
             lambda v: self.id_changed.emit(self._row_id, v))
         lay.addWidget(self._id_spin)
 
+        # skąd jest ID: sygnał audio (detect) / dopasowanie po czasie (clock) / ręcznie (puste)
+        self._src_icon = QLabel()
+        self._src_icon.setFixedSize(18, 18)
+        self._src_icon.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self._src_icon)
+
         self._info = QLabel("")
         self._info.setMinimumWidth(190)
         self._info.setProperty("role", "muted")
@@ -1215,6 +1228,17 @@ class BatchRowWidget(QWidget):
         self._prep_btn.setToolTip("Pobierz z API i przygotuj ten plik (T0 + przycięcie)")
         self._prep_btn.clicked.connect(lambda: self.prepare_requested.emit(self._row_id))
         lay.addWidget(self._prep_btn)
+
+        self._redetect_btn = QToolButton()
+        self._redetect_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self._redetect_btn.setIconSize(QSize(16, 16))
+        _apply_icon(self._redetect_btn, "loop", 16, "↻")
+        set_kind(self._redetect_btn, "ghost")
+        self._redetect_btn.setToolTip(
+            "Wykryj ponownie — wyzeruj ID i przygotowanie, odczytaj ID z audio od nowa "
+            "(jak przy pierwszym dodaniu pliku)")
+        self._redetect_btn.clicked.connect(lambda: self.redetect_requested.emit(self._row_id))
+        lay.addWidget(self._redetect_btn)
 
         self._play_btn = QToolButton()
         self._play_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
@@ -1237,8 +1261,29 @@ class BatchRowWidget(QWidget):
         self.update_row(row)
         self._update_elided_name()
 
+    _ID_SOURCE_ICONS = {
+        "tone": ("detect", "🔊", "ID odczytane z sygnału tonowego w audio"),
+        "time": ("clock", "⏱", "ID z dopasowania po czasie nagrania — sprawdź"),
+    }
+
+    def _set_source_icon(self, source: str) -> None:
+        spec = self._ID_SOURCE_ICONS.get(source)
+        if spec is None:
+            self._src_icon.clear()
+            self._src_icon.setToolTip("")
+            return
+        name, glyph, tip = spec
+        ic = ui_theme.icon(name, size=16)
+        if ic.isNull():
+            self._src_icon.setText(glyph)
+        else:
+            self._src_icon.setPixmap(ic.pixmap(16, 16))
+        self._src_icon.setToolTip(tip)
+
     def refresh_icon(self) -> None:
+        self._set_source_icon(self._id_source)
         _apply_icon(self._prep_btn, "download", 16, "⤓")
+        _apply_icon(self._redetect_btn, "loop", 16, "↻")
         _apply_icon(self._play_btn, "play-file", 16, "▶")
         _apply_icon(self._del_btn, "close", 16, "✕")
 
@@ -1255,21 +1300,38 @@ class BatchRowWidget(QWidget):
         """Ustawia ID w spinboxie (wyemituje `id_changed` → aktualizacja wiersza)."""
         self._id_spin.setValue(value)
 
+    def set_session_id_silent(self, value: int) -> None:
+        """Jak `set_session_id`, ale bez `id_changed` (wywołujący sam ustawił `row`)."""
+        self._id_spin.blockSignals(True)
+        try:
+            self._id_spin.setValue(value)
+        finally:
+            self._id_spin.blockSignals(False)
+
     def update_row(self, row: BatchRow) -> None:
         self._status_icon.set_role(self._STATUS_ROLES.get(row.status, "muted"))
+        self._id_source = row.id_source
+        self._set_source_icon(row.id_source)
         busy = row.status in _BATCH_BUSY
         self._id_spin.setEnabled(not busy)
         self._del_btn.setEnabled(not busy)
+        self._redetect_btn.setEnabled(not busy)
         # FAILED też — ponowna próba jednego pliku bez „Przygotuj wszystkie"
         self._prep_btn.setEnabled(
             row.status in (BatchRowStatus.PENDING, BatchRowStatus.FAILED)
             and row.session_id > 0)
         if row.status == BatchRowStatus.READY and row.prep:
             p = row.prep
-            self._info.setText(
-                f"T0={p['t0']:.2f}s · przyc. {p['trim_start']:.1f}–{p['trim_end']:.1f}s")
+            # Metadane z API obok liczb: w wierszu jest na to miejsce, a bez nich
+            # nie widać, CZYJĄ sesję pobrało wpisane ręcznie (lub odczytane) ID.
+            sess = p.get("session")
+            meta = " · ".join(x for x in (
+                getattr(sess, "nazwa_toru", None), getattr(sess, "uczestnik", None)) if x)
+            shots = f"{sess.total_shots} strz." if sess is not None else ""
+            tech = f"T0={p['t0']:.2f}s · przyc. {p['trim_start']:.1f}–{p['trim_end']:.1f}s"
+            self._info.setText(" · ".join(x for x in (meta, shots, tech) if x))
             set_role(self._info, "success")
-            self._info.setToolTip("")
+            self._info.setToolTip("\n".join(x for x in (meta, shots, tech) if x))
         elif row.status == BatchRowStatus.FAILED:
             self._info.setText(f"błąd: {row.error}")
             set_role(self._info, "danger")
@@ -1561,6 +1623,7 @@ class BatchDialog(QWidget):
         w.remove_requested.connect(self._remove_row)
         w.play_requested.connect(self._play_row)
         w.prepare_requested.connect(self._prepare_row)
+        w.redetect_requested.connect(self._redetect_row)
         w.id_changed.connect(self._on_id_changed)
         self._row_widgets[row.id] = w
         self._list_layout.insertWidget(self._list_layout.count() - 1, w)
@@ -1676,6 +1739,7 @@ class BatchDialog(QWidget):
         if row.status in (BatchRowStatus.READY, BatchRowStatus.FAILED):
             row.prep = None
         row.error = ""
+        row.id_source = ""      # ręczna edycja = ID od użytkownika, nie z detekcji
         row.status = BatchRowStatus.PENDING if value > 0 else BatchRowStatus.NEEDS_ID
         self._sync_row(row)
         self._refresh()
@@ -1796,18 +1860,43 @@ class BatchDialog(QWidget):
             return
         self._auto_total = len(todo)   # licznik etapu w pasku stanu („3/12")
         for row in todo:
-            row.status = BatchRowStatus.DETECTING
-            row.error = ""
-            self._sync_row(row)
-            worker = BatchIdDetectWorker(row.id, row.video_path,
-                                         match_time=self._match_time_chk.isChecked())
-            worker.done.connect(self._on_id_detected)
-            worker.finished.connect(lambda rid=row.id: self._finish_worker(rid))
-            self._workers[row.id] = worker
-            worker.start()
+            self._start_detect(row)
         self._refresh()
 
-    def _on_id_detected(self, row_id: str, detected: object, info: str = "") -> None:
+    def _start_detect(self, row: BatchRow) -> None:
+        row.status = BatchRowStatus.DETECTING
+        row.error = ""
+        self._sync_row(row)
+        worker = BatchIdDetectWorker(row.id, row.video_path,
+                                     match_time=self._match_time_chk.isChecked())
+        worker.done.connect(self._on_id_detected)
+        worker.finished.connect(lambda rid=row.id: self._finish_worker(rid))
+        self._workers[row.id] = worker
+        worker.start()
+
+    def _redetect_row(self, row_id: str) -> None:
+        """„Wykryj ponownie": wiersz wraca do stanu jak po dodaniu (bez ID, bez
+        przygotowania, bez pochodzenia) i od razu rusza detekcja ID z audio
+        (+ dopasowanie po czasie wg checkboxa) — jak przy pierwszym dodaniu."""
+        row = self._rows.get(row_id)
+        if row is None or row.status in _BATCH_BUSY or row.id in self._workers:
+            return
+        row.prep = None
+        row.error = ""
+        row.id_source = ""
+        row.session_id = 0
+        row.status = BatchRowStatus.NEEDS_ID
+        if w := self._row_widgets.get(row_id):
+            # spinbox → _on_id_changed odrzuciłby wartość przy DETECTING, więc
+            # zerujemy PRZED startem workera i blokujemy sygnał (row już ma 0)
+            w.set_session_id_silent(0)
+        self._auto_total = 1 + sum(1 for r in self._rows.values()
+                                   if r.status == BatchRowStatus.DETECTING)
+        self._start_detect(row)
+        self._refresh()
+
+    def _on_id_detected(self, row_id: str, detected: object, info: str = "",
+                        source: str = "") -> None:
         row = self._rows.get(row_id)
         if row is None:
             return
@@ -1818,16 +1907,18 @@ class BatchDialog(QWidget):
             row.error = info or "nie wykryto ID — podaj ręcznie"
             self._sync_row(row)
         elif w := self._row_widgets.get(row_id):
-            w.set_session_id(int(detected))   # → _on_id_changed → PENDING (czyści error)
+            w.set_session_id(int(detected))   # → _on_id_changed → PENDING (czyści error i źródło)
+            row.id_source = source
             if info:
                 # ID z dopasowania po czasie: podpowiedź zostaje w wierszu, żeby
                 # użytkownik sprawdził je przed „Przygotuj wszystkie"
                 row.error = info
-                self._sync_row(row)
+            self._sync_row(row)
         else:
             row.session_id = int(detected)
             row.status = BatchRowStatus.PENDING
             row.error = info
+            row.id_source = source
         self._refresh()
 
     # --- przygotowanie (fetch + detekcja T0) ---
@@ -6704,7 +6795,13 @@ def _screenshot_helper_window(win: "MainWindow", kind: str,
             row.status = status
             row.error = error
             if status == BatchRowStatus.READY:
-                row.prep = {"t0": 3.42, "trim_start": 0.0, "trim_end": 45.2}
+                row.id_source = "tone"
+                row.prep = {"t0": 3.42, "trim_start": 0.0, "trim_end": 45.2,
+                            "session": Session(shots=[Shot(1, 1.5), Shot(2, 2.6, 1.1)],
+                                               nazwa_toru="Tor 3 — Bill drill",
+                                               uczestnik="Jan K.")}
+            if status == BatchRowStatus.FAILED:
+                row.id_source = "time"
             bwin._sync_row(row)
         bwin._refresh()
         bwin.resize(820, 720)

@@ -123,6 +123,23 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Wsad: metadane z API, pochodzenie ID i „Wykryj ponownie” (v0.62.0)** — trzy prośby
+  z użycia na zawodach 2026-09-20 (okno wsadu jest szerokie, wiersz miał puste miejsce):
+  (1) wiersz `READY` pokazuje `nazwa_toru · uczestnik · N strz. · T0=… · przyc. …` z
+  `row.prep["session"]` (BatchPrepWorker zawsze niósł `Session`, nikt go nie wyświetlał);
+  pełny tekst w tooltipie, bo przy węższym oknie etykieta się ucina. (2) `BatchRow.id_source`
+  = `"tone"` / `"time"` / `""` (ręcznie) — `BatchIdDetectWorker.done` niesie 4. argument
+  `source`; ikona `QLabel` `_src_icon` między spinboxem ID a info (`detect.svg` = sygnał
+  audio, `clock.svg` = dopasowanie po czasie, puste = ręcznie; fallback glify 🔊/⏱),
+  przemalowywana w `refresh_icon`. PUŁAPKA: `_on_id_detected` ustawia `id_source` PO
+  `set_session_id`, bo `_on_id_changed` zeruje je (każda zmiana spinboxa = ręczne ID).
+  (3) `_redetect_btn` (`loop.svg`, „↻”) → `_redetect_row`: reset wiersza do stanu jak po
+  dodaniu (`prep=None`, `error=""`, `id_source=""`, `session_id=0`, `NEEDS_ID`) i
+  `_start_detect(row)` (wyciągnięte z `_detect_ids`, honoruje checkbox dopasowania po
+  czasie). Spinbox zerowany przez NOWE `set_session_id_silent` (bez `id_changed`) —
+  zwykłe `set_session_id` przy `DETECTING` odbiłoby się od guarda `_BATCH_BUSY`.
+  Aktywny zawsze poza `_BATCH_BUSY` (także dla READY — „przygotuj od zera”).
+
 - **Wsad: „Pobierz” per wiersz (v0.61.0):** po RĘCZNYM wpisaniu ID wiersz pokazywał tylko
   „gotowe do przygotowania” i trzeba było klikać „Przygotuj wszystkie” (feedback z użycia).
   `BatchRowWidget._prep_btn` — `QToolButton` icon-only (`download.svg`, fallback „⤓”) przed
