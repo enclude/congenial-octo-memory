@@ -123,6 +123,16 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Wsad: zmienne w prefiksie/sufiksie nazwy (v0.64.0):** `pipeline.expand_name_template(
+  template, session, session_id)` podstawia `{id}`, `{uczestnik}`, `{tor}`, `{strzaly}`,
+  `{czas}` (czas bazowy, kropka → `_`), `{hf}`; lista w `NAME_TEMPLATE_VARS`. Nieznane `{x}`
+  zostają dosłownie (literówka nie wywala wsadu). Wartości przez
+  `pipeline.sanitize_filename_part` (PRZENIESIONE z gui.py; w gui zostaje alias
+  `_sanitize_filename_part`) — diakrytyki → ASCII, białe znaki → `_`, znaki zabronione
+  usunięte. Zastąpiło checkbox „Dodaj informacje o uczestniku” (= sufiks
+  `_PiRoOverlay_{id}_{uczestnik}`); pola pamiętane w `QSettings("ui/batch/prefix"/"suffix")`,
+  pod nimi etykieta `muted` z listą zmiennych, tooltip z opisem. Testy w `tests/test_pipeline.py`.
+
 - **Wsad: metadane z API, pochodzenie ID i „Wykryj ponownie” (v0.62.0)** — trzy prośby
   z użycia na zawodach 2026-09-20 (okno wsadu jest szerokie, wiersz miał puste miejsce):
   (1) wiersz `READY` pokazuje `nazwa_toru · uczestnik · N strz. · T0=… · przyc. …` z

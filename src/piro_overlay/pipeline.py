@@ -7,6 +7,8 @@ HTTP) należą do warstw wejścia; tu tylko wartości i `PipelineError`.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import replace
 from pathlib import Path
 
@@ -74,6 +76,55 @@ def detect_id_tone(video: str | Path) -> int | None:
     używa (detekcja T0 na początku).
     """
     return audio_sync.decode_id_tone(str(video))
+
+
+_POLISH_MAP = str.maketrans({
+    "ł": "l", "Ł": "L", "đ": "d", "Đ": "D", "ø": "o", "Ø": "O",
+})
+_FORBIDDEN_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def sanitize_filename_part(text: str) -> str:
+    """Tekst (np. nazwa uczestnika) → bezpieczny fragment nazwy pliku.
+
+    Diakrytyki → ASCII (Jarosław → Jaroslaw), białe znaki → „_", znaki
+    niedozwolone w nazwach Windows/Unix usunięte, kropki brzegowe zdjęte.
+    "" gdy nic nie zostaje.
+    """
+    if not text:
+        return ""
+    text = text.translate(_POLISH_MAP)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = text.encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"\s+", "_", text.strip())
+    text = _FORBIDDEN_RE.sub("", text)
+    return text.strip(". ")
+
+
+# Zmienne szablonu nazwy pliku (prefiks/sufiks we wsadzie). Nieznane `{x}` zostają
+# dosłownie — ktoś może chcieć nawiasów w nazwie, a literówka nie może wywalić wsadu.
+NAME_TEMPLATE_VARS = ("id", "uczestnik", "tor", "strzaly", "czas", "hf")
+_VAR_RE = re.compile(r"\{(" + "|".join(NAME_TEMPLATE_VARS) + r")\}")
+
+
+def expand_name_template(template: str, session: Session | None,
+                         session_id: int | None) -> str:
+    """Podstawia `{id}`, `{uczestnik}`, `{tor}`, `{strzaly}`, `{czas}` (czas bazowy),
+    `{hf}` (hit factor) — wartości sanityzowane; brak danych → pusty tekst."""
+    if "{" not in template:
+        return template
+    czas = session.base_time if session else None
+    values = {
+        "id": str(session_id) if session_id else "",
+        "uczestnik": sanitize_filename_part((session.uczestnik or "") if session else ""),
+        "tor": sanitize_filename_part((session.nazwa_toru or "") if session else ""),
+        "strzaly": str(session.total_shots) if session and session.total_shots else "",
+        "czas": f"{czas:.2f}".replace(".", "_") if czas is not None else "",
+        "hf": (f"{session.hit_factor:.2f}".replace(".", "_")
+               if session and session.hit_factor is not None else ""),
+    }
+    return _VAR_RE.sub(lambda m: values[m.group(1)], template)
 
 
 def find_session_by_time(video: str | Path, *, t0: float | None = None,

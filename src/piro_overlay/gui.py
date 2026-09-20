@@ -1363,30 +1363,7 @@ class BatchRowWidget(QWidget):
             self._info.setToolTip("")
 
 
-_POLISH_MAP = str.maketrans({
-    "ł": "l", "Ł": "L", "đ": "d", "Đ": "D", "ø": "o", "Ø": "O",
-})
-
-
-def _sanitize_filename_part(text: str) -> str:
-    """Zamienia tekst (np. nazwę uczestnika) na bezpieczny fragment nazwy pliku.
-
-    Polskie/diakrytyczne znaki → ASCII (Jarosław → Jaroslaw), spacje → „_",
-    odrzuca znaki niedozwolone w nazwach plików Windows/Unix. Zwraca "" gdy po
-    sanityzacji nic nie zostaje.
-    """
-    if not text:
-        return ""
-    text = text.translate(_POLISH_MAP)
-    # NFKD rozkłada litery z diakrytykami na bazę + znak łączący; usuwamy te drugie.
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(c for c in text if not unicodedata.combining(c))
-    text = text.encode("ascii", "ignore").decode("ascii")
-    # spacje/białe znaki → podkreślenie; usuń znaki niedozwolone i kropki brzegowe.
-    text = re.sub(r"\s+", "_", text.strip())
-    text = re.sub(r'[<>:"/\\|?*]+', "", text)
-    text = re.sub(r"[^A-Za-z0-9._-]+", "", text)
-    return text.strip("._-")
+_sanitize_filename_part = pipeline.sanitize_filename_part   # domena; alias dla starych wywołań
 
 
 class BatchDialog(QWidget):
@@ -1496,17 +1473,33 @@ class BatchDialog(QWidget):
         self._out_dir = PathField(mode="dir", placeholder="np. D:\\rendery")
         opts.add_row("Katalog docelowy", self._out_dir)
 
-        self._prefix_edit = QLineEdit("")
+        # Prefiks/sufiks to SZABLONY: {id} {uczestnik} {tor} {strzaly} {czas} {hf}
+        # (pipeline.expand_name_template) — zastąpiły checkbox „Dodaj informacje
+        # o uczestniku" (= sufiks „_PiRoOverlay_{id}_{uczestnik}"). Pamięć w QSettings.
+        vars_tip = ("Zmienne: " + " ".join(f"{{{v}}}" for v in pipeline.NAME_TEMPLATE_VARS)
+                    + "\n{id} = ID sesji, {uczestnik}/{tor} z API (diakrytyki → ASCII, "
+                    "spacje → _), {strzaly} = liczba strzałów, {czas} = czas bazowy, "
+                    "{hf} = hit factor.\nPrzykład sufiksu: _PiRoOverlay_{id}_{uczestnik}")
+        self._prefix_edit = QLineEdit(QSettings().value("ui/batch/prefix", "", type=str))
+        self._prefix_edit.setPlaceholderText("np. {tor}_")
+        self._prefix_edit.setToolTip(vars_tip)
+        self._prefix_edit.textChanged.connect(
+            lambda t: QSettings().setValue("ui/batch/prefix", t))
         opts.add_row("Prefiks nazwy", self._prefix_edit)
 
-        self._suffix_edit = QLineEdit("_PiRoOverlay")
+        self._suffix_edit = QLineEdit(
+            QSettings().value("ui/batch/suffix", "_PiRoOverlay", type=str))
+        self._suffix_edit.setPlaceholderText("np. _PiRoOverlay_{id}_{uczestnik}")
+        self._suffix_edit.setToolTip(vars_tip)
+        self._suffix_edit.textChanged.connect(
+            lambda t: QSettings().setValue("ui/batch/suffix", t))
         opts.add_row("Sufiks nazwy", self._suffix_edit)
 
-        self._participant_chk = QCheckBox("Dodaj informacje o uczestniku")
-        self._participant_chk.setToolTip(
-            "Po sufiksie doda do nazwy pliku ID sesji oraz nazwę uczestnika "
-            "(znaki diakrytyczne sanityzowane, np. Jarosław → Jaroslaw).")
-        opts.add_row("", self._participant_chk)
+        vars_lbl = QLabel("Zmienne w prefiksie/sufiksie: "
+                          + " ".join(f"{{{v}}}" for v in pipeline.NAME_TEMPLATE_VARS))
+        vars_lbl.setProperty("role", "muted")
+        vars_lbl.setToolTip(vars_tip)
+        opts.add_row("", vars_lbl)
 
         self._format_combo = QComboBox()
         for label, val in (("MP4 (H.264)", "mp4"), ("WebM (VP9)", "webm"),
@@ -2000,7 +1993,6 @@ class BatchDialog(QWidget):
         ext = _FORMAT_EXT.get(fmt, ".mp4")
         prefix = self._prefix_edit.text()
         suffix = self._suffix_edit.text()
-        add_participant = self._participant_chk.isChecked()
         no_overlay = not self._overlay_chk.isChecked()
         style = replace(self._base_style,
                         show_running_clock=self._clock_chk.isChecked())
@@ -2010,14 +2002,10 @@ class BatchDialog(QWidget):
         for row in ready:
             p = row.prep
             session = p["session"]
-            extra = ""
-            if add_participant:
-                extra = f"_{row.session_id}"
-                part = _sanitize_filename_part(session.uczestnik or "")
-                if part:
-                    extra += f"_{part}"
-            out_path = out_dir / (prefix + Path(row.video_path).stem
-                                  + suffix + extra + ext)
+            out_path = out_dir / (
+                pipeline.expand_name_template(prefix, session, row.session_id)
+                + Path(row.video_path).stem
+                + pipeline.expand_name_template(suffix, session, row.session_id) + ext)
             t0 = audio_sync.resolve_t0(p["t0"], AnchorMode.START_SIGNAL,
                                        session.shots[0].czas)
             kwargs = dict(

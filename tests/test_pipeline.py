@@ -186,3 +186,24 @@ def test_scan_video_dir_rejects_non_directory(tmp_path):
     f.write_bytes(b"x")
     with pytest.raises(pipeline.PipelineError):
         pipeline.scan_video_dir(f)
+
+
+def test_sanitize_filename_part():
+    from piro_overlay.pipeline import sanitize_filename_part as f
+    assert f("Jarosław Zjawiński") == "Jaroslaw_Zjawinski"
+    assert f('ŁUKASZ W.') == "LUKASZ_W"
+    assert f("a/b:c*d?") == "abcd"
+    assert f("   ") == "" and f("") == ""
+
+
+def test_expand_name_template_variables_and_unknown_kept():
+    from piro_overlay.models import Session, Shot
+    from piro_overlay.pipeline import expand_name_template as x
+    s = Session(shots=[Shot(1, 1.0), Shot(2, 2.5, 1.5)], nazwa_toru="Tor 3 — Bill drill",
+                uczestnik="Jarosław Z.", liczba_strzalow=2, czas_bazowy=30.52, hit_factor=3.1)
+    assert x("_PiRoOverlay_{id}_{uczestnik}", s, 326) == "_PiRoOverlay_326_Jaroslaw_Z"
+    assert x("{tor}_{strzaly}_{czas}_{hf}", s, 326) == "Tor_3_Bill_drill_2_30_52_3_10"
+    assert x("{nieznane}_{id}", s, 7) == "{nieznane}_7"
+    assert x("_PiRoOverlay", s, 1) == "_PiRoOverlay"
+    # brak sesji / ID → puste podstawienia, szablon nie wybucha
+    assert x("{id}_{uczestnik}_{czas}", None, None) == "__"
