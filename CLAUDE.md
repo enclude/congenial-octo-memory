@@ -172,14 +172,21 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
     NIE konwertuje z UTC) — dokładny co do sekund, tylko dla wpisów z timera.
   - **Ocena (`match_sessions`)**: znany T0 → oczekiwany start sesji = start nagrania + T0;
     bez T0 sesja może być gdziekolwiek w nagraniu (tolerancje + długość nagrania).
-    Kandydat z timera: Δ = start na timerze − oczekiwany start, okno `±TIMER_TOL_S` (120 s —
-    zegar timera z 2026-09-20 szedł ~1 min do przodu względem serwera; v0.60.1).
+    Kandydat z timera: Δ = start na timerze − oczekiwany start, okno `±TIMER_TOL_S` (150 s — obejmuje zmierzony dryf 110 s, a 327 przy +165 s w przypadku `_0035` zostaje poza oknem).
+    **Dryf zegara timera (v0.62.1, dane z zawodów 2026-09-20):** 2026-08-12 timer zgadzał się
+    z kamerą co do 2 s, 2026-09-20 szedł ~110 s do przodu (sesje 350–360 mają `data_zapisu`
+    PRZED startem na timerze — fizycznie niemożliwe bez dryfu), a po południu znów ~0 (zegar
+    zsynchronizowany po reconnect). Skutek: bliższy |Δ| wskazywał SĄSIEDNIĄ sesję (nagranie
+    0003: 343 przy Δ+49, właściwe 344 przy Δ+111). Dlatego `pick` przy DWU kandydatach z
+    timera w oknie ZAWSZE zwraca None (dialog z nazwiskami / wsad „podaj ręcznie”), a margines
+    `PICK_MARGIN_S` obowiązuje tylko dla `data_zapisu` (zegar serwera). Pomysł na później:
+    estymacja offsetu zegara z całej partii (rzędy z ID z tonu = kalibracja) — NIE zrobione.
     Kandydat tylko z `data_zapisu`: Δ = zapis − (oczekiwany start + `czas_bazowy`), okno
     `[SAVE_MIN_S=-15, SAVE_MAX_S=300]` — zapis pada PO końcu sesji. Sortowanie: w oknie →
     timer przed saved → mniejsze |Δ|. **`pick` (jednoznaczność):** jedno trafienie → ono;
-    kilka → timer rozstrzyga nad saved; przy tej samej podstawie najlepszy musi wyprzedzać
-    następnego o `PICK_MARGIN_S` (60 s), inaczej `None` (GUI: dialog wyboru, CLI: lista
-    `--id`). Skąd margines: realne dane — kolejny strzelec zapisuje wynik 40 s – 3 min po
+    kilka → jeden kandydat z timera rozstrzyga nad saved, dwa z timera = None (dryf, wyżej);
+    same saved: najlepszy musi wyprzedzać następnego o `PICK_MARGIN_S` (60 s), inaczej `None`
+    (GUI: dialog wyboru, CLI: lista `--id`). Skąd margines: realne dane — kolejny strzelec zapisuje wynik 40 s – 3 min po
     poprzednim (ID 327 saved +165 s po 326), więc samo „w oknie 300 s" NIE rozstrzyga,
     a |Δ| 3 s vs 165 s już tak. Zweryfikowane na żywym API dla `_0035`: picked = 326.
   - **API (repo `www.piro-kalkulator.pifpaf.fun`, `api.php`)**: NOWY tryb listy

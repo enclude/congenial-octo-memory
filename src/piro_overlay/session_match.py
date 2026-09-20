@@ -27,10 +27,11 @@ from pathlib import Path
 from .api import SessionCandidate
 
 # start sesji na timerze poprzedza bzyczek (T0) o `start_delay` (~1–2 s) i klik
-# „Start" — tolerancja szeroka, bo zegar timera bywa ustawiony z grubsza: sesje
-# z 2026-09-20 miały start na timerze ~1 min PO data_zapisu (zegar timera ~1 min
-# do przodu względem serwera), kamera może dryfować podobnie
-TIMER_TOL_S = 120.0
+# „Start" — ale zegar timera DRYFUJE: 2026-08-12 zgadzał się z kamerą co do 2 s,
+# 2026-09-20 szedł ~110 s do przodu (sesje 350–360 mają data_zapisu PRZED startem
+# na timerze), a po południu znów ~0. Stąd szerokie okno i brak auto-wyboru, gdy
+# w oknie jest więcej niż jeden kandydat z timera (patrz `pick`).
+TIMER_TOL_S = 150.0
 # zapis w bazie pada PO końcu sesji: od razu (timer „Zapisz w bazie") do kilku minut
 # (ręczne wpisanie do kalkulatora między strzelcami)
 SAVE_MIN_S = -15.0
@@ -178,8 +179,11 @@ def pick(matches: tuple[Match, ...]) -> Match | None:
     """Jednoznaczne trafienie albo None (użytkownik wybiera z listy).
 
     Jedno trafienie w oknie → ono. Kilka → wygrywa timer nad `data_zapisu`
-    (dokładniejszy), a przy tej samej podstawie najlepszy musi być wyraźnie
-    bliżej niż następny (`PICK_MARGIN_S`); inaczej niejednoznaczne.
+    (odporny na hurtową wysyłkę), ale DWA kandydaci z timera w oknie = zawsze
+    niejednoznaczne: przy dryfie zegara timera o ~2 min (realne, 2026-09-20)
+    bliższy |Δ| wskazywał SĄSIEDNIĄ sesję (0003 → 343 zamiast 344), więc bliskość
+    nic tu nie dowodzi. Dla `data_zapisu` (zegar serwera, wiarygodny) zostaje
+    reguła marginesu `PICK_MARGIN_S`.
     """
     hits = [m for m in matches if m.in_window]
     if not hits:
@@ -187,10 +191,9 @@ def pick(matches: tuple[Match, ...]) -> Match | None:
     if len(hits) == 1:
         return hits[0]
     timer_hits = [m for m in hits if m.basis == "timer"]
-    pool = timer_hits or hits            # timer rozstrzyga, gdy jest choć jeden
-    if len(pool) == 1:
-        return pool[0]
-    best, second = pool[0], pool[1]      # posortowane po |delta| w match_sessions
+    if timer_hits:
+        return timer_hits[0] if len(timer_hits) == 1 else None
+    best, second = hits[0], hits[1]      # posortowane po |delta| w match_sessions
     if abs(second.delta_s) - abs(best.delta_s) >= PICK_MARGIN_S:
         return best
     return None

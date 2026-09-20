@@ -120,12 +120,42 @@ Write-Host "Installing dependencies ..." -ForegroundColor Cyan
 & $venvPy -m pip install pyinstaller
 
 # 4. Build
+$exe = Join-Path "dist" "PiroOverlay.exe"
+
+# A running PiroOverlay.exe (or an antivirus scan) locks dist\PiroOverlay.exe and
+# PyInstaller dies with "PermissionError: [WinError 5]" at os.remove() - AFTER the
+# heavy analysis. Fail fast, with a clear reason, before spending minutes on it.
+$running = Get-Process -Name "PiroOverlay" -ErrorAction SilentlyContinue
+if ($running) {
+    throw ("PiroOverlay.exe is running (PID {0}). Close the application and run the " +
+           "build again - PyInstaller cannot overwrite a locked dist\PiroOverlay.exe." -f
+           (($running | ForEach-Object { $_.Id }) -join ", "))
+}
+if (Test-Path $exe) {
+    try {
+        $fs = [System.IO.File]::Open((Resolve-Path $exe).Path, 'Open', 'ReadWrite', 'None')
+        $fs.Close()
+    } catch {
+        throw "dist\PiroOverlay.exe is locked by another process (antivirus? open Explorer preview?). Close it and retry."
+    }
+}
+$stale = if (Test-Path $exe) { (Get-Item $exe).LastWriteTime } else { $null }
+
 Write-Host "Building PiroOverlay.exe ..." -ForegroundColor Cyan
 & $venvPy -m PyInstaller build_exe.spec --noconfirm
+# `& exe` does not stop the script on a non-zero exit even with $ErrorActionPreference =
+# "Stop" - without this check a failed build fell through to the copy step and
+# "Done: PiroOverlay_v<new>_....exe" was a copy of the PREVIOUS build (real case:
+# v0.62.0 file with the size and timestamp of the v0.61.0 build).
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller failed (exit code $LASTEXITCODE) - see the traceback above. No .exe was produced."
+}
 
-$exe = Join-Path "dist" "PiroOverlay.exe"
 if (-not (Test-Path $exe)) {
     throw "Build finished, but $exe was not found."
+}
+if ($stale -and (Get-Item $exe).LastWriteTime -le $stale) {
+    throw "dist\PiroOverlay.exe was not rewritten by this build (still dated $stale)."
 }
 
 if ($ts) {

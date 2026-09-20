@@ -119,13 +119,18 @@ def test_pick_none_when_ambiguous_or_empty():
     assert not sm.MatchResult(REC, (), None).ambiguous
 
 
-def test_pick_two_timer_hits_need_margin_too():
+def test_pick_two_timer_hits_are_always_ambiguous():
+    # 2026-09-20: zegar timera ~110 s do przodu — nagranie 0003 (T0 11,7 s) miało
+    # 343 przy Δ+49 i 344 przy Δ+111, a właściwe było 344. Bliskość nie rozstrzyga.
     a = _cand(1, SAVED_326, sess_local=datetime(2026, 8, 12, 19, 51, 37))
-    b = _cand(2, SAVED_326, sess_local=datetime(2026, 8, 12, 19, 51, 57))
-    assert sm.pick(sm.match_sessions([a, b], REC, 90.0, t0=32.05)) is None
-    far = _cand(3, SAVED_326, sess_local=datetime(2026, 8, 12, 19, 53, 0))
-    m = sm.pick(sm.match_sessions([far, a], REC, 90.0, t0=None))   # bez T0: oba w oknie
-    assert m is not None and m.candidate.id == 1                    # a bliżej o >60 s
+    b = _cand(2, SAVED_326, sess_local=datetime(2026, 8, 12, 19, 53, 30))
+    matches = sm.match_sessions([a, b], REC, 90.0, t0=32.05)
+    assert [m.in_window for m in matches] == [True, True]
+    assert sm.pick(matches) is None
+    assert sm.MatchResult(REC, matches, None).ambiguous
+    # poza oknem (150 s) drugi już nie przeszkadza
+    far = _cand(3, SAVED_326, sess_local=datetime(2026, 8, 12, 19, 57, 0))
+    assert sm.pick(sm.match_sessions([far, a], REC, 90.0, t0=32.05)).candidate.id == 1
 
 
 def test_match_rejects_session_saved_before_it_could_end():

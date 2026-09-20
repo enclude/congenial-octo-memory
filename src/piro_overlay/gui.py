@@ -1126,10 +1126,12 @@ class BatchIdDetectWorker(QThread):
             c = result.picked.candidate
             return c.id, (f"ID z dopasowania po czasie: {c.nazwa_toru or '—'} / "
                           f"{c.uczestnik or '—'} (Δ {result.picked.delta_s:+.0f} s) — sprawdź")
-        hits = [m.candidate.id for m in result.matches if m.in_window]
+        hits = [m.candidate for m in result.matches if m.in_window]
         if hits:
-            return None, ("kilka sesji pasuje po czasie (ID "
-                          + ", ".join(str(h) for h in hits) + ") — podaj ręcznie")
+            # z nazwiskami — użytkownik wie, KTO strzelał w tym nagraniu
+            return None, ("kilka sesji pasuje po czasie: "
+                          + ", ".join(f"{c.id} ({c.uczestnik or c.nazwa_toru or '?'})"
+                                      for c in hits) + " — podaj ręcznie")
         return None, "nie wykryto ID ani sesji z czasu nagrania — podaj ręcznie"
 
 
