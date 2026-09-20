@@ -123,6 +123,17 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Wsad: „Pobierz” per wiersz (v0.61.0):** po RĘCZNYM wpisaniu ID wiersz pokazywał tylko
+  „gotowe do przygotowania” i trzeba było klikać „Przygotuj wszystkie” (feedback z użycia).
+  `BatchRowWidget._prep_btn` — `QToolButton` icon-only (`download.svg`, fallback „⤓”) przed
+  „▶”/„✕”, sygnał `prepare_requested(row_id)` → `BatchDialog._prepare_row`: aktywny TYLKO dla
+  `PENDING`/`FAILED` z ID > 0 (FAILED = ponowienie jednego pliku bez całej partii), guard na
+  żywy worker w `_workers`. Wspólny start jednego wiersza wyciągnięty do `_start_prepare(row)`
+  (używa go też `_prepare_all`); `_auto_total` ustawiany na liczbę trwających przygotowań,
+  żeby `_stage_message` („Przygotowuję: 1/1”) nie kłamał. Tekst stanu PENDING:
+  „gotowe — kliknij ⤓ albo „Przygotuj wszystkie””. PUŁAPKA powtórzona z v0.38.1: ASCII `"`
+  w tym tekście = SyntaxError w gui.py, złapany przez `tests/test_syntax.py` przed zrzutem.
+
 - **Dopasowanie nagrania do sesji PO CZASIE (v0.60.0)** — opcja awaryjna, gdy sygnał ID
   z audio jest nieczytelny (brak tonu, telefon za daleko, wiatr): zamiast ręcznie szukać
   wpisu w `wyniki.php`, aplikacja pyta API o wpisy z okna czasu nagrania. Moduł domenowy

@@ -1155,9 +1155,10 @@ class BatchRow:
 
 class BatchRowWidget(QWidget):
     """Wiersz jednego pliku w oknie wsadowym: status, nazwa, ID, info, play, usuń."""
-    remove_requested = Signal(str)
-    play_requested   = Signal(str)
-    id_changed       = Signal(str, int)
+    remove_requested  = Signal(str)
+    play_requested    = Signal(str)
+    prepare_requested = Signal(str)   # „Pobierz" — przygotuj TEN wiersz (fetch+T0)
+    id_changed        = Signal(str, int)
 
     _STATUS_ROLES = {
         BatchRowStatus.NEEDS_ID:  "warning",
@@ -1204,6 +1205,17 @@ class BatchRowWidget(QWidget):
         self._info.setProperty("role", "muted")
         lay.addWidget(self._info, 2)
 
+        # Po RĘCZNYM wpisaniu ID jeden wiersz nie powinien czekać na „Przygotuj
+        # wszystkie" — przycisk pobiera z API i wyznacza T0/przycięcie od razu.
+        self._prep_btn = QToolButton()
+        self._prep_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self._prep_btn.setIconSize(QSize(16, 16))
+        _apply_icon(self._prep_btn, "download", 16, "⤓")
+        set_kind(self._prep_btn, "ghost")
+        self._prep_btn.setToolTip("Pobierz z API i przygotuj ten plik (T0 + przycięcie)")
+        self._prep_btn.clicked.connect(lambda: self.prepare_requested.emit(self._row_id))
+        lay.addWidget(self._prep_btn)
+
         self._play_btn = QToolButton()
         self._play_btn.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self._play_btn.setIconSize(QSize(16, 16))
@@ -1226,6 +1238,7 @@ class BatchRowWidget(QWidget):
         self._update_elided_name()
 
     def refresh_icon(self) -> None:
+        _apply_icon(self._prep_btn, "download", 16, "⤓")
         _apply_icon(self._play_btn, "play-file", 16, "▶")
         _apply_icon(self._del_btn, "close", 16, "✕")
 
@@ -1247,6 +1260,10 @@ class BatchRowWidget(QWidget):
         busy = row.status in _BATCH_BUSY
         self._id_spin.setEnabled(not busy)
         self._del_btn.setEnabled(not busy)
+        # FAILED też — ponowna próba jednego pliku bez „Przygotuj wszystkie"
+        self._prep_btn.setEnabled(
+            row.status in (BatchRowStatus.PENDING, BatchRowStatus.FAILED)
+            and row.session_id > 0)
         if row.status == BatchRowStatus.READY and row.prep:
             p = row.prep
             self._info.setText(
@@ -1274,7 +1291,7 @@ class BatchRowWidget(QWidget):
             set_role(self._info, "warning")
             self._info.setToolTip(row.error)
         else:
-            self._info.setText("gotowe do przygotowania")
+            self._info.setText("gotowe — kliknij ⤓ albo „Przygotuj wszystkie”")
             set_role(self._info, "muted")
             self._info.setToolTip("")
 
@@ -1543,6 +1560,7 @@ class BatchDialog(QWidget):
         w = BatchRowWidget(row)
         w.remove_requested.connect(self._remove_row)
         w.play_requested.connect(self._play_row)
+        w.prepare_requested.connect(self._prepare_row)
         w.id_changed.connect(self._on_id_changed)
         self._row_widgets[row.id] = w
         self._list_layout.insertWidget(self._list_layout.count() - 1, w)
@@ -1823,16 +1841,32 @@ class BatchDialog(QWidget):
             return
         self._auto_total = len(todo)   # licznik etapu w pasku stanu („5/12")
         for row in todo:
-            row.status = BatchRowStatus.PREPARING
-            self._sync_row(row)
-            worker = BatchPrepWorker(row.id, row.video_path, row.lrf_path,
-                                     row.session_id)
-            worker.done.connect(self._on_prep_done)
-            worker.failed.connect(self._on_prep_failed)
-            worker.finished.connect(lambda rid=row.id: self._finish_worker(rid))
-            self._workers[row.id] = worker
-            worker.start()
+            self._start_prepare(row)
         self._refresh()
+
+    def _prepare_row(self, row_id: str) -> None:
+        """„Pobierz" w wierszu: przygotowanie JEDNEGO pliku (PENDING albo ponowienie FAILED)."""
+        row = self._rows.get(row_id)
+        if row is None or row.session_id <= 0 or row.id in self._workers:
+            return
+        if row.status not in (BatchRowStatus.PENDING, BatchRowStatus.FAILED):
+            return
+        self._auto_total = 1 + sum(1 for r in self._rows.values()
+                                   if r.status == BatchRowStatus.PREPARING)
+        self._start_prepare(row)
+        self._refresh()
+
+    def _start_prepare(self, row: BatchRow) -> None:
+        row.status = BatchRowStatus.PREPARING
+        row.error = ""
+        self._sync_row(row)
+        worker = BatchPrepWorker(row.id, row.video_path, row.lrf_path,
+                                 row.session_id)
+        worker.done.connect(self._on_prep_done)
+        worker.failed.connect(self._on_prep_failed)
+        worker.finished.connect(lambda rid=row.id: self._finish_worker(rid))
+        self._workers[row.id] = worker
+        worker.start()
 
     def _on_prep_done(self, row_id: str, result: dict) -> None:
         row = self._rows.get(row_id)
