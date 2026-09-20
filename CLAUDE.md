@@ -186,7 +186,27 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
     timer przed saved → mniejsze |Δ|. **`pick` (jednoznaczność):** jedno trafienie → ono;
     kilka → jeden kandydat z timera rozstrzyga nad saved, dwa z timera = None (dryf, wyżej);
     same saved: najlepszy musi wyprzedzać następnego o `PICK_MARGIN_S` (60 s), inaczej `None`
-    (GUI: dialog wyboru, CLI: lista `--id`). Skąd margines: realne dane — kolejny strzelec zapisuje wynik 40 s – 3 min po
+    (GUI: dialog wyboru, CLI: lista `--id`).
+  - **Odcisk strzałów (v0.63.0)** — rozstrzyga między kilkoma sesjami w oknie czasu
+    (realny problem: nagranie 0003 z 2026-09-20 → 343 zamiast 344, bo timer był
+    synchronizowany W TRAKCIE zawodów i dryf zmieniał się z +110 s na 0). Zasada:
+    czas jest kryterium GŁÓWNYM (wybiera kandydatów), odcisk tylko wybiera spośród nich.
+    `audio_sync.shot_alignment_score(samples, sr, t0, shot_times)` = średnia geometryczna
+    (pik energii ±60 ms przy T0+strzał) / (mediana energii w oknie sesji); ~1 = strzały w tle
+    (zła oś), >>1 = w pikach. Celowo NIE progujemy onsetów — detektor onsetów przy cichych
+    strzałach widział 2 z 8 (0003), a obwiednia i tak wskazała właściwą oś (3,5× vs 1,4×).
+    `shot_alignment_scores(video, t0, {id: shots})` ładuje audio RAZ; pipeline liczy je na
+    `audio_source()` (LRF) tylko gdy `t0` znany i ≥2 trafienia w oknie z czytelnym `opis`
+    (`SessionCandidate.opis` — tryb listy i `?id=` go zwracają; `session_match.candidate_shots`
+    parsuje z prefiksami). `apply_shot_scores` dopisuje `Match.shot_score` i sortuje trafienia po
+    nim; `pick`: najlepszy ≥ `SHOT_SCORE_RATIO`=1,3× drugiego → wygrywa niezależnie od zegarów;
+    policzone bez zwycięzcy → None (duplikat wpisu: 358 = 363 identyczna oś, 7,6× oba).
+    **Walidacja na 25 nagraniach z Krotoszyna (folder `raw`):** 23 jednoznaczne, spójne ze
+    stałym dryfem +110 s rano i 0 po południu; właściwa sesja wygrywała ≥1,4×; 1 duplikat →
+    dialog; 1 plik bez bzyczka. Wsad (`BatchIdDetectWorker._match_by_time`) liczy teraz T0
+    (`detect_start_signal`) PRZED dopasowaniem — bez T0 odcisku nie ma od czego mierzyć.
+    Dialog GUI i lista CLI pokazują „odcisk N×”. Bez `opis` w API (stary serwer, skan po ID
+    zwraca `?id=` z `opis`, więc też działa). Skąd margines: realne dane — kolejny strzelec zapisuje wynik 40 s – 3 min po
     poprzednim (ID 327 saved +165 s po 326), więc samo „w oknie 300 s" NIE rozstrzyga,
     a |Δ| 3 s vs 165 s już tak. Zweryfikowane na żywym API dla `_0035`: picked = 326.
   - **API (repo `www.piro-kalkulator.pifpaf.fun`, `api.php`)**: NOWY tryb listy

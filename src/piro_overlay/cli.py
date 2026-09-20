@@ -56,7 +56,9 @@ def _match_session_by_time(args: argparse.Namespace, info,
             raise SystemExit("Brak sesji w API pasującej do czasu nagrania — podaj --id ręcznie.")
         lines = "\n".join(
             f"  --id {m.candidate.id}: {m.candidate.nazwa_toru} / {m.candidate.uczestnik} "
-            f"({m.basis}, Δ {m.delta_s:+.0f} s)" for m in hits)
+            f"({m.basis}, Δ {m.delta_s:+.0f} s"
+            + (f", odcisk {m.shot_score:.1f}" if m.shot_score is not None else "") + ")"
+            for m in hits)
         raise SystemExit("Kilka sesji pasuje do czasu nagrania — wybierz ręcznie:\n" + lines)
     m = result.picked
     print(f"Dopasowano po czasie: ID {m.candidate.id} — {m.candidate.nazwa_toru} / "

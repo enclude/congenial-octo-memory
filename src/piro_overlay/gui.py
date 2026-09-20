@@ -1117,7 +1117,10 @@ class BatchIdDetectWorker(QThread):
         jeszcze nie zna, więc okno = całe nagranie). Przyjmujemy TYLKO trafienie
         jednoznaczne; info trafia do `row.error` jako podpowiedź dla użytkownika."""
         try:
-            result = pipeline.find_session_by_time(self.video_path)
+            # T0 najpierw: z bzyczkiem okno zawęża się do sekund, a przy kilku
+            # kandydatach odcisk strzałów (pipeline) może rozstrzygnąć
+            t0 = pipeline.detect_start_signal(self.video_path)
+            result = pipeline.find_session_by_time(self.video_path, t0=t0)
         except Exception as exc:  # noqa: BLE001 — sieć/API: wiersz wraca do „podaj ID"
             return None, f"dopasowanie po czasie nie powiodło się: {exc}"
         if result.recording is None:
@@ -5107,7 +5110,9 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(_TR("time_match_row").format(
                 c.id, c.nazwa_toru or "—", c.uczestnik or "—", c.liczba_strzalow,
                 _fmt_time_s(round(c.czas_bazowy, 2)),
-                _TR(f"time_match_basis_{m.basis}"), f"{m.delta_s:+.0f}"))
+                _TR(f"time_match_basis_{m.basis}"), f"{m.delta_s:+.0f}")
+                + (_TR("time_match_score").format(f"{m.shot_score:.1f}")
+                   if m.shot_score is not None else ""))
             item.setData(Qt.UserRole, m)
             lst.addItem(item)
         lst.setCurrentRow(0)

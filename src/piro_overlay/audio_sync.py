@@ -590,3 +590,55 @@ def resolve_t0(anchor_time: float, mode: AnchorMode, first_shot_time: float) -> 
     if mode == AnchorMode.START_SIGNAL:
         return anchor_time
     return anchor_time - first_shot_time
+
+
+# ---------------------------------------------------------------------------
+# Odcisk strzałów: jak dobrze oś czasu sesji (czasy strzałów od T0) pokrywa się
+# z pikami energii w nagraniu. Rozstrzyga między sesjami o zbliżonym czasie, gdy
+# zegar timera dryfuje (2026-09-20: +110 s rano, 0 po południu — najbliższa
+# sesja po czasie była SĄSIEDNIA). Walidacja na 24 nagraniach z tych zawodów:
+# właściwa sesja wygrywa co najmniej 1,4×, jedyny remis to duplikat wpisu.
+# Celowo NIE progujemy onsetów: przy cichych/odległych strzałach detektor
+# onsetów widział 2 z 8 strzałów, a obwiednia nadal wskazywała właściwą oś.
+_SHOT_FRAME_S = 0.01
+_SHOT_HALF_WIN_S = 0.06
+
+
+def shot_alignment_score(samples: np.ndarray, sr: int, t0: float,
+                         shot_times: list[float]) -> float:
+    """Średnia geometryczna (pik energii przy T0+strzał) / (mediana energii sesji).
+
+    ~1 = strzały trafiają w tło (zła oś), >>1 = w piki. Log-średnia: jeden
+    trafiony pik nie ratuje reszty, jedno pudło nie zeruje wyniku.
+    """
+    if not shot_times or samples.size == 0:
+        return 0.0
+    win = max(1, int(sr * _SHOT_FRAME_S))
+    n = samples.size // win
+    if n == 0:
+        return 0.0
+    energy = np.sqrt((samples[: n * win].astype(np.float64).reshape(n, win) ** 2).mean(axis=1))
+
+    def peak_at(t: float) -> float:
+        a = int(max(0.0, t - _SHOT_HALF_WIN_S) / _SHOT_FRAME_S)
+        b = int((t + _SHOT_HALF_WIN_S) / _SHOT_FRAME_S) + 1
+        a = min(a, n - 1)
+        b = max(a + 1, min(b, n))
+        return float(energy[a:b].max())
+
+    lo = min(n - 1, int(t0 / _SHOT_FRAME_S))
+    hi = max(lo + 1, min(n, int((t0 + shot_times[-1] + 1.0) / _SHOT_FRAME_S) + 1))
+    base = float(np.median(energy[lo:hi])) + 1e-12
+    peaks = np.maximum([peak_at(t0 + s) / base for s in shot_times], 1e-3)
+    return float(np.exp(np.log(peaks).mean()))
+
+
+def shot_alignment_scores(video_path: str | Path, t0: float,
+                          timelines: dict[int, list[float]]) -> dict[int, float]:
+    """`shot_alignment_score` dla wielu osi na JEDNYM załadowaniu audio."""
+    if not timelines:
+        return {}
+    samples, sr = _load_audio(video_path)
+    return {key: shot_alignment_score(samples, sr, t0, shots)
+            for key, shots in timelines.items()}
+

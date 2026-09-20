@@ -61,6 +61,12 @@ class Match:
     basis: str               # "timer" (timer_sess_id) | "saved" (data_zapisu)
     delta_s: float           # timer: start sesji − oczekiwany start; saved: zapis − oczekiwany koniec
     in_window: bool          # mieści się w tolerancji dla swojej podstawy
+    shot_score: float | None = None   # odcisk strzałów (audio_sync.shot_alignment_score), gdy liczony
+
+
+# odcisk rozstrzyga, gdy najlepszy wygrywa z drugim co najmniej tyle razy
+# (na 24 nagraniach z 2026-09-20 właściwa sesja miała ≥1,4×; duplikat wpisu = 1,0×)
+SHOT_SCORE_RATIO = 1.3
 
 
 @dataclass(frozen=True)
@@ -175,6 +181,30 @@ def match_sessions(candidates: list[SessionCandidate], rec: RecordingTime,
     return tuple(sorted(out, key=key))
 
 
+def candidate_shots(cand: SessionCandidate) -> list[float] | None:
+    """Czasy strzałów z `opis` kandydata (None, gdy brak/nieczytelne)."""
+    from .parser import TimelineParseError, extract_start_delay, parse_timeline
+    if not cand.opis:
+        return None
+    text, _ = extract_start_delay(cand.opis)
+    try:
+        return [s.czas for s in parse_timeline(text)]
+    except (TimelineParseError, ValueError):
+        return None
+
+
+def apply_shot_scores(matches: tuple[Match, ...],
+                      scores: dict[int, float]) -> tuple[Match, ...]:
+    """Dopisuje odcisk strzałów i sortuje trafienia w oknie po nim (malejąco);
+    kandydaci bez wyniku i spoza okna zostają za nimi w dotychczasowym porządku."""
+    from dataclasses import replace
+    scored = tuple(replace(m, shot_score=scores.get(m.candidate.id)) for m in matches)
+    top = sorted((m for m in scored if m.in_window and m.shot_score is not None),
+                 key=lambda m: -m.shot_score)
+    rest = [m for m in scored if not (m.in_window and m.shot_score is not None)]
+    return tuple(top) + tuple(rest)
+
+
 def pick(matches: tuple[Match, ...]) -> Match | None:
     """Jednoznaczne trafienie albo None (użytkownik wybiera z listy).
 
@@ -190,6 +220,12 @@ def pick(matches: tuple[Match, ...]) -> Match | None:
         return None
     if len(hits) == 1:
         return hits[0]
+    scored = sorted((m for m in hits if m.shot_score is not None),
+                    key=lambda m: -m.shot_score)
+    if len(scored) >= 2 and scored[0].shot_score >= SHOT_SCORE_RATIO * max(scored[1].shot_score, 1e-9):
+        return scored[0]          # odcisk strzałów rozstrzyga niezależnie od zegarów
+    if scored:
+        return None               # policzony, ale bez wyraźnego zwycięzcy (np. duplikat wpisu)
     timer_hits = [m for m in hits if m.basis == "timer"]
     if timer_hits:
         return timer_hits[0] if len(timer_hits) == 1 else None

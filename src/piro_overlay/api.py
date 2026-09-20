@@ -47,6 +47,7 @@ class SessionCandidate:
     czas_bazowy: float = 0.0
     timer_sn: str = ""
     timer_sess_id: int = 0           # start sesji NA TIMERZE, unixtime w czasie lokalnym; 0 = wpis ręczny
+    opis: str = ""                   # surowa oś czasu (do odcisku strzałów w session_match)
 
 
 def parse_data_zapisu(text: str) -> datetime:
@@ -67,6 +68,7 @@ def candidate_from_payload(data: dict[str, Any]) -> SessionCandidate:
         czas_bazowy=float(czas_bazowy or 0.0),
         timer_sn=str(data.get("timer_sn") or ""),
         timer_sess_id=int(data.get("timer_sess_id") or 0),
+        opis=str(data.get("opis") or ""),
     )
 
 

@@ -238,3 +238,75 @@ def test_find_sessions_by_scan_budget_guard():
     frm = datetime(2030, 1, 1, tzinfo=timezone.utc)
     with pytest.raises(api.ApiError):
         api.find_sessions_by_scan(frm, frm, fetch=fetch)   # baza „bez końca" → limit żądań
+
+
+# --- odcisk strzałów (rozstrzyganie przy kilku kandydatach w oknie) ---
+
+def _synthetic_shots(shot_times, t0=5.0, sr=16000, total=20.0, seed=1):
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    x = rng.normal(0, 0.01, int(total * sr))
+    for s in shot_times:
+        i = int((t0 + s) * sr)
+        x[i:i + int(0.02 * sr)] += rng.normal(0, 1.0, int(0.02 * sr))   # impuls 20 ms
+    return x, sr
+
+
+def test_shot_alignment_score_prefers_true_timeline():
+    from piro_overlay import audio_sync
+    true = [1.0, 1.7, 2.3, 3.4, 4.1, 5.0]
+    other = [1.3, 2.0, 2.9, 3.8, 4.6, 5.5]        # inny strzelec, podobny rytm
+    x, sr = _synthetic_shots(true)
+    good = audio_sync.shot_alignment_score(x, sr, 5.0, true)
+    bad = audio_sync.shot_alignment_score(x, sr, 5.0, other)
+    assert good > sm.SHOT_SCORE_RATIO * bad
+    assert audio_sync.shot_alignment_score(x, sr, 5.0, []) == 0.0
+
+
+def test_candidate_shots_parses_opis_with_prefixes():
+    c = SessionCandidate(id=1, data_zapisu=SAVED_326,
+                         opis="20.09.2026, 13:00:08 | opoznienie startu 3s | 1: 3.76s | 2: 4.76s (+1.00s)")
+    assert sm.candidate_shots(c) == [3.76, 4.76]
+    assert sm.candidate_shots(SessionCandidate(id=2, data_zapisu=SAVED_326)) is None
+    assert sm.candidate_shots(SessionCandidate(id=3, data_zapisu=SAVED_326, opis="śmieci")) is None
+
+
+def test_shot_scores_break_timer_tie_and_duplicate_stays_ambiguous():
+    # 2026-09-20: dwa kandydaci z timera w oknie (dryf zegara) — sam czas = None
+    a = _cand(343, SAVED_326, sess_local=datetime(2026, 8, 12, 19, 51, 37))
+    b = _cand(344, SAVED_326, sess_local=datetime(2026, 8, 12, 19, 53, 30))
+    matches = sm.match_sessions([a, b], REC, 90.0, t0=32.05)
+    assert sm.pick(matches) is None
+    scored = sm.apply_shot_scores(matches, {343: 1.4, 344: 3.5})
+    assert [m.candidate.id for m in scored] == [344, 343]
+    assert sm.pick(scored).candidate.id == 344
+    # duplikat wpisu (ta sama oś dwa razy) → remis → nadal wybór użytkownika
+    dup = sm.apply_shot_scores(matches, {343: 7.6, 344: 7.6})
+    assert sm.pick(dup) is None
+    # wynik tylko dla jednego kandydata → bez rozstrzygnięcia po odcisku
+    assert sm.pick(sm.apply_shot_scores(matches, {343: 5.0})) is None
+
+
+def test_find_session_by_time_uses_fingerprint_for_multiple_hits(monkeypatch, tmp_path):
+    from piro_overlay import api as _api, audio_sync, pipeline
+    from piro_overlay.ffmpeg import VideoInfo
+    video = tmp_path / "DJI_20260812195106_0035_D.MP4"
+    video.write_bytes(b"x")
+    a = _cand(343, SAVED_326, sess_local=datetime(2026, 8, 12, 19, 51, 37), opis="1: 1.0s | 2: 2.0s (+1.0s)")
+    b = _cand(344, SAVED_326, sess_local=datetime(2026, 8, 12, 19, 53, 30), opis="1: 1.5s | 2: 2.5s (+1.0s)")
+    monkeypatch.setattr(_api, "find_sessions", lambda *a_, **k: [a, b])
+    seen = {}
+
+    def fake_scores(path, t0, timelines):
+        seen.update(timelines)
+        return {343: 1.0, 344: 4.0}
+    monkeypatch.setattr(audio_sync, "shot_alignment_scores", fake_scores)
+    monkeypatch.setattr(pipeline, "audio_source", lambda v: str(v))
+    info = VideoInfo(duration=90.0, fps=50, width=1, height=1)
+    r = pipeline.find_session_by_time(video, t0=32.05, info=info)
+    assert seen == {343: [1.0, 2.0], 344: [1.5, 2.5]}
+    assert r.picked.candidate.id == 344 and r.picked.shot_score == 4.0
+    # bez T0 odcisk nie jest liczony (nie ma od czego mierzyć) → niejednoznaczne
+    seen.clear()
+    r2 = pipeline.find_session_by_time(video, t0=None, info=info)
+    assert seen == {} and r2.picked is None and r2.ambiguous

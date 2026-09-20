@@ -100,6 +100,16 @@ def find_session_by_time(video: str | Path, *, t0: float | None = None,
     except api.ApiUnsupported:
         cands = api.find_sessions_by_scan(frm, to, hint_id=hint_id)
     matches = session_match.match_sessions(cands, rec, info.duration, t0)
+    hits = [m for m in matches if m.in_window]
+    if t0 is not None and len(hits) >= 2:
+        # Kilka sesji w oknie czasu (zegar timera dryfuje, strzelcy co ~60–100 s):
+        # rozstrzyga odcisk strzałów — oś czasu każdej sesji przyłożona do energii
+        # audio od T0. Na proxy LRF (jak detekcja T0): ładowanie audio raz.
+        timelines = {m.candidate.id: shots for m in hits
+                     if (shots := session_match.candidate_shots(m.candidate))}
+        if len(timelines) >= 2:
+            scores = audio_sync.shot_alignment_scores(audio_source(video), t0, timelines)
+            matches = session_match.apply_shot_scores(matches, scores)
     return session_match.MatchResult(rec, matches, session_match.pick(matches))
 
 
