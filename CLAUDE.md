@@ -1604,7 +1604,7 @@ zmian), web ma extra `[web]` (dev) i `web/requirements.txt` (Docker, bez Qt).
   na sygnaturze `wej->wyj`. (Enkodery to inny format — 6 znaków, `available_encoders`.)
 - `ffmpeg.probe` parsuje stderr `ffmpeg -i` tylko z linii zawierającej `Video:` (wcześniejsza
   wersja łapała przypadkowe liczby — patrz `_RES_RE`/`_FPS_RE`).
-- **Wideo pionowe z telefonu (v0.64.1):** plik Pixela `PXL_…mp4` jest zakodowany 1920×1080 z
+- **Wideo pionowe z telefonu (v0.65.1):** plik Pixela `PXL_…mp4` jest zakodowany 1920×1080 z
   metadanym obrotem (`displaymatrix: rotation of -90.00 degrees`, starsze: tag `rotate`), a FFmpeg
   AUTOROTUJE przy dekodowaniu (render, `extract_frame`, player) → kadr wyjściowy to 1080×1920.
   `probe` zwracał wymiary kodowane, więc nakładki liczono dla poziomego kadru i plansza START
