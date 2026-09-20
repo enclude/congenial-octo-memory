@@ -140,6 +140,31 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Wsad: warianty wyjścia overlay / timer / trim (v0.66.0):** w „Ustawieniach wspólnych"
+  zamiast pary „Nakładka on/off" + „Zegar on/off" + „GPU" są TRZY niezależne checkboxy
+  wariantów (`_variant_overlay_chk` / `_variant_timer_chk` / `_variant_trim_chk`,
+  `QSettings("ui/batch/variant_overlay|timer|trim")`, domyślnie ON/OFF/OFF): overlay =
+  nakładka ze strzałami bez zegara, timer = nakładka + płynący zegar, trim = samo
+  przycięcie (`no_overlay=True`). „Wyślij gotowe do kolejki" dodaje **po jednym `RenderJob`
+  na wariant per plik**; przy ≥2 wariantach nazwa dostaje sufiks `_overlay`/`_timer`/`_trim`
+  PO sufiksie użytkownika (prefiks/sufiks z `{id}` itp. bez zmian), przy jednym — bez sufiksu
+  jak dotąd. Zero wariantów → przycisk nieaktywny + ostrzeżenie w pasku stanu. Logika bez Qt:
+  `pipeline.BatchVariant`, `BATCH_VARIANTS`, `batch_variants(overlay=, timer=, trim=)`
+  (stała kolejność), `batch_variant_suffix(variants, variant)`; testy w `tests/test_pipeline.py`.
+  Checkbox GPU USUNIĘTY — enkoder wsadu zawsze `"auto"` (render sam spada na CPU). Zegar we
+  wsadzie NIE dziedziczy już checkboxa „Płynący czas" z głównego okna (`_show_batch_window`
+  odświeża tylko `_base_style`). Cel: jedna partia = komplet typów plików bez trzech przebiegów.
+- **Zegar jako pigułka w trybie listy + podsumowanie bez „czasu z karami" (v0.66.0):**
+  (1) `overlay.render_clock_panel`/`clock_panel_max_size` przy `panel_mode == "list"` rysują
+  pigułkę jak wiersze listy (`_clock_pill_metrics`: padding `_LIST_PAD_*`, wysokość z cyfr,
+  radius 0.28×h, BEZ obramowania stylu, napis `anchor="mm"`) — `_render_panel` dawał prostokąt
+  z ramką i tekst od tight-bboxa (optycznie niewyśrodkowany, feedback ze zrzutu renderu).
+  `render.prepare_clock` w trybie listy zwraca False → zawsze sekwencja PNG (drawtext umie
+  tylko prostokątny box), render = podgląd. Tryb classic bez zmian (snapshoty nietknięte).
+  (2) `render_summary_panel`: „Suma kar" i „Czas końcowy" TYLKO gdy `hit_factor` policzony
+  (truthy) — wpis bez punktacji (sam timer, HF 0/None) pokazywał kary 0 i czas końcowy równy
+  bazowemu, co sugerowało ocenioną sesję. Testy: `test_clock_panel_list_mode_is_pill_without_border`,
+  `test_summary_panel_unscored_hides_penalties_and_final_time`.
 - **Kody tymczasowe / ID-tone v3 (v0.65.0):** na zawodach bywa BRAK INTERNETU — timer nie
   może wtedy zapisać sesji w kalkulatorze, więc nie ma jeszcze ID wpisu do zagrania
   kamerze. Rozwiązanie: timer nadaje sesji **kod tymczasowy** lokalnie (bez sieci) i gra go

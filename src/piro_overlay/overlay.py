@@ -396,13 +396,16 @@ def render_summary_panel(session: Session, style: OverlayStyle,
     base_time = session.base_time
     if base_time is not None:
         lines.append(_Line(f"{tr('base_time')}: {_fmt_time(base_time)}", f_body, style.text_color))
-    if session.suma_kar is not None:
+    # Suma kar i czas końcowy (= czas z karami) mają sens tylko przy policzonym
+    # wyniku. HF 0/None = wpis bez punktacji (sam timer) — kary są wtedy 0, a
+    # „Czas końcowy" dublowałby czas bazowy i sugerował ocenioną sesję (v0.66.0).
+    scored = bool(session.hit_factor)
+    if scored and session.suma_kar is not None:
         lines.append(_Line(f"{tr('penalties')}: {_fmt_time(session.suma_kar)}", f_body, style.text_color))
-    if session.czas_koncowy is not None:
+    if scored and session.czas_koncowy is not None:
         lines.append(_Line(f"{tr('final_time')}: {_fmt_time(session.czas_koncowy)}",
                            f_body, style.accent_color))
-    # Hit Factor pomijamy, gdy 0 (zwykle = brak punktów / niepoliczony) lub brak.
-    if session.hit_factor:
+    if scored:
         lines.append(_Line(f"{tr('hit_factor')}: {session.hit_factor:.4f}",
                            f_body, style.text_color))
 
@@ -414,23 +417,54 @@ def clock_text(elapsed: float) -> str:
     return f"T+{max(0.0, elapsed):.1f}s"
 
 
+def _clock_pill_metrics(style: OverlayStyle, base: int, text: str) -> tuple[int, int, int]:
+    """(szerokość, wysokość, font) pigułki zegara w trybie listy — padding i wysokość
+    wiersza jak w `_list_metrics` (wysokość z cyfr, bez dolnych wydłużeń)."""
+    f_clock = _font(int(base * 1.2), bold=True)
+    pad_x = int(base * _LIST_PAD_X)
+    pad_y = int(base * _LIST_PAD_Y)
+    tw = _text_size(f_clock, text)[0]
+    th = _text_size(f_clock, "0.00")[1]
+    return tw + 2 * pad_x, th + 2 * pad_y, f_clock
+
+
 def render_clock_panel(style: OverlayStyle, video_size: tuple[int, int],
                        elapsed: float,
                        fixed_size: tuple[int, int] | None = None) -> Image.Image:
     """Panel płynącego zegara „T+x.xs". `fixed_size` (zwykle `clock_panel_max_size`)
-    daje stałe tło/obramowanie, by dolna/prawa krawędź nie skakały przy zmianie cyfr."""
+    daje stałe tło/obramowanie, by dolna/prawa krawędź nie skakały przy zmianie cyfr.
+
+    W trybie `panel_mode == "list"` zegar jest PIGUŁKĄ jak wiersze listy (v0.66.0):
+    zaokrąglenie 0.28× wysokości, bez obramowania, napis wyśrodkowany (`anchor="mm"`)
+    — `_render_panel` dawał prostokąt z ramką stylu i tekst od tight-bboxa (optycznie
+    przesunięty), co odstawało od reszty nakładki."""
     base = _base_font_size(ref_dim(video_size), style)
-    f_clock = _font(int(base * 1.2), bold=True)
-    return _render_panel([_Line(clock_text(elapsed), f_clock, style.accent_color)],
-                         style, base, fixed_size)
+    text = clock_text(elapsed)
+    if style.panel_mode != "list":
+        f_clock = _font(int(base * 1.2), bold=True)
+        return _render_panel([_Line(text, f_clock, style.accent_color)],
+                             style, base, fixed_size)
+    w, h, f_clock = _clock_pill_metrics(style, base, text)
+    if fixed_size is not None:
+        w, h = max(w, fixed_size[0]), max(h, fixed_size[1])
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=int(h * 0.28),
+                           fill=style.bg_color)
+    draw.text((w // 2, h // 2), text, font=f_clock, fill=style.accent_color, anchor="mm")
+    return img
 
 
 def clock_panel_max_size(style: OverlayStyle, video_size: tuple[int, int],
                          max_elapsed: float) -> tuple[int, int]:
     """Maksymalny rozmiar panelu zegara (przy największym `max_elapsed` = najwięcej cyfr)."""
     base = _base_font_size(ref_dim(video_size), style)
+    text = clock_text(max_elapsed)
+    if style.panel_mode == "list":
+        w, h, _ = _clock_pill_metrics(style, base, text)
+        return w, h
     f_clock = _font(int(base * 1.2), bold=True)
-    return _panel_size([_Line(clock_text(max_elapsed), f_clock, style.accent_color)], style, base)
+    return _panel_size([_Line(text, f_clock, style.accent_color)], style, base)
 
 
 def render_start_banner(style: OverlayStyle, video_size: tuple[int, int]) -> Image.Image:

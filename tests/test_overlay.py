@@ -8,6 +8,7 @@ Renderowanie panelu z bundlowanym fontem DejaVu jest deterministyczne, więc:
 Aby (prze)generować snapshoty: PIRO_UPDATE_SNAPSHOTS=1 pytest tests/test_overlay.py
 """
 
+import dataclasses
 import io
 import os
 from pathlib import Path
@@ -305,3 +306,42 @@ def test_portrait_video_panels_fit_inside_frame():
     session = Session(shots=[Shot(1, 1.0), Shot(2, 2.5, 1.5)], nazwa_toru="Tor", uczestnik="X")
     panel = overlay.render_shot_panel(session, 1, style, portrait)
     assert panel.width <= 1080
+
+
+def test_clock_panel_list_mode_is_pill_without_border():
+    """Tryb listy: zegar = pigułka jak wiersze listy — bez obramowania stylu,
+    napis wyśrodkowany, rozmiar stały przy zmianie cyfr."""
+    style = OverlayStyle(show_running_clock=True, panel_mode="list", border_enabled=True,
+                         border_color=(255, 0, 0, 255), bg_color=(0, 0, 0, 255))
+    fixed = overlay.clock_panel_max_size(style, VIDEO_SIZE, 99.9)
+    img = overlay.render_clock_panel(style, VIDEO_SIZE, 12.3, fixed)
+    assert img.size == fixed
+    w, h = img.size
+    # brak czerwonej ramki na krawędziach (pigułka ignoruje border_*)
+    assert img.getpixel((w // 2, 0))[:3] == (0, 0, 0)
+    assert img.getpixel((0, h // 2))[:3] == (0, 0, 0)
+    # zaokrąglony róg → piksel narożny przezroczysty
+    assert img.getpixel((0, 0))[3] == 0
+    # napis wyśrodkowany: bbox pikseli akcentu ma środek w środku pigułki (±2 px)
+    acc = style.accent_color[:3]
+    px = img.load()
+    xs = [x for x in range(w) for y in range(h) if px[x, y][:3] == acc]
+    ys = [y for x in range(w) for y in range(h) if px[x, y][:3] == acc]
+    assert abs((min(xs) + max(xs)) / 2 - w / 2) <= 2
+    assert abs((min(ys) + max(ys)) / 2 - h / 2) <= 2
+    sizes = {overlay.render_clock_panel(style, VIDEO_SIZE, e, fixed).size
+             for e in (0.0, 5.5, 99.9)}
+    assert len(sizes) == 1
+
+
+def test_summary_panel_unscored_hides_penalties_and_final_time(session):
+    """HF 0/None = sesja bez punktacji → bez „Suma kar" i „Czas końcowy"
+    (czas z karami dublowałby czas bazowy)."""
+    unscored = dataclasses.replace(session, hit_factor=0)
+    a = overlay.render_summary_panel(unscored, OverlayStyle(), VIDEO_SIZE)
+    b = overlay.render_summary_panel(
+        dataclasses.replace(unscored, suma_kar=None, czas_koncowy=None),
+        OverlayStyle(), VIDEO_SIZE)
+    assert a.tobytes() == b.tobytes()
+    scored = overlay.render_summary_panel(session, OverlayStyle(), VIDEO_SIZE)
+    assert scored.size[1] > a.size[1]

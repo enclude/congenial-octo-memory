@@ -1525,18 +1525,28 @@ class BatchDialog(QWidget):
         self._format_combo.currentIndexChanged.connect(lambda *_: self._refresh())
         opts.add_row("Format", self._format_combo)
 
+        # Warianty wyjścia — KAŻDY zaznaczony daje osobne zadanie w kolejce per plik
+        # (pipeline.batch_variants); przy >1 wariancie nazwa dostaje sufiks `_overlay`/
+        # `_timer`/`_trim`. Enkoder zawsze „auto” (render sam spada na CPU), checkbox
+        # GPU zniknął. Pamięć w QSettings, niezależna od stylu głównego okna.
         toggles = QHBoxLayout()
         toggles.setContentsMargins(0, 0, 0, 0)
-        self._gpu_chk = QCheckBox("GPU (NVENC, jeśli dostępne)")
-        self._gpu_chk.setChecked(True)
-        self._overlay_chk = QCheckBox("Nakładka ze strzałami")
-        self._overlay_chk.setChecked(True)
-        self._overlay_chk.toggled.connect(self._on_overlay_toggled)
-        self._clock_chk = QCheckBox("Płynący zegar od T0")
-        self._clock_chk.setChecked(base_style.show_running_clock)
-        toggles.addWidget(self._gpu_chk)
-        toggles.addWidget(self._overlay_chk)
-        toggles.addWidget(self._clock_chk)
+        self._variant_overlay_chk = QCheckBox("Nakładka ze strzałami")
+        self._variant_overlay_chk.setToolTip(
+            "Wariant „overlay”: nakładka ze strzałami BEZ płynącego zegara")
+        self._variant_timer_chk = QCheckBox("Płynący zegar od T0")
+        self._variant_timer_chk.setToolTip(
+            "Wariant „timer”: nakładka ze strzałami + płynący zegar od T0")
+        self._variant_trim_chk = QCheckBox("Przycięcie")
+        self._variant_trim_chk.setToolTip(
+            "Wariant „trim”: samo przycięcie nagrania, bez żadnej nakładki")
+        for chk, key, default in (
+                (self._variant_overlay_chk, "ui/batch/variant_overlay", True),
+                (self._variant_timer_chk, "ui/batch/variant_timer", False),
+                (self._variant_trim_chk, "ui/batch/variant_trim", False)):
+            chk.setChecked(QSettings().value(key, default, type=bool))
+            chk.toggled.connect(partial(self._on_variant_toggled, key))
+            toggles.addWidget(chk)
         toggles.addStretch(1)
         opts.add_widget_row(_wrap(toggles))
         root.addWidget(opts)
@@ -1759,8 +1769,15 @@ class BatchDialog(QWidget):
         self._sync_row(row)
         self._refresh()
 
-    def _on_overlay_toggled(self, on: bool) -> None:
-        self._clock_chk.setEnabled(on)
+    def _on_variant_toggled(self, settings_key: str, on: bool) -> None:
+        QSettings().setValue(settings_key, on)
+        self._refresh()
+
+    def _selected_variants(self) -> list[pipeline.BatchVariant]:
+        return pipeline.batch_variants(
+            overlay=self._variant_overlay_chk.isChecked(),
+            timer=self._variant_timer_chk.isChecked(),
+            trim=self._variant_trim_chk.isChecked())
 
     # --- „Automat z folderu…": skan → ID z audio → przygotowanie ---
     def _auto_active(self) -> bool:
@@ -2001,6 +2018,11 @@ class BatchDialog(QWidget):
                 self, "Przetwarzanie wsadowe",
                 "Brak przygotowanych plików. Kliknij „Przygotuj wszystkie”.")
             return
+        variants = self._selected_variants()
+        if not variants:
+            status_message(self._statusbar,
+                           "Zaznacz przynajmniej jeden wariant wyjścia", "warning", 6000)
+            return
         out_dir = Path(self._out_dir.path()) if self._out_dir.path() else None
         if out_dir is None or not out_dir.is_dir():
             QMessageBox.warning(self, "Brak katalogu",
@@ -2010,34 +2032,34 @@ class BatchDialog(QWidget):
         ext = _FORMAT_EXT.get(fmt, ".mp4")
         prefix = self._prefix_edit.text()
         suffix = self._suffix_edit.text()
-        no_overlay = not self._overlay_chk.isChecked()
-        style = replace(self._base_style,
-                        show_running_clock=self._clock_chk.isChecked())
-        encoder = "auto" if self._gpu_chk.isChecked() else "cpu"
 
         added = 0
         for row in ready:
             p = row.prep
             session = p["session"]
-            out_path = out_dir / (
+            base_name = (
                 pipeline.expand_name_template(prefix, session, row.session_id)
                 + Path(row.video_path).stem
-                + pipeline.expand_name_template(suffix, session, row.session_id) + ext)
+                + pipeline.expand_name_template(suffix, session, row.session_id))
             t0 = audio_sync.resolve_t0(p["t0"], AnchorMode.START_SIGNAL,
                                        session.shots[0].czas)
-            kwargs = dict(
-                video_path=row.video_path, session=session, t0=t0,
-                style=style, mode=AnchorMode.START_SIGNAL, out_path=str(out_path),
-                trim_start=p["trim_start"] if p["trim_start"] > 0 else None,
-                trim_end=p["trim_end"] if p["trim_end"] > 0 else None,
-                encoder=encoder, no_overlay=no_overlay, output_format=fmt,
-            )
-            job = RenderJob(
-                id=uuid.uuid4().hex,
-                label=f"{Path(row.video_path).name} → {out_path.name}",
-                kwargs=kwargs)
-            self._queue_window.add_job(job)
-            added += 1
+            for variant in variants:
+                out_path = out_dir / (
+                    base_name + pipeline.batch_variant_suffix(variants, variant) + ext)
+                style = replace(self._base_style, show_running_clock=variant.clock)
+                kwargs = dict(
+                    video_path=row.video_path, session=session, t0=t0,
+                    style=style, mode=AnchorMode.START_SIGNAL, out_path=str(out_path),
+                    trim_start=p["trim_start"] if p["trim_start"] > 0 else None,
+                    trim_end=p["trim_end"] if p["trim_end"] > 0 else None,
+                    encoder="auto", no_overlay=variant.no_overlay, output_format=fmt,
+                )
+                job = RenderJob(
+                    id=uuid.uuid4().hex,
+                    label=f"{Path(row.video_path).name} → {out_path.name}",
+                    kwargs=kwargs)
+                self._queue_window.add_job(job)
+                added += 1
             # zostaw wiersz, ale oznacz jako wysłany (PENDING bez ID-edycji)
             row.status = BatchRowStatus.PENDING
             row.prep = None
@@ -2087,7 +2109,8 @@ class BatchDialog(QWidget):
             r.status == BatchRowStatus.DETECTING for r in self._rows.values()),
             "Wykrywam…")
         self._prep_btn.setEnabled(pending > 0 and not busy)
-        self._enqueue_btn.setEnabled(ready > 0 and not busy)
+        self._enqueue_btn.setEnabled(ready > 0 and not busy
+                                     and bool(self._selected_variants()))
         self._clear_btn.setEnabled(n > 0 and not busy)
         self._detect_id_btn.setEnabled(needs_id > 0 and not busy)
         auto = self._auto_active()
@@ -6501,10 +6524,9 @@ class MainWindow(QMainWindow):
             self._batch_window = BatchDialog(
                 self._queue_runner, queue_win, self.current_style(), parent=None)
         else:
-            # odśwież wspólny styl (mógł się zmienić w głównym oknie)
+            # odśwież wspólny styl (mógł się zmienić w głównym oknie); zegar we wsadzie
+            # to wariant wyjścia (QSettings), nie kopia checkboxa z głównego okna
             self._batch_window._base_style = self.current_style()
-            self._batch_window._clock_chk.setChecked(
-                self.current_style().show_running_clock)
         self._batch_window.show()
         _dark_titlebar(self._batch_window)
         self._batch_window.raise_()

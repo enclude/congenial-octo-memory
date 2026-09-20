@@ -275,3 +275,23 @@ def test_resolve_id_tone_ambiguous_candidates_need_recording(monkeypatch):
     monkeypatch.setattr(session_match, "recording_start", lambda *a, **k: None)
     out = pipeline.resolve_id_tone(IdToneCode(3, 147), "brak.mp4")
     assert out.session_id is None and "2 wpis" in out.info
+
+
+def test_batch_variants_order_and_flags():
+    vs = pipeline.batch_variants(overlay=True, timer=True, trim=True)
+    assert [v.key for v in vs] == ["overlay", "timer", "trim"]
+    assert [(v.no_overlay, v.clock) for v in vs] == [
+        (False, False), (False, True), (True, False)]
+
+
+def test_batch_variants_subset_keeps_canonical_order():
+    vs = pipeline.batch_variants(overlay=False, timer=True, trim=True)
+    assert [v.key for v in vs] == ["timer", "trim"]
+    assert pipeline.batch_variants(overlay=False, timer=False, trim=False) == []
+
+
+def test_batch_variant_suffix_only_for_multiple_variants():
+    single = pipeline.batch_variants(overlay=False, timer=True, trim=False)
+    assert pipeline.batch_variant_suffix(single, single[0]) == ""
+    multi = pipeline.batch_variants(overlay=True, timer=False, trim=True)
+    assert [pipeline.batch_variant_suffix(multi, v) for v in multi] == ["_overlay", "_trim"]

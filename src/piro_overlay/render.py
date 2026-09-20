@@ -379,7 +379,14 @@ def prepare_clock(style: OverlayStyle) -> bool:
     False → fallback sekwencji PNG (10 fps, `_write_clock_sequence`), też z
     dziesiątymi sekundy. Zwraca False również gdy zegar wyłączony (brak nakładki).
     """
-    return bool(style.show_running_clock) and _drawtext_usable()
+    if not style.show_running_clock:
+        return False
+    if style.panel_mode == "list":
+        # Pigułka zegara (zaokrąglone rogi, wyśrodkowany napis) — drawtext rysuje
+        # tylko prostokątny box, więc w trybie listy zawsze sekwencja PNG
+        # (fps = fps wideo, patrz `_write_clock_sequence`), by render = podgląd.
+        return False
+    return _drawtext_usable()
 
 
 def _append_clock(style: OverlayStyle, video_size: tuple[int, int],

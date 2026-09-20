@@ -186,6 +186,34 @@ def expand_name_template(template: str, session: Session | None,
     return _VAR_RE.sub(lambda m: values[m.group(1)], template)
 
 
+@dataclass(frozen=True)
+class BatchVariant:
+    """Wariant wyjścia wsadu: `key` idzie do sufiksu nazwy pliku (`_overlay`/`_timer`/
+    `_trim`), `no_overlay` → `render.trim_video`, `clock` → `show_running_clock`."""
+    key: str
+    no_overlay: bool
+    clock: bool
+
+
+BATCH_VARIANTS = (
+    BatchVariant("overlay", no_overlay=False, clock=False),
+    BatchVariant("timer", no_overlay=False, clock=True),
+    BatchVariant("trim", no_overlay=True, clock=False),
+)
+
+
+def batch_variants(*, overlay: bool, timer: bool, trim: bool) -> list[BatchVariant]:
+    """Zaznaczone warianty w stałej kolejności overlay → timer → trim."""
+    flags = {"overlay": overlay, "timer": timer, "trim": trim}
+    return [v for v in BATCH_VARIANTS if flags[v.key]]
+
+
+def batch_variant_suffix(variants: list[BatchVariant], variant: BatchVariant) -> str:
+    """Sufiks wariantu w nazwie pliku — tylko gdy wariantów jest więcej niż jeden
+    (przy jednym nazwa zostaje jak dotąd, bez `_overlay`)."""
+    return "" if len(variants) <= 1 else "_" + variant.key
+
+
 def find_session_by_time(video: str | Path, *, t0: float | None = None,
                          info: ffmpeg.VideoInfo | None = None,
                          hint_id: int | None = None) -> session_match.MatchResult:
