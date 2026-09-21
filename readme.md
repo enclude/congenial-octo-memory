@@ -3,7 +3,7 @@
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Strona projektu:** [shothud.com](https://shothud.com) (marka ShotHUD)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.52.1
+> **Wersja:** 0.66.1
 > **Dokumentacja wersji web (Docker/deploy):** [readme_web.md](readme_web.md)
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
@@ -17,9 +17,9 @@ wzbogacają nagłówek i podsumowanie.
 
 ## Zrzuty ekranu
 
-Wszystkie zrzuty pochodzą z jednego realnego nagrania (DJI Osmo, 4K HEVC 50 fps) — sesja
-„ŁUKASZ W." uczestnika Jaro, 10 strzałów, ID pobrane z API po zdekodowaniu sygnału
-tonowego z audio. Wersja 0.52.
+Wszystkie zrzuty pochodzą z jednego realnego nagrania z zawodów GPA Krotoszyn 2026-09-20
+(DJI Osmo, 4K HEVC 50 fps) — sesja „Tor 3 - One Breath", uczestnik Jarosław Z., 26 strzałów,
+czas bazowy 36,96 s, ID pobrane z API po zdekodowaniu sygnału tonowego z audio. Wersja 0.66.
 
 ### Główne okno (po wczytaniu wideo)
 
@@ -51,7 +51,8 @@ i uczestnikiem w innym rogu.
 ### Plansza START i panel podsumowania
 
 Plansza START wyświetlana w momencie sygnału timera (T0), a po ostatnim strzale panel
-podsumowania: pierwszy strzał, czas bazowy, suma kar, czas końcowy.
+podsumowania: pierwszy strzał i czas bazowy (suma kar i czas końcowy dochodzą, gdy sesja
+ma policzoną punktację — ta jest bez niej).
 
 ![Plansza START w momencie sygnału startu](pictures/05%20plansza%20START.jpg)
 
@@ -237,7 +238,7 @@ czas trwania planszy „START" oraz język (PL/EN). Podgląd aktualizuje się na
   postęp **„x/yy"** (np. „6/9"). Panel listy ma stały rozmiar i stałą pozycję aktywnego
   wiersza — nic nie skacze między strzałami.
 - **Nakładka toru/uczestnika (od v0.37.0):** osobna nakładka z nazwą toru i uczestnikiem
-  („Jaro — 9 strzałów"), widoczna od T0 do końca filmu, z własną pozycją (róg + offset).
+  („Jarosław Z. — 26 strzałów"), widoczna od T0 do końca filmu, z własną pozycją (róg + offset).
   Przydatna zwłaszcza w trybie listy, który nie pokazuje metadanych w panelu strzału.
 - **Przeciąganie pozycji w podglądzie:** włącz „✥ Edytuj pozycje (przeciąganie)" nad
   podglądem i przeciągnij **panel strzału**, **nakładkę metadanych** lub **zegar** myszą,
