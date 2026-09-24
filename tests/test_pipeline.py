@@ -310,3 +310,76 @@ def test_batch_output_name_typ_variable_and_subdirs():
     assert (batch_output_name("{typ}\\{uczestnik}_", "clip", "", sess, 5, both, ov, ".mp4")
             == "overlay/Jan_K_clip.mp4")
     assert batch_output_name("", "clip", "_{typ}", sess, 5, both, tm, ".mp4") == "clip_timer.mp4"
+
+
+# --- pola nagrania z kalkulatora w dopasowaniu po czasie ---
+
+def _vcand(entry_id, sess_local, **kw):
+    from datetime import datetime, timezone
+    from piro_overlay.api import SessionCandidate
+    epoch = int(sess_local.replace(tzinfo=timezone.utc).timestamp())
+    return SessionCandidate(id=entry_id,
+                            data_zapisu=datetime(2026, 8, 12, 17, 52, 12, tzinfo=timezone.utc),
+                            timer_sess_id=epoch, **kw)
+
+
+def _epoch(dt):
+    from datetime import timezone
+    return int(dt.replace(tzinfo=timezone.utc).timestamp())
+
+
+def _time_match(monkeypatch, tmp_path, cands, t0=32.05):
+    from piro_overlay.ffmpeg import VideoInfo
+
+    def no_scores(*a, **k):
+        raise AssertionError("odcisk strzałów nie powinien być liczony")
+
+    video = tmp_path / "DJI_20260812195106_0035_D.MP4"
+    video.write_bytes(b"x")
+    monkeypatch.setattr(pipeline.api, "find_sessions", lambda *a, **k: list(cands))
+    monkeypatch.setattr(pipeline.audio_sync, "shot_alignment_scores", no_scores)
+    info = VideoInfo(duration=90.0, fps=50, width=1, height=1)
+    return pipeline.find_session_by_time(video, t0=t0, info=info)
+
+
+def test_find_session_by_time_video_file_short_circuits(monkeypatch, tmp_path):
+    from datetime import datetime
+    a = _vcand(343, datetime(2026, 8, 12, 19, 51, 37), opis="1: 1.0s")
+    b = _vcand(344, datetime(2026, 8, 12, 19, 53, 30), opis="1: 1.5s",
+               video_file="DJI_20260812195106_????_D.MP4")
+    r = _time_match(monkeypatch, tmp_path, [a, b])
+    assert r.picked.candidate.id == 344 and r.picked.reason == "video_file"
+    assert "dopasowano po nazwie pliku" in r.info
+
+
+def test_find_session_by_time_recording_window_drops_neighbour(monkeypatch, tmp_path):
+    from datetime import datetime
+    a = _vcand(343, datetime(2026, 8, 12, 19, 51, 37),
+               rec_start=_epoch(datetime(2026, 8, 12, 19, 51, 5)),
+               rec_stop=_epoch(datetime(2026, 8, 12, 19, 52, 40)))
+    b = _vcand(344, datetime(2026, 8, 12, 19, 53, 30),
+               rec_start=_epoch(datetime(2026, 8, 12, 19, 53, 0)),
+               rec_stop=_epoch(datetime(2026, 8, 12, 19, 54, 30)))
+    r = _time_match(monkeypatch, tmp_path, [a, b])
+    assert r.picked.candidate.id == 343 and r.picked.reason == "timer"
+    assert [m.candidate.id for m in r.matches] == [343]
+    assert "okno nagrania odrzuciło 1" in r.info
+
+
+def test_find_session_by_time_window_rejecting_all_falls_back(monkeypatch, tmp_path):
+    from datetime import datetime
+    far = dict(rec_start=_epoch(datetime(2026, 8, 12, 12, 0, 0)),
+               rec_stop=_epoch(datetime(2026, 8, 12, 12, 1, 0)))
+    a = _vcand(343, datetime(2026, 8, 12, 19, 51, 37), **far)
+    r = _time_match(monkeypatch, tmp_path, [a])
+    assert r.picked.candidate.id == 343            # jak dotąd — po czasie timera
+    assert "wykluczyło wszystkich" in r.info
+
+
+def test_find_session_by_time_old_server_unchanged(monkeypatch, tmp_path):
+    from datetime import datetime
+    a = _vcand(343, datetime(2026, 8, 12, 19, 51, 37))
+    b = _vcand(344, datetime(2026, 8, 12, 19, 53, 30))
+    r = _time_match(monkeypatch, tmp_path, [a, b], t0=None)   # bez T0 → bez odcisku
+    assert r.picked is None and r.ambiguous and r.info == ""
+    assert not any(m.file_match for m in r.matches)

@@ -306,6 +306,26 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
     zwraca `?id=` z `opis`, więc też działa). Skąd margines: realne dane — kolejny strzelec zapisuje wynik 40 s – 3 min po
     poprzednim (ID 327 saved +165 s po 326), więc samo „w oknie 300 s" NIE rozstrzyga,
     a |Δ| 3 s vs 165 s już tak. Zweryfikowane na żywym API dla `_0035`: picked = 326.
+  - **Nazwa pliku i okno nagrania z kalkulatora (v0.67.0)** — urządzenie timer+kamera
+    (repo `esp32-timer-camera-control`, propozycja P1) zapisuje przy wpisie `video_file`
+    (nazwa z kamery, licznik bywa nieznany: `DJI_20260924102139_????_D.MP4`), `rec_start`,
+    `rec_stop` (unixtime LOKALNY jak `timer_sess_id`, 0 = brak). `api.candidate_from_payload`
+    czyta je z `data.wideo = {plik, rec_start, rec_stop}` (`?id=`) albo płasko (lista,
+    `?temp_id=`); stary serwer → `""`/0 = zachowanie jak dotąd. `session_match.video_file_matches`:
+    rdzenie nazw bez wielkości liter (LRF/THM = ten sam rdzeń), `????` pasuje do dowolnego
+    licznika przy IDENTYCZNYM czasie 14 cyfr. `match_sessions(..., video_path)` ustawia
+    `Match.file_match` (liczy się jako „w oknie” mimo dryfu zegara; sortowane pierwsze;
+    `Match.reason` = `"video_file"|"shots"|"timer"|"saved"`); `pick`: dokładnie jedno trafienie
+    po nazwie → ono, kilka (duplikat wpisu) → None. `filter_by_recording_window` (tylko gdy
+    start nagrania z NAZWY pliku i kandydat ma oba pola): oczekiwany start sesji (bez T0 — cały
+    przedział nagrania) musi leżeć w `[rec_start − 30 s, rec_stop + 30 s]` (`REC_WINDOW_TOL_S`),
+    inaczej kandydat odpada; wskazany nazwą nigdy nie odpada; gdy odpadliby WSZYSCY — filtr
+    pominięty. `pipeline._match_candidates` składa to przed czasem/odciskiem (przy jednym
+    trafieniu po nazwie odcisku nie liczy) i wypełnia NOWE `MatchResult.info` („dopasowano po
+    nazwie pliku”, „okno nagrania odrzuciło N”, „…wykluczyło wszystkich… — pominięto ten
+    filtr”); CLI drukuje „Uwagi:”, wsad dopisuje je do `row.error`, `resolve_id_tone` do `info`.
+    Wsad: `id_source="file"` (ikona `clock.svg`, inny tooltip); dialog/komunikat GUI: podstawa
+    `time_match_basis_video_file`. Testy: `test_session_match.py`, `test_pipeline.py`.
   - **API (repo `www.piro-kalkulator.pifpaf.fun`, `api.php`)**: NOWY tryb listy
     `?from=<unix UTC>&to=<unix UTC>&tz_offset=<s>` → `{ok, data:[{id, nazwa_toru, uczestnik,
     opis, data_zapisu, liczba_strzalow, czas_bazowy, timer_sn, timer_sess_id}]}`; filtr SQL

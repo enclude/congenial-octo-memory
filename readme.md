@@ -3,7 +3,7 @@
 > **Autor:** Jarosław Zjawiński — [kontakt@zjawa.it](mailto:kontakt@zjawa.it) / [szkolenia@pifpaf.fun](mailto:szkolenia@pifpaf.fun)
 > **Strona projektu:** [shothud.com](https://shothud.com) (marka ShotHUD)
 > **Licencja:** [GPL v3](LICENSE) — dystrybucja i modyfikacje wymagają podania oryginalnego autora oraz udostępnienia kodu źródłowego.
-> **Wersja:** 0.66.1
+> **Wersja:** 0.67.0
 > **Dokumentacja wersji web (Docker/deploy):** [readme_web.md](readme_web.md)
 
 Aplikacja desktop (Python + PySide6), która na podstawie **wideo ze strzelania** oraz
@@ -389,6 +389,11 @@ Gdy ten sam kod ma w bazie kilka wpisów, rozstrzyga czas nagrania i rozkład st
 jeśli to nie wystarcza, aplikacja **świadomie nie zgaduje** — pokazuje powód, a ID
 wpisujesz ręcznie (lepiej brak ID niż cudza sesja na nakładce).
 Analizuje zawsze oryginalny plik wideo (nie proxy `.LRF`).
+
+**Nazwa pliku z kalkulatora (od v0.67.0).** Gdy wpis w kalkulatorze ma zapisaną nazwę pliku
+z kamery i okno nagrania (urządzenie timer+kamera), dopasowanie po czasie najpierw porównuje
+nazwę pliku (także `DJI_…_????_D` z nieznanym licznikiem i proxy `.LRF`) i odrzuca sesje spoza
+okna nagrania — starsze wpisy bez tych pól działają jak dotąd.
 
 ## Testy
 

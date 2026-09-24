@@ -188,6 +188,8 @@ _STRINGS: dict[str, dict[Lang, str]] = {
                                 Lang.EN: "Sessions matching the recording time"},
     "time_match_basis_timer": {Lang.PL: "start na timerze", Lang.EN: "timer start"},
     "time_match_basis_saved": {Lang.PL: "chwila zapisu", Lang.EN: "save time"},
+    "time_match_basis_video_file": {Lang.PL: "nazwa pliku nagrania",
+                                    Lang.EN: "recording file name"},
     # odcisk strzałów: ile razy piki energii przy strzałach tej osi przebijają tło
     "time_match_score": {Lang.PL: " · odcisk {}×", Lang.EN: " · shot fit {}×"},
     "time_match_row": {

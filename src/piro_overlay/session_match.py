@@ -43,6 +43,10 @@ PICK_MARGIN_S = 60.0
 # margines okna zapytania do API wokół nagrania
 QUERY_LEAD_S = 120.0
 QUERY_TAIL_S = SAVE_MAX_S + 120.0
+# okno nagrania z kalkulatora (`rec_start`/`rec_stop` od urządzenia timer+kamera):
+# oba zegary lokalne (timer i kamera synchronizowana z urządzenia), więc wystarczy
+# mały zapas — ale NIE mniejszy niż pre-roll (~5–7 s) z dokładnością do sekund
+REC_WINDOW_TOL_S = 30.0
 
 # `DJI_20260812195106_0035_D.MP4`, ogólnie `..._20260812_195106...` / `20260812195106`
 _DJI_RE = re.compile(r"^DJI_(\d{14})(?:_|$)")
@@ -51,6 +55,10 @@ _GENERIC_RE = re.compile(r"(?<!\d)(\d{8})[_\-T ]?(\d{6})(?!\d)")
 # (zmierzone: 10:19:08Z przy zawodach o 12:19 CEST). UWAGA: `creation_time` Pixela to
 # KONIEC nagrania (+ kilka s finalizacji), więc nazwa pliku ma pierwszeństwo.
 _PXL_RE = re.compile(r"^PXL_(\d{8})_(\d{6})\d{3}(?:\D|$)")
+# `video_file` z kalkulatora bywa PREDYKCJĄ urządzenia z zegara kamery — licznik
+# `_NNNN_` jest wtedy nieznany (`DJI_20260924102139_????_D`); czas musi się zgadzać
+_DJI_WILD_RE = re.compile(r"^DJI_(\d{14})_\?{4}(?:_[A-Z])?$")
+_DJI_STEM_RE = re.compile(r"^DJI_(\d{14})_\d{4}(?:_[A-Z])?$")
 
 
 @dataclass(frozen=True)
@@ -66,6 +74,14 @@ class Match:
     delta_s: float           # timer: start sesji − oczekiwany start; saved: zapis − oczekiwany koniec
     in_window: bool          # mieści się w tolerancji dla swojej podstawy
     shot_score: float | None = None   # odcisk strzałów (audio_sync.shot_alignment_score), gdy liczony
+    file_match: bool = False          # `video_file` kandydata wskazuje TO nagranie (najmocniejszy dowód)
+
+    @property
+    def reason(self) -> str:
+        """Co przesądziło o kandydacie: "video_file" | "shots" | "timer" | "saved" (ikona/opis w UI)."""
+        if self.file_match:
+            return "video_file"
+        return "shots" if self.shot_score is not None else self.basis
 
 
 # odcisk rozstrzyga, gdy najlepszy wygrywa z drugim co najmniej tyle razy
@@ -78,6 +94,7 @@ class MatchResult:
     recording: RecordingTime | None
     matches: tuple[Match, ...]          # posortowane od najlepszego
     picked: Match | None                # jednoznaczne trafienie albo None (brak / kilka)
+    info: str = ""                      # uwagi dla UI (nazwa pliku, odrzucone przez okno nagrania)
 
     @property
     def ambiguous(self) -> bool:
@@ -127,6 +144,25 @@ def time_from_filename(path: str | Path, tz: tzinfo | None = None) -> datetime |
     return naive.replace(tzinfo=tz or local_tz())
 
 
+def video_file_matches(candidate_name: str, video_path: str | Path) -> bool:
+    """Czy `video_file` kandydata z kalkulatora wskazuje plik `video_path`.
+
+    Porównanie rdzeni nazw bez wielkości liter (proxy `.LRF` i miniatura `.THM`
+    mają ten sam rdzeń co `.MP4`). Nazwa z `????` w miejscu licznika DJI pasuje do
+    każdego licznika przy IDENTYCZNYM czasie `YYYYMMDDHHMMSS`.
+    """
+    name = (candidate_name or "").strip().replace("\\", "/")
+    if not name:
+        return False
+    cand = Path(name).stem.upper()
+    stem = Path(video_path).stem.upper()
+    if cand == stem:
+        return True
+    wild = _DJI_WILD_RE.match(cand)
+    real = _DJI_STEM_RE.match(stem)
+    return bool(wild and real and wild.group(1) == real.group(1))
+
+
 def recording_start(path: str | Path, duration: float, creation_time: str = "",
                     tz: tzinfo | None = None) -> RecordingTime | None:
     """Start nagrania: nazwa pliku → `creation_time` → mtime − długość. None gdy nic nie ma."""
@@ -153,19 +189,55 @@ def query_window(rec: RecordingTime, duration: float) -> tuple[datetime, datetim
 
 def timer_start(cand: SessionCandidate, tz: tzinfo) -> datetime | None:
     """`timer_sess_id` (unixtime w czasie LOKALNYM timera) → aware datetime w `tz`."""
-    if cand.timer_sess_id <= 0:
+    return local_wall(cand.timer_sess_id, tz)
+
+
+def local_wall(epoch: int, tz: tzinfo) -> datetime | None:
+    """Unixtime w czasie LOKALNYM urządzenia (konwencja `timer_sess_id`/`rec_start`) → aware w `tz`."""
+    if epoch <= 0:
         return None
-    wall = datetime.fromtimestamp(cand.timer_sess_id, timezone.utc).replace(tzinfo=None)
-    return wall.replace(tzinfo=tz)
+    return datetime.fromtimestamp(epoch, timezone.utc).replace(tzinfo=None).replace(tzinfo=tz)
+
+
+def filter_by_recording_window(candidates: list[SessionCandidate], rec: RecordingTime,
+                               duration: float, t0: float | None = None,
+                               video_path: str | Path | None = None,
+                               ) -> tuple[list[SessionCandidate], int]:
+    """Odrzuca kandydatów, których okno nagrania (`rec_start`/`rec_stop` z kalkulatora)
+    wyklucza to nagranie. Zwraca (pozostali, liczba odrzuconych).
+
+    Działa tylko, gdy start nagrania pochodzi z NAZWY pliku (zegar kamery — ten sam
+    rodzaj czasu co okno z urządzenia) i kandydat ma oba pola; bez nich kandydat
+    zostaje. Kandydat wskazany przez `video_file` nigdy nie jest odrzucany.
+    Oczekiwany start sesji (start nagrania + T0, bez T0 — cały przedział nagrania)
+    musi leżeć w `[rec_start − TOL, rec_stop + TOL]`.
+    """
+    if rec.source != "filename":
+        return list(candidates), 0
+    tz = rec.start.tzinfo or local_tz()
+    lo = rec.start + timedelta(seconds=t0) if t0 is not None else rec.start
+    hi = lo if t0 is not None else rec.start + timedelta(seconds=max(duration, 0.0))
+    tol = timedelta(seconds=REC_WINDOW_TOL_S)
+    kept: list[SessionCandidate] = []
+    for cand in candidates:
+        ws, we = local_wall(cand.rec_start, tz), local_wall(cand.rec_stop, tz)
+        if (ws is None or we is None
+                or (video_path is not None and video_file_matches(cand.video_file, video_path))
+                or (lo <= we + tol and hi >= ws - tol)):
+            kept.append(cand)
+    return kept, len(candidates) - len(kept)
 
 
 def match_sessions(candidates: list[SessionCandidate], rec: RecordingTime,
-                   duration: float, t0: float | None = None) -> tuple[Match, ...]:
+                   duration: float, t0: float | None = None,
+                   video_path: str | Path | None = None) -> tuple[Match, ...]:
     """Ocena kandydatów względem nagrania; wynik posortowany od najlepszego.
 
     Znany T0 (bzyczek w nagraniu) daje oczekiwany START sesji = start nagrania + T0;
     bez T0 sesja może zaczynać się gdziekolwiek w nagraniu — tolerancje rozszerzają
     się o całą długość nagrania (jednoznaczność wtedy rzadsza).
+    `video_path` włącza porównanie z `video_file` kandydata: trafienie po nazwie
+    liczy się jako „w oknie" niezależnie od zegarów (dryf timera go nie wyklucza).
     """
     tz = rec.start.tzinfo or local_tz()
     duration = max(duration, 0.0)
@@ -173,20 +245,23 @@ def match_sessions(candidates: list[SessionCandidate], rec: RecordingTime,
     span = 0.0 if t0 is not None else duration
     out: list[Match] = []
     for cand in candidates:
+        fm = video_path is not None and video_file_matches(cand.video_file, video_path)
         ts = timer_start(cand, tz)
         if ts is not None:
             delta = (ts - est_start).total_seconds()
             ok = -TIMER_TOL_S <= delta <= span + TIMER_TOL_S
-            out.append(Match(cand, "timer", delta, ok))
+            out.append(Match(cand, "timer", delta, ok or fm, file_match=fm))
             continue
         est_end = est_start + timedelta(seconds=cand.czas_bazowy)
         delta = (cand.data_zapisu - est_end).total_seconds()
         ok = SAVE_MIN_S <= delta <= span + SAVE_MAX_S
-        out.append(Match(cand, "saved", delta, ok))
+        out.append(Match(cand, "saved", delta, ok or fm, file_match=fm))
 
-    def key(m: Match) -> tuple[int, int, float]:
-        # w oknie przed spoza okna; timer przed saved (dokładniejszy); mniejsze |delta| pierwsze
-        return (0 if m.in_window else 1, 0 if m.basis == "timer" else 1, abs(m.delta_s))
+    def key(m: Match) -> tuple[int, int, int, float]:
+        # nazwa pliku przed wszystkim; w oknie przed spoza okna; timer przed saved
+        # (dokładniejszy); mniejsze |delta| pierwsze
+        return (0 if m.file_match else 1, 0 if m.in_window else 1,
+                0 if m.basis == "timer" else 1, abs(m.delta_s))
 
     return tuple(sorted(out, key=key))
 
@@ -218,13 +293,18 @@ def apply_shot_scores(matches: tuple[Match, ...],
 def pick(matches: tuple[Match, ...]) -> Match | None:
     """Jednoznaczne trafienie albo None (użytkownik wybiera z listy).
 
-    Jedno trafienie w oknie → ono. Kilka → wygrywa timer nad `data_zapisu`
+    Najpierw nazwa pliku (`Match.file_match`): dokładnie jeden kandydat wskazujący
+    to nagranie → on, bez patrzenia na zegary i odcisk; kilku (duplikat wpisu) →
+    None, jak przy remisie odcisku. Dalej: jedno trafienie w oknie → ono. Kilka → wygrywa timer nad `data_zapisu`
     (odporny na hurtową wysyłkę), ale DWA kandydaci z timera w oknie = zawsze
     niejednoznaczne: przy dryfie zegara timera o ~2 min (realne, 2026-09-20)
     bliższy |Δ| wskazywał SĄSIEDNIĄ sesję (0003 → 343 zamiast 344), więc bliskość
     nic tu nie dowodzi. Dla `data_zapisu` (zegar serwera, wiarygodny) zostaje
     reguła marginesu `PICK_MARGIN_S`.
     """
+    named = [m for m in matches if m.file_match]
+    if named:
+        return named[0] if len(named) == 1 else None
     hits = [m for m in matches if m.in_window]
     if not hits:
         return None

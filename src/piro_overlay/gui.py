@@ -1091,7 +1091,7 @@ class BatchIdDetectWorker(QThread):
     `BatchPrepWorker`: worker trzymany do `finished`.)
     """
     # (row_id, int | None, info: "" | opis kodu tymczasowego/dopasowania po czasie,
-    #  source: "tone" | "temp" | "time" | "")
+    #  source: "tone" | "temp" | "time" | "file" | "")
     done = Signal(str, object, str, str)
 
     def __init__(self, row_id: str, video_path: str, match_time: bool = False):
@@ -1121,13 +1121,13 @@ class BatchIdDetectWorker(QThread):
             if result.session_id is not None:
                 detected, source = result.session_id, "temp"
         if detected is None and self.match_time:
-            detected, match_info = self._match_by_time()
+            detected, match_info, by_file = self._match_by_time()
             info = match_info or info
             if detected is not None:
-                source = "time"
+                source = "file" if by_file else "time"
         self.done.emit(self.row_id, detected, info, source)
 
-    def _match_by_time(self) -> tuple[int | None, str]:
+    def _match_by_time(self) -> tuple[int | None, str, bool]:
         """Opcja awaryjna: sesja dopasowana po czasie nagrania (bez T0 — wsad go
         jeszcze nie zna, więc okno = całe nagranie). Przyjmujemy TYLKO trafienie
         jednoznaczne; info trafia do `row.error` jako podpowiedź dla użytkownika."""
@@ -1137,20 +1137,25 @@ class BatchIdDetectWorker(QThread):
             t0 = pipeline.detect_start_signal(self.video_path)
             result = pipeline.find_session_by_time(self.video_path, t0=t0)
         except Exception as exc:  # noqa: BLE001 — sieć/API: wiersz wraca do „podaj ID"
-            return None, f"dopasowanie po czasie nie powiodło się: {exc}"
+            return None, f"dopasowanie po czasie nie powiodło się: {exc}", False
         if result.recording is None:
-            return None, "nie wykryto ID, a czas nagrania jest nieznany — podaj ręcznie"
+            return None, "nie wykryto ID, a czas nagrania jest nieznany — podaj ręcznie", False
+        note = f" [{result.info}]" if result.info else ""
         if result.picked is not None:
             c = result.picked.candidate
+            if result.picked.file_match:
+                return c.id, (f"ID z nazwy pliku nagrania: {c.nazwa_toru or '—'} / "
+                              f"{c.uczestnik or '—'}{note}"), True
             return c.id, (f"ID z dopasowania po czasie: {c.nazwa_toru or '—'} / "
-                          f"{c.uczestnik or '—'} (Δ {result.picked.delta_s:+.0f} s) — sprawdź")
+                          f"{c.uczestnik or '—'} (Δ {result.picked.delta_s:+.0f} s) — sprawdź"
+                          f"{note}"), False
         hits = [m.candidate for m in result.matches if m.in_window]
         if hits:
             # z nazwiskami — użytkownik wie, KTO strzelał w tym nagraniu
             return None, ("kilka sesji pasuje po czasie: "
                           + ", ".join(f"{c.id} ({c.uczestnik or c.nazwa_toru or '?'})"
-                                      for c in hits) + " — podaj ręcznie")
-        return None, "nie wykryto ID ani sesji z czasu nagrania — podaj ręcznie"
+                                      for c in hits) + " — podaj ręcznie" + note), False
+        return None, "nie wykryto ID ani sesji z czasu nagrania — podaj ręcznie" + note, False
 
 
 class BatchRowStatus(Enum):
@@ -1176,7 +1181,7 @@ class BatchRow:
     prep:       dict | None = None     # wynik BatchPrepWorker
     error:      str = ""
     id_source:  str = ""               # "tone" (ID z sygnału audio) | "temp" (kod tymczasowy z audio)
-                                       # | "time" (dopasowanie po czasie) | "" (ręcznie)
+                                       # | "time" (dopasowanie po czasie) | "file" (nazwa pliku z kalkulatora) | "" (ręcznie)
 
 
 class BatchRowWidget(QWidget):
@@ -1286,6 +1291,7 @@ class BatchRowWidget(QWidget):
         "tone": ("detect", "🔊", "ID odczytane z sygnału tonowego w audio"),
         "temp": ("detect", "🔊", "ID z KODU TYMCZASOWEGO w audio (sesja offline) — sprawdź"),
         "time": ("clock", "⏱", "ID z dopasowania po czasie nagrania — sprawdź"),
+        "file": ("clock", "⏱", "ID z nazwy pliku nagrania zapisanej w kalkulatorze"),
     }
 
     def _set_source_icon(self, source: str) -> None:
@@ -5145,7 +5151,8 @@ class MainWindow(QMainWindow):
         self._set_source("id")
         self._ok(_TR("msg_time_matched").format(
             c.id, c.nazwa_toru or "—", c.uczestnik or "—",
-            _TR(f"time_match_basis_{m.basis}"), f"{m.delta_s:+.0f}"))
+            _TR(f"time_match_basis_{'video_file' if m.file_match else m.basis}"),
+            f"{m.delta_s:+.0f}"))
         self._fetch_id_and_trim()
 
     def _pick_time_match(self, hits, start: str):
@@ -5163,7 +5170,8 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(_TR("time_match_row").format(
                 c.id, c.nazwa_toru or "—", c.uczestnik or "—", c.liczba_strzalow,
                 _fmt_time_s(round(c.czas_bazowy, 2)),
-                _TR(f"time_match_basis_{m.basis}"), f"{m.delta_s:+.0f}")
+                _TR(f"time_match_basis_{'video_file' if m.file_match else m.basis}"),
+                f"{m.delta_s:+.0f}")
                 + (_TR("time_match_score").format(f"{m.shot_score:.1f}")
                    if m.shot_score is not None else ""))
             item.setData(Qt.UserRole, m)

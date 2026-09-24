@@ -50,6 +50,8 @@ def _match_session_by_time(args: argparse.Namespace, info,
                          "creation_time ani mtime) — podaj --id ręcznie.")
     rec = result.recording
     print(f"Start nagrania: {rec.start:%Y-%m-%d %H:%M:%S} ({rec.source})")
+    if result.info:
+        print(f"Uwagi: {result.info}")
     if result.picked is None:
         hits = [m for m in result.matches if m.in_window]
         if not hits:
@@ -62,7 +64,8 @@ def _match_session_by_time(args: argparse.Namespace, info,
         raise SystemExit("Kilka sesji pasuje do czasu nagrania — wybierz ręcznie:\n" + lines)
     m = result.picked
     print(f"Dopasowano po czasie: ID {m.candidate.id} — {m.candidate.nazwa_toru} / "
-          f"{m.candidate.uczestnik} ({m.basis}, Δ {m.delta_s:+.0f} s)")
+          f"{m.candidate.uczestnik} ({m.reason if m.file_match else m.basis}, "
+          f"Δ {m.delta_s:+.0f} s)")
     return pipeline.build_session(None, m.candidate.id, args.track_name, args.participant)
 
 

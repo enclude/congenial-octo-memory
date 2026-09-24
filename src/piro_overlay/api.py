@@ -50,6 +50,11 @@ class SessionCandidate:
     timer_sess_id: int = 0           # start sesji NA TIMERZE, unixtime w czasie lokalnym; 0 = wpis ręczny
     opis: str = ""                   # surowa oś czasu (do odcisku strzałów w session_match)
     temp_id: str = ""                # kod tymczasowy z sesji offline (5 cyfr `CNNNN`), "" = brak
+    # powiązanie z nagraniem (urządzenie timer+kamera): nazwa pliku z kamery — może mieć
+    # `????` w miejscu licznika (predykcja z zegara, licznik nieznany); "" = brak
+    video_file: str = ""
+    rec_start: int = 0               # start/stop nagrania, unixtime LOKALNY jak `timer_sess_id`; 0 = brak
+    rec_stop: int = 0
 
 
 def parse_data_zapisu(text: str) -> datetime:
@@ -57,10 +62,25 @@ def parse_data_zapisu(text: str) -> datetime:
     return datetime.strptime(text.strip(), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
 
 
+def _int0(value: Any) -> int:
+    """Liczba całkowita z pola API; brak/śmieci → 0 (= nieznane)."""
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def candidate_from_payload(data: dict[str, Any]) -> SessionCandidate:
-    """Buduje `SessionCandidate` z `data` odpowiedzi `?id=` albo z elementu listy `?from=&to=`."""
+    """Buduje `SessionCandidate` z `data` odpowiedzi `?id=` albo z elementu listy `?from=&to=`.
+
+    Pola nagrania: `?id=` zwraca je w `data.wideo = {plik, rec_start, rec_stop}`, lista
+    i `?temp_id=` płasko (`video_file`, `rec_start`, `rec_stop`). Stary serwer nie zwraca
+    ich wcale → wartości „nieznane" ("" / 0).
+    """
     czasy = data.get("czasy") or {}
     czas_bazowy = data.get("czas_bazowy", czasy.get("czas_bazowy"))
+    wideo = data.get("wideo")
+    wideo = wideo if isinstance(wideo, dict) else {}
     return SessionCandidate(
         id=int(data["id"]),
         data_zapisu=parse_data_zapisu(str(data["data_zapisu"])),
@@ -72,6 +92,9 @@ def candidate_from_payload(data: dict[str, Any]) -> SessionCandidate:
         timer_sess_id=int(data.get("timer_sess_id") or 0),
         opis=str(data.get("opis") or ""),
         temp_id=str(data.get("temp_id") or ""),
+        video_file=str(wideo.get("plik") or data.get("video_file") or "").strip(),
+        rec_start=_int0(wideo.get("rec_start") or data.get("rec_start")),
+        rec_stop=_int0(wideo.get("rec_stop") or data.get("rec_stop")),
     )
 
 

@@ -349,3 +349,100 @@ def test_find_session_by_time_uses_fingerprint_for_multiple_hits(monkeypatch, tm
     seen.clear()
     r2 = pipeline.find_session_by_time(video, t0=None, info=info)
     assert seen == {} and r2.picked is None and r2.ambiguous
+
+
+# --- pola nagrania z kalkulatora: video_file, rec_start/rec_stop ---
+
+VIDEO = "DJI_20260812195106_0035_D.MP4"
+
+
+def test_candidate_from_payload_video_fields_single_list_and_old_server():
+    single = {"id": 1, "data_zapisu": "2026-08-12 17:52:12",
+              "wideo": {"plik": "DJI_20260812195106_????_D.MP4",
+                        "rec_start": 1786564266, "rec_stop": 1786564366}}
+    c = api.candidate_from_payload(single)
+    assert (c.video_file, c.rec_start, c.rec_stop) == (
+        "DJI_20260812195106_????_D.MP4", 1786564266, 1786564366)
+    listed = {"id": 2, "data_zapisu": "2026-08-12 17:52:12", "video_file": VIDEO,
+              "rec_start": "1786564266", "rec_stop": None}
+    c = api.candidate_from_payload(listed)
+    assert (c.video_file, c.rec_start, c.rec_stop) == (VIDEO, 1786564266, 0)
+    old = api.candidate_from_payload({"id": 3, "data_zapisu": "2026-08-12 17:52:12"})
+    assert (old.video_file, old.rec_start, old.rec_stop) == ("", 0, 0)
+    junk = api.candidate_from_payload({"id": 4, "data_zapisu": "2026-08-12 17:52:12",
+                                       "wideo": None, "rec_start": "x", "rec_stop": -5})
+    assert (junk.rec_start, junk.rec_stop) == (0, 0)
+
+
+def test_video_file_matches_exact_wildcard_siblings_and_misses():
+    assert sm.video_file_matches(VIDEO, "/x/DJI_20260812195106_0035_D.MP4")
+    assert sm.video_file_matches("dji_20260812195106_0035_d.mp4", "D:/x/" + VIDEO)
+    # proxy LRF i miniatura THM mają ten sam rdzeń co MP4
+    assert sm.video_file_matches(VIDEO, "DJI_20260812195106_0035_D.LRF")
+    assert sm.video_file_matches("DJI_20260812195106_0035_D.THM", VIDEO)
+    # licznik nieznany (predykcja z zegara kamery) — czas musi się zgadzać co do sekundy
+    assert sm.video_file_matches("DJI_20260812195106_????_D.MP4", VIDEO)
+    assert sm.video_file_matches("DJI_20260812195106_????_D.MP4", "DJI_20260812195106_0099_D.LRF")
+    assert not sm.video_file_matches("DJI_20260812195107_????_D.MP4", VIDEO)
+    assert not sm.video_file_matches("DJI_20260812195106_0036_D.MP4", VIDEO)
+    assert not sm.video_file_matches("DJI_20260812195106_????_D.MP4", "clip.mp4")
+    assert not sm.video_file_matches("", VIDEO)
+
+
+def test_pick_prefers_single_video_file_match_over_time():
+    # dwa kandydaci z timera w oknie = normalnie niejednoznaczne; nazwa pliku rozstrzyga
+    a = _cand(1, SAVED_326, sess_local=datetime(2026, 8, 12, 19, 51, 37))
+    b = _cand(2, SAVED_326, sess_local=datetime(2026, 8, 12, 19, 53, 30),
+              video_file="DJI_20260812195106_????_D.MP4")
+    matches = sm.match_sessions([a, b], REC, 90.0, t0=32.05, video_path=VIDEO)
+    assert matches[0].candidate.id == 2 and matches[0].file_match
+    picked = sm.pick(matches)
+    assert picked.candidate.id == 2 and picked.reason == "video_file"
+    # bez ścieżki nagrania — zachowanie jak dotąd
+    assert sm.pick(sm.match_sessions([a, b], REC, 90.0, t0=32.05)) is None
+
+
+def test_video_file_match_wins_even_outside_time_window():
+    # zegar timera uciekł o 10 min — nazwa pliku i tak wskazuje wpis
+    drift = _cand(5, SAVED_326 + timedelta(hours=3),
+                  sess_local=datetime(2026, 8, 12, 20, 2, 0), video_file=VIDEO)
+    (m,) = sm.match_sessions([drift], REC, 90.0, t0=32.05, video_path=VIDEO)
+    assert m.in_window and m.file_match
+    assert sm.pick((m,)).candidate.id == 5
+
+
+def test_duplicate_video_file_matches_stay_ambiguous():
+    a = _cand(1, SAVED_326, video_file=VIDEO)
+    b = _cand(2, SAVED_326 + timedelta(seconds=5), video_file=VIDEO)
+    other = _cand(3, SAVED_326 + timedelta(minutes=3))
+    matches = sm.match_sessions([a, b, other], REC, 90.0, t0=32.05, video_path=VIDEO)
+    assert sm.pick(matches) is None
+    assert sm.MatchResult(REC, matches, None).ambiguous
+
+
+def _win(start_local: datetime, stop_local: datetime) -> dict:
+    return {"rec_start": _local_epoch(start_local), "rec_stop": _local_epoch(stop_local)}
+
+
+def test_recording_window_filter_keeps_and_drops():
+    # nagranie 19:51:06 + T0 32,05 s → start sesji ~19:51:38 lokalnie
+    inside = _cand(1, SAVED_326, **_win(datetime(2026, 8, 12, 19, 51, 5),
+                                        datetime(2026, 8, 12, 19, 52, 30)))
+    other = _cand(2, SAVED_326, **_win(datetime(2026, 8, 12, 19, 54, 0),
+                                       datetime(2026, 8, 12, 19, 55, 0)))
+    edge = _cand(3, SAVED_326, **_win(datetime(2026, 8, 12, 19, 52, 0),     # 22 s po → w TOL
+                                      datetime(2026, 8, 12, 19, 53, 0)))
+    unknown = _cand(4, SAVED_326, rec_start=_local_epoch(datetime(2026, 8, 12, 10, 0)))
+    kept, dropped = sm.filter_by_recording_window([inside, other, edge, unknown], REC,
+                                                  90.0, t0=32.05)
+    assert [c.id for c in kept] == [1, 3, 4] and dropped == 1
+    # bez T0 cały przedział nagrania (19:51:06–19:52:36) — `other` nadal poza
+    kept, dropped = sm.filter_by_recording_window([inside, other], REC, 90.0, t0=None)
+    assert [c.id for c in kept] == [1] and dropped == 1
+    # start nagrania nie z nazwy pliku → bez filtra
+    rec_ct = sm.RecordingTime(REC.start, "creation_time")
+    assert sm.filter_by_recording_window([other], rec_ct, 90.0, 32.05) == ([other], 0)
+    # wskazany nazwą pliku nie jest odrzucany przez okno
+    named = _cand(5, SAVED_326, video_file=VIDEO, **_win(datetime(2026, 8, 12, 19, 54, 0),
+                                                         datetime(2026, 8, 12, 19, 55, 0)))
+    assert sm.filter_by_recording_window([named], REC, 90.0, 32.05, VIDEO) == ([named], 0)

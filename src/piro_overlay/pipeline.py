@@ -121,12 +121,13 @@ def resolve_id_tone(code: audio_sync.IdToneCode, video: str | Path, *,
     if len(cands) == 1:
         return IdToneResult(code, cands[0].id, f"{code.label} → #{cands[0].id}")
     result = _match_candidates(video, cands, t0=t0, info=info)
+    note = f" ({result.info})" if result.info else ""
     if result.picked is None:
         return IdToneResult(code, None,
                             f"kod tymczasowy {code.label}: {len(cands)} wpisów w bazie, "
-                            "czas nagrania nie rozstrzyga — wybierz ID ręcznie", result)
+                            f"czas nagrania nie rozstrzyga — wybierz ID ręcznie{note}", result)
     picked = result.picked.candidate
-    return IdToneResult(code, picked.id, f"{code.label} → #{picked.id}", result)
+    return IdToneResult(code, picked.id, f"{code.label} → #{picked.id}{note}", result)
 
 
 def detect_id(video: str | Path, *, t0: float | None = None,
@@ -264,18 +265,38 @@ def find_session_by_time(video: str | Path, *, t0: float | None = None,
 def _match_candidates(video: str | Path, cands: list[api.SessionCandidate], *,
                       t0: float | None,
                       info: ffmpeg.VideoInfo | None) -> session_match.MatchResult:
-    """Ocena gotowej listy kandydatów względem nagrania (czas + odcisk strzałów).
+    """Ocena gotowej listy kandydatów względem nagrania (nazwa pliku + okno nagrania
+    + czas + odcisk strzałów).
 
     Wspólne dla dopasowania po oknie czasu (`find_session_by_time`) i dla
     rozstrzygania kilku wpisów o tym samym kodzie tymczasowym (`resolve_id_tone`).
+    Pola nagrania z kalkulatora (`video_file`, `rec_start`/`rec_stop`) są opcjonalne:
+    stary serwer ich nie zwraca → zachowanie jak dotąd.
     """
     info = info or ffmpeg.probe(video)
     rec = session_match.recording_start(video, info.duration, info.creation_time)
     if rec is None:
         return session_match.MatchResult(None, (), None)
-    matches = session_match.match_sessions(cands, rec, info.duration, t0)
+    notes: list[str] = []
+    kept, dropped = session_match.filter_by_recording_window(
+        cands, rec, info.duration, t0, video)
+    if dropped and not kept:
+        # „nigdy nie zgaduj" działa w obie strony: okno z urządzenia mogło mieć zły
+        # zegar — wszystkich nie wyrzucamy, zostaje ocena po czasie jak dotąd
+        notes.append(f"okno nagrania wykluczyło wszystkich kandydatów ({dropped}) "
+                     "— pominięto ten filtr")
+    elif dropped:
+        cands = kept
+        notes.append(f"okno nagrania odrzuciło {dropped}")
+    matches = session_match.match_sessions(cands, rec, info.duration, t0, video)
+    named = [m for m in matches if m.file_match]
+    if len(named) == 1:
+        notes.insert(0, "dopasowano po nazwie pliku")
+        return session_match.MatchResult(rec, matches, named[0], "; ".join(notes))
+    if len(named) > 1:
+        notes.insert(0, f"{len(named)} wpisy wskazują ten plik (duplikat?) — wybierz ręcznie")
     hits = [m for m in matches if m.in_window]
-    if t0 is not None and len(hits) >= 2:
+    if t0 is not None and len(hits) >= 2 and not named:
         # Kilka sesji w oknie czasu (zegar timera dryfuje, strzelcy co ~60–100 s):
         # rozstrzyga odcisk strzałów — oś czasu każdej sesji przyłożona do energii
         # audio od T0. Na proxy LRF (jak detekcja T0): ładowanie audio raz.
@@ -284,7 +305,8 @@ def _match_candidates(video: str | Path, cands: list[api.SessionCandidate], *,
         if len(timelines) >= 2:
             scores = audio_sync.shot_alignment_scores(audio_source(video), t0, timelines)
             matches = session_match.apply_shot_scores(matches, scores)
-    return session_match.MatchResult(rec, matches, session_match.pick(matches))
+    return session_match.MatchResult(rec, matches, session_match.pick(matches),
+                                     "; ".join(notes))
 
 
 def detect_anchor(video: str | Path, start: float | None = None,
