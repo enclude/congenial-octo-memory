@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from .api import SessionCandidate
+from .matching_score import NAME_DELTA_MAX_S, NAME_DELTA_MIN_S
 
 # start sesji na timerze poprzedza bzyczek (T0) o `start_delay` (~1–2 s) i klik
 # „Start" — ale zegar timera DRYFUJE: 2026-08-12 zgadzał się z kamerą co do 2 s,
@@ -144,23 +145,53 @@ def time_from_filename(path: str | Path, tz: tzinfo | None = None) -> datetime |
     return naive.replace(tzinfo=tz or local_tz())
 
 
-def video_file_matches(candidate_name: str, video_path: str | Path) -> bool:
-    """Czy `video_file` kandydata z kalkulatora wskazuje plik `video_path`.
+def video_file_delta(candidate_name: str, video_path: str | Path) -> float | None:
+    """Różnica czasu (s) `czas_nazwy_pliku − czas(video_file)` albo None, gdy nazwy się
+    nie odnoszą do siebie.
 
-    Porównanie rdzeni nazw bez wielkości liter (proxy `.LRF` i miniatura `.THM`
-    mają ten sam rdzeń co `.MP4`). Nazwa z `????` w miejscu licznika DJI pasuje do
-    każdego licznika przy IDENTYCZNYM czasie `YYYYMMDDHHMMSS`.
+    Rdzenie nazw porównywane bez wielkości liter (proxy `.LRF` i miniatura `.THM` mają
+    ten sam rdzeń co `.MP4`): identyczny rdzeń → 0,0. Predykcja z `????` w miejscu
+    licznika DJI → różnica czasów z 14 cyfr (oba zegary lokalne ścienne). Nazwa z
+    ZNANYM, innym licznikiem → None (to inny plik, nawet w tej samej sekundzie).
     """
     name = (candidate_name or "").strip().replace("\\", "/")
     if not name:
-        return False
+        return None
     cand = Path(name).stem.upper()
     stem = Path(video_path).stem.upper()
     if cand == stem:
-        return True
+        return 0.0
     wild = _DJI_WILD_RE.match(cand)
     real = _DJI_STEM_RE.match(stem)
-    return bool(wild and real and wild.group(1) == real.group(1))
+    if not (wild and real):
+        return None
+    try:
+        tv = datetime.strptime(wild.group(1), "%Y%m%d%H%M%S")
+        tf = datetime.strptime(real.group(1), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+    return (tf - tv).total_seconds()
+
+
+def video_file_matches(candidate_name: str, video_path: str | Path,
+                       offset_s: float = 0.0) -> bool:
+    """Czy `video_file` kandydata z kalkulatora wskazuje plik `video_path`.
+
+    Identyczny rdzeń nazwy → tak. Nazwa z `????` w miejscu licznika (predykcja ESP
+    z `rec_start`) pasuje do każdego licznika, gdy `Δ = czas_nazwy − offset_s −
+    czas(video_file)` mieści się w `[NAME_DELTA_MIN_S, NAME_DELTA_MAX_S]` (−2…+1 s):
+    ESP liczy `rec_start = push − record_time_s` z CAŁKOWITYMI sekundami, więc
+    predykcja wypada 0–1 s (+ opóźnienie BLE) PÓŹNIEJ niż prawdziwy start — wymóg
+    identycznej sekundy trafiał tylko w część nagrań (G1). `offset_s` = estymowany
+    offset zegara kamery względem ESP (`matching.estimate_offsets`), domyślnie 0.
+    """
+    delta = video_file_delta(candidate_name, video_path)
+    if delta is None:
+        return False
+    if delta == 0.0 and Path(candidate_name.strip().replace("\\", "/")).stem.upper() \
+            == Path(video_path).stem.upper():
+        return True
+    return NAME_DELTA_MIN_S <= delta - offset_s <= NAME_DELTA_MAX_S
 
 
 def recording_start(path: str | Path, duration: float, creation_time: str = "",

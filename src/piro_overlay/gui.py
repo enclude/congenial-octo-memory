@@ -61,8 +61,8 @@ except Exception:  # noqa: BLE001
 from PIL import Image
 from PIL.ImageQt import ImageQt
 
-from . import (__version__, api, audio_sync, config, ffmpeg, overlay, pipeline,
-              preview, render, resources)
+from . import (__version__, api, assignment_store, audio_sync, config, ffmpeg, overlay,
+              pipeline, preview, render, resources)
 from .i18n import get_translator
 from .models import ANCHOR_POSITIONS, AnchorMode, Lang, OverlayStyle, Session, Shot
 from .parser import delete_shot, format_timeline, move_shot, parse_timeline
@@ -1101,31 +1101,55 @@ class BatchIdDetectWorker(QThread):
         self.match_time = match_time
 
     def run(self):
+        stored = self._stored()
+        if stored is not None:
+            self.done.emit(self.row_id, *stored)
+            return
         try:
             code = pipeline.detect_id_tone(self.video_path)
         except Exception:  # noqa: BLE001
             code = None
         detected, info, source = None, "", ""
-        if code is not None and code.is_db_id:
-            detected, source = code.value, "tone"
-        elif code is not None:
-            # Kod tymczasowy (sesja nagrana offline): ID wpisu trzeba dopiero
-            # znaleźć w bazie po `temp_id`; T0 z bzyczka zawęża rozstrzyganie,
-            # gdy ten sam kod ma kilka wpisów.
+        contradicted = False
+        if code is not None:
+            # Kanał 0: ID wpisu wprost, ale sprawdzany z plikiem (T0 ↔ pre-roll, beep,
+            # czas trwania) — ton z sąsiedniego stanowiska daje „do decyzji", nie cudze ID.
+            # Kod tymczasowy: ID wpisu szukane po `temp_id` (też z oceną czasu).
+            # T0 z bzyczka jest potrzebny w obu przypadkach.
             try:
                 t0 = pipeline.detect_start_signal(self.video_path)
             except Exception:  # noqa: BLE001
                 t0 = None
-            result = pipeline.resolve_id_tone(code, self.video_path, t0=t0)
+            try:
+                result = pipeline.resolve_id_tone(code, self.video_path, t0=t0)
+            except Exception as exc:  # noqa: BLE001 — sieć/API: ID z tonu jak dotąd
+                result = pipeline.IdToneResult(code, code.entry_id, f"kontrola ID: {exc}")
             info = result.info
             if result.session_id is not None:
-                detected, source = result.session_id, "temp"
-        if detected is None and self.match_time:
+                detected, source = result.session_id, "tone" if code.is_db_id else "temp"
+            else:
+                contradicted = info.startswith("do decyzji")
+        if detected is None and self.match_time and not contradicted:
+            # ton przeczący wpisowi NIE może zostać „naprawiony" dopasowaniem po czasie
+            # (wskazałoby najbliższy wpis — właśnie ten, któremu przeczą dowody)
             detected, match_info, by_file = self._match_by_time()
             info = match_info or info
             if detected is not None:
                 source = "file" if by_file else "time"
         self.done.emit(self.row_id, detected, info, source)
+
+    def _stored(self) -> tuple[int, str, str] | None:
+        """Zablokowane przypisanie z pliku bocznego (`assignment_store`): decyzja ręczna
+        albo wcześniejsze pewne dopasowanie — bez ponownej analizy."""
+        try:
+            rec = assignment_store.load(self.video_path)
+        except Exception:  # noqa: BLE001
+            return None
+        if rec is None or not rec.locked or not rec.entry_id:
+            return None
+        if rec.source == "manual":
+            return rec.entry_id, "zapisana decyzja ręczna", ""
+        return rec.entry_id, "zapisane przypisanie: " + "; ".join(rec.reasons), "time"
 
     def _match_by_time(self) -> tuple[int | None, str, bool]:
         """Opcja awaryjna: sesja dopasowana po czasie nagrania (bez T0 — wsad go
@@ -1989,6 +2013,13 @@ class BatchDialog(QWidget):
         self._refresh()
 
     def _start_prepare(self, row: BatchRow) -> None:
+        if row.id_source == "" and row.session_id > 0:
+            # ID wpisane/poprawione przez człowieka i zatwierdzone „Przygotuj" — blokada
+            # w pliku bocznym, żeby automat przy następnym przebiegu go nie przestawił
+            try:
+                assignment_store.save_manual(row.video_path, row.session_id)
+            except Exception:  # noqa: BLE001 — zapis best-effort
+                pass
         row.status = BatchRowStatus.PREPARING
         row.error = ""
         self._sync_row(row)
@@ -5077,18 +5108,18 @@ class MainWindow(QMainWindow):
                     return
             self._notify("input", _TR("msg_no_id_tone"))
             return
-        if detected.is_db_id:
-            self._apply_detected_id(detected.value, str(detected.value))
-            return
-        # Kod tymczasowy (sesja nagrana offline): ID wpisu trzeba dopiero znaleźć
-        # w bazie po `temp_id`. Poprzednia operacja właśnie się skończyła
-        # (`_end_op` przed callbackiem), więc slot `_run_op` jest wolny.
+        # Kanał 0: ID wpisu wprost, ale sprawdzane z plikiem (T0 ↔ pre-roll, beep,
+        # czas trwania — ton z sąsiedniego stanowiska). Kod tymczasowy: ID wpisu
+        # trzeba dopiero znaleźć w bazie po `temp_id`. Poprzednia operacja właśnie się
+        # skończyła (`_end_op` przed callbackiem), więc slot `_run_op` jest wolny.
         t0 = self.t0_spin.value()
         fn = partial(pipeline.resolve_id_tone, detected, self.video_path,
                      t0=t0 if t0 > 0 else None, info=self._video_info)
+        status = (_TR("status_id_check") if detected.is_db_id
+                  else _TR("status_temp_id_lookup")).format(detected.label)
         self._run_op(fn, button=self.detect_id_btn,
                      busy_text=_TR("busy_temp_id_lookup"),
-                     status_text=_TR("status_temp_id_lookup").format(detected.label),
+                     status_text=status,
                      on_result=self._on_temp_id_resolved)
 
     def _on_temp_id_resolved(self, result) -> None:
@@ -5097,7 +5128,7 @@ class MainWindow(QMainWindow):
         if result.session_id is None:
             self._notify("input", result.info or _TR("msg_no_id_tone"))
             return
-        self._apply_detected_id(result.session_id, result.info)
+        self._apply_detected_id(result.session_id, result.info or str(result.session_id))
 
     def _apply_detected_id(self, session_id: int, label: str) -> None:
         self.id_spin.setValue(session_id)

@@ -226,11 +226,50 @@ def test_resolve_id_tone_channel_zero_is_entry_id(monkeypatch):
         raise AssertionError("kanał 0 nie pyta o temp_id")
 
     monkeypatch.setattr(pipeline.api, "find_sessions_by_temp_id", boom)
+    monkeypatch.setattr(pipeline.api, "fetch_candidate", lambda i: _cand(i, ""))
     out = pipeline.resolve_id_tone(IdToneCode(0, 1234), "brak.mp4")
     assert out.session_id == 1234 and out.info == ""
 
 
-def test_resolve_id_tone_single_temp_candidate(monkeypatch):
+def test_resolve_id_tone_channel_zero_offline_keeps_id():
+    # sieć niedostępna (conftest) → ID z tonu jak przed kontrolą, z uwagą
+    from piro_overlay.audio_sync import IdToneCode
+    out = pipeline.resolve_id_tone(IdToneCode(0, 1234), "brak.mp4")
+    assert out.session_id == 1234 and "nie sprawdzono" in out.info
+
+
+def test_resolve_id_tone_channel_zero_missing_entry(monkeypatch):
+    from piro_overlay.audio_sync import IdToneCode
+    monkeypatch.setattr(pipeline.api, "fetch_candidate", lambda i: None)
+    out = pipeline.resolve_id_tone(IdToneCode(0, 1234), "brak.mp4")
+    assert out.session_id is None and out.info.startswith("do decyzji")
+
+
+def _dji_file(tmp_path, name="DJI_20260920115500_0001_D.MP4"):
+    video = tmp_path / name
+    video.write_bytes(b"x")
+    return video
+
+
+def _info(duration=30.0):
+    return pipeline.ffmpeg.VideoInfo(duration=duration, fps=30.0, width=320, height=240)
+
+
+def test_resolve_id_tone_channel_zero_contradicted_by_preroll(monkeypatch, tmp_path):
+    # A6/O3: ton #N, ale T0 w pliku różni się od pre-rollu wpisu #N o > 3 s → do decyzji
+    from dataclasses import replace
+    from piro_overlay.audio_sync import IdToneCode
+    video = _dji_file(tmp_path)
+    cand = replace(_cand(1234, ""), video_preroll_ms=5400)
+    monkeypatch.setattr(pipeline.api, "fetch_candidate", lambda i: cand)
+    ok = pipeline.resolve_id_tone(IdToneCode(0, 1234), video, t0=5.6, info=_info())
+    assert ok.session_id == 1234
+    bad = pipeline.resolve_id_tone(IdToneCode(0, 1234), video, t0=12.0, info=_info())
+    assert bad.session_id is None
+    assert bad.info.startswith("do decyzji: ID-tone #1234, ale") and "pre-roll" in bad.info
+
+
+def test_resolve_id_tone_single_temp_candidate(monkeypatch, tmp_path):
     from piro_overlay.audio_sync import IdToneCode
     seen = []
 
@@ -239,9 +278,30 @@ def test_resolve_id_tone_single_temp_candidate(monkeypatch):
         return [_cand(1234)]
 
     monkeypatch.setattr(pipeline.api, "find_sessions_by_temp_id", fake)
-    out = pipeline.resolve_id_tone(IdToneCode(3, 147), "brak.mp4")
+    # nagranie ~2 h po zapisie wpisu (10:00 UTC) — w oknie 12 h
+    video = _dji_file(tmp_path)
+    out = pipeline.resolve_id_tone(IdToneCode(3, 147), video, info=_info())
     assert seen == ["30147"]
     assert out.session_id == 1234 and out.info == "3-0147 → #1234"
+
+
+def test_resolve_id_tone_single_temp_candidate_too_old(monkeypatch, tmp_path):
+    # A5/O2: jedyny wpis z tym kodem jest sprzed > 12 h (licznik się zawinął,
+    # właściwy wpis jeszcze nie dotarł) → do decyzji, nie cudze ID
+    from piro_overlay.audio_sync import IdToneCode
+    monkeypatch.setattr(pipeline.api, "find_sessions_by_temp_id", lambda t: [_cand(1234)])
+    video = _dji_file(tmp_path, "DJI_20260922115500_0001_D.MP4")
+    out = pipeline.resolve_id_tone(IdToneCode(3, 147), video, info=_info())
+    assert out.session_id is None
+    assert out.info.startswith("do decyzji") and "stary kod" in out.info
+
+
+def test_resolve_id_tone_single_temp_candidate_unknown_time(monkeypatch):
+    # plik nieczytelny → czasu nie da się sprawdzić → bez zgadywania
+    from piro_overlay.audio_sync import IdToneCode
+    monkeypatch.setattr(pipeline.api, "find_sessions_by_temp_id", lambda t: [_cand(1234)])
+    out = pipeline.resolve_id_tone(IdToneCode(3, 147), "brak.mp4")
+    assert out.session_id is None and "nieznany" in out.info
 
 
 def test_resolve_id_tone_no_entry_gives_no_id(monkeypatch):

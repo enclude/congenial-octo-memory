@@ -10,9 +10,11 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass, replace
+from datetime import timedelta, timezone
 from pathlib import Path
 
-from . import api, audio_sync, ffmpeg, render, session_match
+from . import api, assignment_store, audio_sync, ffmpeg, matching, render, session_match
+from .matching_score import BATCH_CLUSTER_GAP_S, BATCH_QUERY_MARGIN_S
 from .models import AnchorMode, Session
 from .parser import parse_timeline
 
@@ -91,19 +93,63 @@ class IdToneResult:
     match: session_match.MatchResult | None = None   # tylko gdy rozstrzygał czas/odcisk
 
 
+def take_for_video(video: str | Path, *, t0: float | None = None,
+                   info: ffmpeg.VideoInfo | None = None,
+                   tone: audio_sync.IdToneCode | None = None,
+                   tz=None) -> matching.Take:
+    """`matching.Take` jednego pliku z JUŻ znanych sygnałów (bez analizy audio).
+
+    Czas startu: `session_match.recording_start` (nazwa → `creation_time` → mtime);
+    plik nieczytelny/nieistniejący → ujęcie bez czasu (dowody czasowe pominięte)."""
+    tz = tz or session_match.local_tz()
+    path = Path(video)
+    if info is None:
+        try:
+            info = ffmpeg.probe(video)
+        except Exception:  # noqa: BLE001 — brak pliku/ffprobe: ujęcie bez czasu i długości
+            info = None
+    duration = info.duration if info else 0.0
+    rec = session_match.recording_start(video, duration, info.creation_time if info else "",
+                                        tz) if info else None
+    kind = matching.classify(path)
+    return matching.Take(stem=path.stem, path=path, kind=kind,
+                         device_key=matching.device_key(kind, path),
+                         start_raw=matching.wall_of(rec.start, tz) if rec else None,
+                         start_src=rec.source if rec else "", duration=duration or 0.0,
+                         t0=t0, tone=tone, files=(path,))
+
+
 def resolve_id_tone(code: audio_sync.IdToneCode, video: str | Path, *,
                     t0: float | None = None,
                     info: ffmpeg.VideoInfo | None = None) -> IdToneResult:
     """Zamienia ramkę ID-tone na ID wpisu w bazie kalkulatora.
 
-    Kanał 0 → wartość JEST tym ID (bez zapytań). Kanał 1-9 → kod tymczasowy:
-    pytamy kalkulator o wpisy z tym `temp_id`; jeden kandydat = trafienie,
-    kilku (licznik kodów zawija się po 9999) = rozstrzyga dopasowanie po czasie
-    nagrania i odcisku strzałów, jak przy nieczytelnym ID. Bez rozstrzygnięcia
-    `session_id` jest None — ZGADYWANIE jest gorsze od braku ID (nakładka
-    pokazałaby cudzą sesję).
+    Kanał 0 → wartość JEST tym ID, ale wpis jest pobierany i sprawdzany pod kątem
+    sprzeczności z plikiem (T0 ↔ pre-roll, beep na osi urządzenia, czas trwania —
+    O3: telefon potrafi złapać ton SĄSIEDNIEGO stanowiska); sprzeczność → brak ID
+    z opisem „do decyzji: …". Błąd sieci → ID przyjęte jak dotąd (bez kontroli).
+    Kanał 1-9 → kod tymczasowy: pytamy kalkulator o wpisy z tym `temp_id`; także
+    JEDEN kandydat przechodzi ocenę czasu (≤ 12 h od nagrania i brak sprzeczności — O2:
+    licznik zawija się po 9999, a właściwy wpis mógł jeszcze nie dotrzeć), kilku —
+    rozstrzyga dopasowanie po czasie nagrania i odcisku strzałów. Bez rozstrzygnięcia
+    `session_id` jest None — ZGADYWANIE jest gorsze od braku ID (nakładka pokazałaby
+    cudzą sesję).
     """
+    tz = session_match.local_tz()
     if code.is_db_id:
+        try:
+            cand = api.fetch_candidate(code.value)
+        except api.ApiError as exc:
+            return IdToneResult(code, code.value,
+                                f"#{code.value}: nie sprawdzono spójności z wpisem ({exc})")
+        if cand is None:
+            return IdToneResult(code, None,
+                                f"do decyzji: ID-tone #{code.value} — brak takiego wpisu w bazie")
+        take = take_for_video(video, t0=t0, info=info, tone=code, tz=tz)
+        bad = matching.contradictions(take, cand, tz=tz)
+        if bad:
+            return IdToneResult(code, None,
+                                f"do decyzji: ID-tone #{code.value}, ale " + "; ".join(bad))
         return IdToneResult(code, code.value)
     try:
         cands = api.find_sessions_by_temp_id(code.temp_id)
@@ -118,7 +164,13 @@ def resolve_id_tone(code: audio_sync.IdToneCode, video: str | Path, *,
         return IdToneResult(code, None,
                             f"kod tymczasowy {code.label}: brak wpisu w bazie — "
                             "wyślij sesje z timera i spróbuj ponownie")
+    take = take_for_video(video, t0=t0, info=info, tone=code, tz=tz)
     if len(cands) == 1:
+        decision = matching.decide(take, [matching.score_pair(take, cands[0], tz=tz)])
+        if decision.state != "picked":
+            return IdToneResult(code, None,
+                                f"do decyzji: kod tymczasowy {code.label} → #{cands[0].id}: "
+                                + "; ".join(decision.reasons))
         return IdToneResult(code, cands[0].id, f"{code.label} → #{cands[0].id}")
     result = _match_candidates(video, cands, t0=t0, info=info)
     note = f" ({result.info})" if result.info else ""
@@ -127,15 +179,31 @@ def resolve_id_tone(code: audio_sync.IdToneCode, video: str | Path, *,
                             f"kod tymczasowy {code.label}: {len(cands)} wpisów w bazie, "
                             f"czas nagrania nie rozstrzyga — wybierz ID ręcznie{note}", result)
     picked = result.picked.candidate
+    check = matching.score_pair(take, picked, tz=tz)
+    tone_ev = [e for e in check.evidence if e.kind == "tone"]
+    bad = [e.reason for e in check.evidence if e.contradiction]
+    if bad or not tone_ev or tone_ev[0].points <= 0:
+        why = "; ".join(bad or [e.reason for e in tone_ev] or ["czas nagrania nieznany"])
+        return IdToneResult(code, None,
+                            f"do decyzji: kod tymczasowy {code.label} → #{picked.id}: {why}{note}",
+                            result)
     return IdToneResult(code, picked.id, f"{code.label} → #{picked.id}{note}", result)
 
 
 def detect_id(video: str | Path, *, t0: float | None = None,
               info: ffmpeg.VideoInfo | None = None) -> IdToneResult | None:
     """`detect_id_tone` + `resolve_id_tone` — jedno wejście dla GUI/WWW/wsadu.
-    None = w audio nie ma czytelnej ramki ID."""
+    None = w audio nie ma czytelnej ramki ID. Bez podanego `t0` wykrywa bzyczek —
+    kontrola sprzeczności (T0 ↔ pre-roll, beep) bez T0 jest dużo słabsza."""
     code = detect_id_tone(video)
-    return None if code is None else resolve_id_tone(code, video, t0=t0, info=info)
+    if code is None:
+        return None
+    if t0 is None:
+        try:
+            t0 = detect_start_signal(video)
+        except Exception:  # noqa: BLE001 — brak T0 to tylko słabsza kontrola
+            t0 = None
+    return resolve_id_tone(code, video, t0=t0, info=info)
 
 
 _POLISH_MAP = str.maketrans({
@@ -402,3 +470,123 @@ def scan_video_dir(path: str | Path, recursive: bool = False) -> list[Path]:
              and not p.name.startswith(".")
              and p.is_file()]
     return sorted(files, key=lambda p: (str(p.parent).lower(), p.name.lower()))
+
+
+# ---------------------------------------------------------------------------
+# Automatyczne wiązanie wsadowe: folder z karty DJI + folder z telefonu
+# (`DOPASOWANIE-WIDEO.md` §3.4, logika punktowa w `matching.py`)
+# ---------------------------------------------------------------------------
+
+def extract_take(path: str | Path, files: tuple[Path, ...] = (), *, tz=None) -> matching.Take:
+    """Sygnały jednego ujęcia: czas startu, długość, T0 (bzyczek), ramka ID-tone z pozycją."""
+    try:
+        t0 = detect_start_signal(path)
+    except Exception:  # noqa: BLE001 — plik bez audio: ujęcie bez T0
+        t0 = None
+    try:
+        tone = detect_id_tone(path)
+    except Exception:  # noqa: BLE001
+        tone = None
+    take = take_for_video(path, t0=t0, tone=tone, tz=tz)
+    return replace(take, files=files or (Path(path),))
+
+
+def fetch_entries_for_takes(takes: list[matching.Take], *, tz=None) -> list[api.SessionCandidate]:
+    """Kandydaci z API dla całej partii: okno czasu wszystkich ujęć ± 1 h (osobne
+    zapytanie per „dzień" — skupisko ujęć bez przerwy > 6 h) ∪ wpisy z kodami
+    tymczasowymi z tonów ∪ wpisy wskazane tonem kanału 0 (pobierane po ID)."""
+    tz = tz or session_match.local_tz()
+    out: dict[int, api.SessionCandidate] = {}
+    timed = sorted((t for t in takes if t.start_raw is not None), key=lambda t: t.start_raw)
+    clusters: list[list[matching.Take]] = []
+    for t in timed:
+        if clusters and t.start_raw - (clusters[-1][-1].start_raw + clusters[-1][-1].duration) \
+                <= BATCH_CLUSTER_GAP_S:
+            clusters[-1].append(t)
+        else:
+            clusters.append([t])
+    for group in clusters:
+        lo = matching.wall_to_datetime(group[0].start_raw - BATCH_QUERY_MARGIN_S, tz)
+        hi = matching.wall_to_datetime(max(t.start_raw + t.duration for t in group)
+                                       + BATCH_QUERY_MARGIN_S, tz)
+        off = int((lo.utcoffset() or timedelta(0)).total_seconds())
+        frm, to = lo.astimezone(timezone.utc), hi.astimezone(timezone.utc)
+        try:
+            found = api.find_sessions(frm, to, tz_offset_s=off)
+        except api.ApiUnsupported:
+            found = api.find_sessions_by_scan(frm, to)
+        for c in found:
+            out.setdefault(c.id, c)
+    for code in {t.tone for t in takes if t.tone is not None}:
+        try:
+            if code.is_db_id:
+                if code.value not in out and (c := api.fetch_candidate(code.value)) is not None:
+                    out[c.id] = c
+            else:
+                for c in api.find_sessions_by_temp_id(code.temp_id):
+                    out.setdefault(c.id, c)
+        except api.ApiError:
+            continue       # brak jednego wpisu nie może zatrzymać całej partii
+    return list(out.values())
+
+
+def _shot_scorer(take: matching.Take, timelines: dict[int, list[float]]) -> dict[int, float]:
+    return audio_sync.shot_alignment_scores(audio_source(take.path), take.t0, timelines)
+
+
+def _locked_assignment(take: matching.Take) -> matching.Assignment | None:
+    rec = assignment_store.load(take.path)
+    if rec is None or not rec.locked:
+        return None
+    reasons = rec.reasons or (("decyzja ręczna",) if rec.source == "manual" else ())
+    return matching.Assignment(take, rec.entry_id, rec.state, rec.score,
+                               reasons=tuple(reasons) + ("zapisane wcześniej",),
+                               locked=True, source=rec.source)
+
+
+def match_folders(dirs: list[str | Path], *, recursive: bool = False, save: bool = True,
+                  tz=None, progress=None,
+                  entries: list[api.SessionCandidate] | None = None) -> matching.MatchReport:
+    """Automatyczne wiązanie wszystkich nagrań z katalogów (karta DJI, telefon, …).
+
+    1. pliki → ujęcia (`matching.group_by_stem`; LRF/THM obok MP4 = to samo ujęcie),
+    2. sygnały per ujęcie (`extract_take`: start, długość, T0, ID-tone z pozycją),
+    3. kandydaci z API (`fetch_entries_for_takes`) — albo gotowa lista `entries`,
+    4. `matching.match_takes` (offsety z kotwic, punkty, odcisk, przydział 1:1 per
+       urządzenie), zapisane wcześniej `picked`/ręczne przypisania są nietykalne,
+    5. `save` → wynik do plików bocznych (`assignment_store`); `picked` blokuje się.
+    `progress(i, n, path)` — opcjonalny postęp ekstrakcji (najwolniejszy etap).
+    """
+    tz = tz or session_match.local_tz()
+    paths: list[Path] = []
+    for d in dirs:
+        root = Path(d)
+        it = root.rglob("*") if recursive else root.glob("*")
+        if not root.is_dir():
+            raise PipelineError(f"To nie jest katalog: {root}")
+        paths.extend(p for p in it if p.is_file() and not p.name.startswith(".")
+                     and p.suffix.lower() in VIDEO_SUFFIXES | {".lrf", ".thm"})
+    groups = matching.group_by_stem(paths)
+    takes: list[matching.Take] = []
+    locked: dict[str, matching.Assignment] = {}
+    for i, (main, files) in enumerate(groups):
+        if progress:
+            progress(i, len(groups), main)
+        rec = assignment_store.load(main)
+        if rec is not None and rec.locked:
+            # zablokowane — bez analizy audio, tylko czas z nazwy/metadanych
+            take = replace(take_for_video(main, tz=tz), files=files)
+            locked[take.key] = _locked_assignment(take)
+        else:
+            take = extract_take(main, files, tz=tz)
+        takes.append(take)
+    if entries is None:
+        entries = fetch_entries_for_takes([t for t in takes if t.key not in locked], tz=tz)
+    report = matching.match_takes(takes, entries, tz=tz, shot_scorer=_shot_scorer,
+                                  locked=locked)
+    if save:
+        for a in report.assignments:
+            if not a.locked:
+                assignment_store.save(a.take.path, assignment_store.StoredAssignment(
+                    a.entry_id, a.state, "auto", a.score, a.reasons))
+    return report

@@ -12,6 +12,9 @@ Przykłady:
 
     # klasycznie, z ręcznym T0 i osią z tekstu
     piro-overlay --video in.mp4 --timeline "1: 2.81s | 2: 4.63s (+1.82s)" --t0 3.2 -o out.mp4
+
+    # automatyczne wiązanie całych folderów (karta DJI + telefon) z wpisami kalkulatora
+    piro-overlay match D:/DCIM/DJI_001 D:/Pixel/Camera
 """
 
 from __future__ import annotations
@@ -111,7 +114,56 @@ def _compute_trim(args: argparse.Namespace, t0: float | None,
     return start, end
 
 
+def match_main(argv: list[str]) -> int:
+    """`piro-overlay match DIR [DIR ...]`: automatyczne wiązanie nagrań z folderów
+    z wpisami kalkulatora (`pipeline.match_folders`) i tabela wyników."""
+    parser = argparse.ArgumentParser(
+        prog="piro-overlay match",
+        description="Automatyczne wiązanie nagrań (DJI, telefon, inne) z wpisami kalkulatora. "
+                    "Wynik trafia do plików bocznych <nazwa>.piro-match.json obok nagrań; "
+                    "pewne (picked) i ręczne przypisania są przy kolejnym przebiegu nietykalne.")
+    parser.add_argument("dirs", nargs="+", help="katalogi z nagraniami")
+    parser.add_argument("-r", "--recursive", action="store_true", help="także podkatalogi")
+    parser.add_argument("--no-save", action="store_true",
+                        help="nie zapisuj plików bocznych (tylko raport)")
+    parser.add_argument("--json", action="store_true", help="wynik jako JSON (dla skryptów)")
+    args = parser.parse_args(argv)
+
+    def progress(i: int, n: int, path: Path) -> None:
+        if not args.json:
+            print(f"\r[{i + 1}/{n}] analiza {path.name:<48}", end="", flush=True)
+
+    try:
+        report = pipeline.match_folders(args.dirs, recursive=args.recursive,
+                                        save=not args.no_save, progress=progress)
+    except (api.ApiError, pipeline.PipelineError) as exc:
+        raise SystemExit(f"\nWiązanie nie powiodło się: {exc}") from None
+    if args.json:
+        import json
+        print(json.dumps([{"file": str(a.take.path), "device": a.take.device_key,
+                           "state": a.state, "entry_id": a.entry_id, "score": a.score,
+                           "margin": a.margin, "locked": a.locked, "reasons": list(a.reasons),
+                           "top": [list(t) for t in a.top]} for a in report.assignments],
+                         ensure_ascii=False, indent=2))
+        return 0
+    print()
+    for off in report.offsets.values():
+        print(f"  {off.note}")
+    counts = {"picked": 0, "ambiguous": 0, "none": 0}
+    for a in report.assignments:
+        counts[a.state] = counts.get(a.state, 0) + 1
+        mark = {"picked": "OK ", "ambiguous": "?? ", "none": "-- "}.get(a.state, "   ")
+        lock = " [zapisane]" if a.locked else ""
+        print(f"{mark}{a.take.path.name:<36} {a.label}{lock}")
+    print(f"\npewne: {counts['picked']}, do decyzji: {counts['ambiguous']}, "
+          f"bez wpisu: {counts['none']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "match":
+        return match_main(argv[1:])
     parser = argparse.ArgumentParser(prog="piro-overlay", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

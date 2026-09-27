@@ -210,3 +210,24 @@ def test_decode_id_tone_missing_checksum_slot_rejected(tmp_path):
     expr, dur = _id_tone_expr(4821, repeats=2, skip_slots=((0, 5), (1, 5)))
     wav = _render_wav(tmp_path, expr, dur + 0.3)
     assert decode_id_tone(wav) is None
+
+
+def test_decode_id_tone_reports_frame_position(tmp_path):
+    # O5: pozycja ramki (pierwszy marker) do porównania z `idtone_at_ms − rec_start`;
+    # nie wpływa na równość kodów
+    expr, dur = _id_tone_expr(4821, t_start=1.5)
+    wav = _render_wav(tmp_path, expr, dur + 0.3)
+    code = decode_id_tone(wav)
+    assert code == IdToneCode(0, 4821)
+    assert code.pos_s == pytest.approx(1.5, abs=0.06)
+
+
+def test_decode_id_tone_position_when_first_marker_missing(tmp_path):
+    # pierwszy marker wyciszony — pozycja to pierwszy REALNY marker (drugie powtórzenie)
+    from piro_overlay.audio_sync import _ID_TONE_REPEAT_GAP, _ID_TONE_SLOTS
+    expr, dur = _id_tone_expr(4821, t_start=1.0, skip_markers=(0,))
+    wav = _render_wav(tmp_path, expr, dur + 0.3)
+    code = decode_id_tone(wav)
+    period = _ID_TONE_SLOT * (_ID_TONE_SLOTS + 1) + _ID_TONE_REPEAT_GAP
+    assert code == IdToneCode(0, 4821)
+    assert code.pos_s == pytest.approx(1.0 + period, abs=0.06)

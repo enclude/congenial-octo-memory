@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 
 import pytest
 
@@ -126,3 +127,27 @@ def test_match_time_no_recording_time_exits(monkeypatch):
                         lambda video, **kw: _match_result(recording=False))
     with pytest.raises(SystemExit, match="czasu nagrania"):
         cli._match_session_by_time(_args(video="v.mp4"), info=None, t0=None)
+
+
+def test_match_subcommand_prints_states(monkeypatch, capsys, tmp_path):
+    from pathlib import Path
+    from piro_overlay import matching
+    take = matching.Take("DJI_1", Path("/card/DJI_1.MP4"), "dji", "dji", None)
+    report = matching.MatchReport(
+        [matching.Assignment(take, 12, "picked", 110, 80, ("ID-tone #12",)),
+         matching.Assignment(replace(take, path=Path("/card/DJI_2.MP4")), None, "ambiguous",
+                             40, 10, ("przewaga 10 pkt < 30",))],
+        {"dji": matching.DeviceOffset("dji", 69.0, 3, True, 0.5)})
+    seen = {}
+
+    def fake(dirs, **kw):
+        seen.update(kw, dirs=dirs)
+        return report
+
+    monkeypatch.setattr(cli.pipeline, "match_folders", fake)
+    assert cli.main(["match", str(tmp_path), "--no-save"]) == 0
+    out = capsys.readouterr().out
+    assert seen["dirs"] == [str(tmp_path)] and seen["save"] is False
+    assert "OK DJI_1.MP4" in out and "#12" in out
+    assert "?? DJI_2.MP4" in out and "do decyzji: przewaga" in out
+    assert "offset dji +69.0 s z 3 kotwic" in out and "pewne: 1, do decyzji: 1" in out

@@ -55,6 +55,18 @@ class SessionCandidate:
     video_file: str = ""
     rec_start: int = 0               # start/stop nagrania, unixtime LOKALNY jak `timer_sess_id`; 0 = brak
     rec_stop: int = 0
+    # Kontrakt P5 (ADR-063, ESP → kalkulator): pola do automatycznego wiązania ujęć.
+    # Stary serwer ich nie zwraca → wartości „nieznane" poniżej = zachowanie jak dotąd.
+    video_duration_s: int = 0        # czas nagrania wg ESP (s); 0 = brak
+    video_preroll_ms: int | None = None  # T0 − start nagrania (ms); 0 jest wartością poprawną
+    video_status: str = ""           # ok | partial | interrupted | stop_unconfirmed | ""
+    video_cam: str = ""              # `FF33-<8 hex skrótu>` — model + skrót kamery, nie MAC
+    t_beep_ms: int = 0               # beep (T0) wg zegara ESP, ms w konwencji `timer_sess_id`
+    clock_ok: bool | None = None     # zegar ESP wiarygodny w tej sesji; None = nieznane
+    idtone_played: str = ""          # db | temp | none | ""
+    idtone_value: str = ""           # wartość zagranej ramki ("1247" / "30147")
+    idtone_at_ms: int = 0            # chwila zlecenia tonu (zegar ESP, ms)
+    station_no: int = 0              # kanał ID-tone stanowiska 1–9; 0 = brak
 
 
 def parse_data_zapisu(text: str) -> datetime:
@@ -70,17 +82,46 @@ def _int0(value: Any) -> int:
         return 0
 
 
+def _int_or_none(value: Any, lo: int, hi: int) -> int | None:
+    """Liczba z zakresu `[lo, hi]` albo None (brak/śmieci) — dla pól, w których 0 znaczy 0."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return None
+    return v if lo <= v <= hi else None
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value in (0, 1, "0", "1"):
+        return bool(int(value))
+    return None
+
+
 def candidate_from_payload(data: dict[str, Any]) -> SessionCandidate:
     """Buduje `SessionCandidate` z `data` odpowiedzi `?id=` albo z elementu listy `?from=&to=`.
 
-    Pola nagrania: `?id=` zwraca je w `data.wideo = {plik, rec_start, rec_stop}`, lista
-    i `?temp_id=` płasko (`video_file`, `rec_start`, `rec_stop`). Stary serwer nie zwraca
-    ich wcale → wartości „nieznane" ("" / 0).
+    Pola nagrania: `?id=` zwraca je w `data.wideo = {plik, rec_start, rec_stop, duration_s,
+    preroll_ms, status, cam}` i `data.idtone = {played, value, at_ms}`, lista i `?temp_id=`
+    płasko (`video_file`, `rec_start`, `rec_stop`, `video_duration_s`, `video_preroll_ms`,
+    `video_status`, `video_cam`, `idtone_played`, `idtone_value`, `idtone_at_ms`);
+    `t_beep_ms`, `clock_ok`, `station_no` zawsze płasko (kontrakt P5, ADR-063).
+    Stary serwer nie zwraca ich wcale → wartości „nieznane" ("" / 0 / None).
     """
     czasy = data.get("czasy") or {}
     czas_bazowy = data.get("czas_bazowy", czasy.get("czas_bazowy"))
     wideo = data.get("wideo")
     wideo = wideo if isinstance(wideo, dict) else {}
+    idtone = data.get("idtone")
+    idtone = idtone if isinstance(idtone, dict) else {}
+
+    def pick(nested: dict[str, Any], key: str, flat: str) -> Any:
+        v = nested.get(key)
+        return v if v is not None else data.get(flat)
+
     return SessionCandidate(
         id=int(data["id"]),
         data_zapisu=parse_data_zapisu(str(data["data_zapisu"])),
@@ -95,6 +136,17 @@ def candidate_from_payload(data: dict[str, Any]) -> SessionCandidate:
         video_file=str(wideo.get("plik") or data.get("video_file") or "").strip(),
         rec_start=_int0(wideo.get("rec_start") or data.get("rec_start")),
         rec_stop=_int0(wideo.get("rec_stop") or data.get("rec_stop")),
+        video_duration_s=_int0(pick(wideo, "duration_s", "video_duration_s")),
+        video_preroll_ms=_int_or_none(pick(wideo, "preroll_ms", "video_preroll_ms"),
+                                      -60000, 60000),
+        video_status=str(pick(wideo, "status", "video_status") or "").strip(),
+        video_cam=str(pick(wideo, "cam", "video_cam") or "").strip(),
+        t_beep_ms=_int0(data.get("t_beep_ms")),
+        clock_ok=_bool_or_none(data.get("clock_ok")),
+        idtone_played=str(pick(idtone, "played", "idtone_played") or "").strip(),
+        idtone_value=str(pick(idtone, "value", "idtone_value") or "").strip(),
+        idtone_at_ms=_int0(pick(idtone, "at_ms", "idtone_at_ms")),
+        station_no=_int_or_none(data.get("station_no"), 0, 9) or 0,
     )
 
 

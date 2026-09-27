@@ -35,6 +35,19 @@ from piro_overlay.audio_sync import (  # noqa: E402
 ID_TONE_TEST_ID = 4821
 
 
+@pytest.fixture(autouse=True)
+def _offline_fetch_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Kanał 0 ID-tone pobiera wpis do kontroli sprzeczności (`resolve_id_tone`, O3) —
+    testy nie mogą zależeć od żywego API. Domyślnie „sieć niedostępna" (= ID przyjęte
+    jak przed kontrolą); testy kontroli podmieniają to własną atrapą."""
+    from piro_overlay import api
+
+    def offline(*a, **k):
+        raise api.ApiError("test: API niedostępne")
+
+    monkeypatch.setattr(api, "fetch_candidate", offline)
+
+
 def id_tone_expr(session_id: int, repeats: int = 2, amp: float = 0.8,
                  skip_slots: tuple[tuple[int, int], ...] = (),
                  slot_amps: dict[int, float] | None = None,

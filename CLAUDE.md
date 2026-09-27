@@ -29,6 +29,15 @@ przyszły wariant WWW doda jedynie `web/` (backend + frontend) i zaimportuje ist
   strzałów — dla `find_session_by_time` i dla kodów tymczasowych). Helpery w `cli.py`
   są cienkimi wrapperami (zachowują printy i `SystemExit`); `tests/test_cli.py` pilnuje
   równoważności. NOWĄ logikę przepływu dodawaj TU, nie w cli/gui/web.
+- `matching.py` — automatyczne wiązanie ujęć z wpisami (ADR-063 ESP, `DOPASOWANIE-WIDEO.md`
+  §3): `Take` (ujęcie MP4+LRF+THM, `device_key` dji/pxl/other:<katalog>), `score_pair`
+  (punkty per dowód → `Evidence`, flaga `contradiction`), `decide` (picked/ambiguous/none),
+  `estimate_offsets` (δ zegara urządzenia z kotwic ch0), `match_takes` (przydział 1:1 per
+  urządzenie, DP z monotonicznością, konflikty). Czas = ŚCIENNY lokalny w sekundach.
+  `matching_score.py` — WSZYSTKIE punkty i progi (wartości startowe do kalibracji).
+  `assignment_store.py` — plik boczny `<rdzeń>.piro-match.json` (fallback: cache w
+  `config_dir()`), `locked` = picked albo ręczne. Orkiestracja IO: `pipeline.extract_take`,
+  `fetch_entries_for_takes`, `match_folders`; CLI `piro-overlay match DIR…`.
 - `preview.py` — domenowa kompozycja podglądu klatki (Pillow): `compose_preview(frame,
   session, t, t0, style, duration, video_h)` = panel aktywny dla t + zegar (zamrożony na
   ostatnim strzale, jak w renderze); `scaled_style` skaluje offsety do rozdzielczości
@@ -139,6 +148,33 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 `__editable___…`, którego analiza PyInstallera nie śledzi).
 
 ## Funkcje wprowadzone po MVP
+
+- **Automatyczne wiązanie ujęć, kontrakt P5 (v0.68.0, ADR-063 w repo ESP):** O1
+  `session_match.video_file_matches(name, path, offset_s)` — `????` pasuje przy `Δ = czas_nazwy
+  − offset − czas(video_file) ∈ [−2, +1] s` (dotąd identyczna sekunda; ESP liczy `rec_start` z
+  całkowitych s, więc predykcja jest 0–1 s PÓŹNIEJ); `video_file_delta` zwraca Δ. O2 kod
+  tymczasowy z JEDNYM wpisem idzie przez `matching.decide` (≤ 12 h od nagrania, bez
+  sprzeczności), z kilkoma — stara ścieżka + kontrola 12 h zwycięzcy. O3 kanał 0:
+  `api.fetch_candidate` + `matching.contradictions` (T0↔pre-roll, czas trwania, beep, nazwa);
+  sprzeczność → `session_id=None`, info „do decyzji: ID-tone #N, ale …"; błąd sieci → ID jak
+  dotąd (info „nie sprawdzono"); `detect_id` sam liczy T0. Wsad GUI (`BatchIdDetectWorker`) woła
+  `resolve_id_tone` także dla ch0 i przy „do decyzji" NIE robi fallbacku po czasie; okno
+  główne też sprawdza ch0 (`status_id_check`). O5 `IdToneCode.pos_s` (pierwszy REALNY marker,
+  `compare=False` — równość kodów bez zmian). O7 `SessionCandidate` + `video_duration_s`,
+  `video_preroll_ms` (None ≠ 0), `video_status`, `video_cam`, `t_beep_ms`, `clock_ok`,
+  `idtone_*`, `station_no` (zagnieżdżone `data.wideo`/`data.idtone` z `?id=`, płasko w listach).
+  O4/O6/O8 w `matching.py`/`assignment_store.py` (mapa modułów). Odstępstwa od §3.3: weto
+  daje KAŻDY dowód `contradiction` przy zwycięzcy (nie tylko ≤ −40); kary zależne od zegara
+  (nazwa DJI, beep) są sprzecznością tylko przy zaufanym zegarze (Pixel/NTP albo offset z
+  kotwic, `clock_ok != false`, wpis z `t_beep_ms`), inaczej połowa kary (`UNTRUSTED_PENALTY`) —
+  kamera bez Mimo bywa przestawiona o godzinę; kolejność jest twardym ograniczeniem DP
+  (+10 dla przypisań z sąsiadem), a przegrany konfliktu / „naruszenie kolejności" = ambiguous;
+  zwycięzca konfliktu z przewagą < 30 nad przegranym też ambiguous. Wsad GUI zapisuje blokadę
+  ręczną (`save_manual`) przy „Przygotuj" wiersza z `id_source == ""` i czyta zablokowane
+  przypisania przed analizą audio. `tests/conftest.py` ma autouse `_offline_fetch_candidate`
+  (testy nie pytają żywego API). Testy: `test_matching.py` (+ `test_pipeline`, `test_id_tone`,
+  `test_session_match`, `test_cli`). DO KALIBRACJI: stałe `matching_score.py` na A1
+  (Krotoszyn `raw`) i ≥ 10 sesjach z ESP (rozrzut duration/pre-roll/pozycji tonu).
 
 - **Wsad: warianty wyjścia overlay / timer / trim (v0.66.0):** w „Ustawieniach wspólnych"
   zamiast pary „Nakładka on/off" + „Zegar on/off" + „GPU" są TRZY niezależne checkboxy
@@ -277,7 +313,8 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
     0003: 343 przy Δ+49, właściwe 344 przy Δ+111). Dlatego `pick` przy DWU kandydatach z
     timera w oknie ZAWSZE zwraca None (dialog z nazwiskami / wsad „podaj ręcznie”), a margines
     `PICK_MARGIN_S` obowiązuje tylko dla `data_zapisu` (zegar serwera). Pomysł na później:
-    estymacja offsetu zegara z całej partii (rzędy z ID z tonu = kalibracja) — NIE zrobione.
+    estymacja offsetu zegara z całej partii (rzędy z ID z tonu = kalibracja) — zrobione w v0.68.0
+    dla wiązania wsadowego (`matching.estimate_offsets`, `piro-overlay match`); pojedynczy plik nadal bez δ.
     Kandydat tylko z `data_zapisu`: Δ = zapis − (oczekiwany start + `czas_bazowy`), okno
     `[SAVE_MIN_S=-15, SAVE_MAX_S=300]` — zapis pada PO końcu sesji. Sortowanie: w oknie →
     timer przed saved → mniejsze |Δ|. **`pick` (jednoznaczność):** jedno trafienie → ono;

@@ -395,6 +395,51 @@ z kamery i okno nagrania (urządzenie timer+kamera), dopasowanie po czasie najpi
 nazwę pliku (także `DJI_…_????_D` z nieznanym licznikiem i proxy `.LRF`) i odrzuca sesje spoza
 okna nagrania — starsze wpisy bez tych pól działają jak dotąd.
 
+**Kontrola wykrytego ID (od v0.68.0).** ID z tonu (kanał 0) nie jest już przyjmowane w ciemno:
+aplikacja pobiera wpis i sprawdza, czy nie przeczą mu T0 w pliku (pre-roll z urządzenia),
+czas trwania nagrania i chwila bzyczka. Przy sprzeczności (np. telefon złapał ton
+z sąsiedniego stanowiska) wiersz wsadu dostaje etykietę **„do decyzji: …"** z powodem, a ID
+wpisujesz ręcznie. Kod tymczasowy z jednym wpisem też przechodzi ocenę czasu (wpis sprzed
+ponad 12 h = licznik się zawinął → „do decyzji").
+
+## Automatyczne wiązanie nagrań z wpisami (karta DJI + telefon)
+
+Od v0.68.0 całe foldery z nagraniami (karta Action 4 sterowanej przez urządzenie
+timer+kamera, telefon `PXL_…`, inne) można jednym poleceniem powiązać z wpisami
+kalkulatora:
+
+```bash
+piro-overlay match D:/DCIM/DJI_001 D:/Pixel/Camera          # albo PiroOverlay.exe match …
+piro-overlay match D:/zawody -r --no-save --json             # podkatalogi, bez zapisu, JSON
+```
+
+Jak to działa (szczegóły: `DOPASOWANIE-WIDEO.md` w repo urządzenia, ADR-063):
+
+- **Ujęcia.** `MP4` + `LRF` + `THM` o tym samym rdzeniu to jedno ujęcie. Z każdego czytany jest
+  czas startu (nazwa pliku → `creation_time` → mtime), długość, T0 (bzyczek) i ramka ID-tone
+  z pozycją w pliku.
+- **Punkty.** Każda para (ujęcie, wpis) zbiera punkty z niezależnych dowodów: ID-tone
+  (kanał 0: +100, kod tymczasowy: +60), nazwa pliku DJI vs predykcja urządzenia (tolerancja
+  −2…+1 s), T0 vs pre-roll, czas trwania, pozycja tonu, bzyczek na osi urządzenia, odcisk
+  strzałów, stanowisko i kolejność. Dowody przeczące dają punkty ujemne.
+- **Decyzja.** Wpis jest przypisany (**pewne**) tylko przy ≥ 60 pkt, przewadze ≥ 30 pkt nad
+  drugim kandydatem i braku sprzeczności. Żaden pojedynczy sygnał poza ID-tone nie wystarcza;
+  ID-tone wystarcza, dopóki nic mu nie przeczy. W pozostałych przypadkach ujęcie jest
+  **„do decyzji"** z powodem i trzema najlepszymi kandydatami.
+- **Wiele urządzeń.** Wpis może mieć nagranie z kamery i z telefonu naraz, ale najwyżej jedno
+  ujęcie z każdego urządzenia; dwa pliki tej samej kamery wskazujące jeden wpis to
+  **konflikt** (do decyzji).
+- **Zegar kamery.** Gdy co najmniej 3 ujęcia mają ton kanału 0, aplikacja wylicza offset zegara
+  urządzenia (np. kamera 69 s do przodu przed synchronizacją DJI Mimo) i koryguje nim
+  pozostałe ujęcia.
+- **Zapis.** Wynik trafia do pliku bocznego `<nazwa>.piro-match.json` obok nagrania (albo do
+  katalogu ustawień, gdy folder jest tylko do odczytu). Pewne przypisania i decyzje ręczne
+  (ID wpisane we wsadzie i zatwierdzone „Przygotuj") są przy kolejnych przebiegach nietykalne;
+  okno wsadowe też je odczytuje zamiast ponownie analizować audio.
+
+Punkty i progi są w jednym module (`src/piro_overlay/matching_score.py`) — to wartości
+startowe do kalibracji na nagraniach z zawodów.
+
 ## Testy
 
 ```bash

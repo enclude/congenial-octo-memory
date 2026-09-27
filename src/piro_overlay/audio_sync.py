@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import struct
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -378,6 +378,10 @@ class IdToneCode:
     """
     channel: int
     value: int
+    # Początek pierwszego wykrytego markera w pliku (s) — do porównania z `idtone_at_ms
+    # − rec_start` z kalkulatora (test niezależny od zegarów). Poza równością: ta sama
+    # ramka to ten sam kod niezależnie od miejsca, w którym ją złapano.
+    pos_s: float | None = field(default=None, compare=False)
 
     @property
     def is_db_id(self) -> bool:
@@ -411,9 +415,10 @@ def _id_tone_checksum(digits: list[int]) -> int:
     return sum((i + 1) * d for i, d in enumerate(digits)) % 10
 
 
-def _id_tone_code(decoded: list[int]) -> IdToneCode:
+def _id_tone_code(decoded: list[int], pos_s: float | None = None) -> IdToneCode:
     return IdToneCode(channel=decoded[0],
-                      value=int("".join(str(d) for d in decoded[1:_ID_TONE_DATA_SLOTS])))
+                      value=int("".join(str(d) for d in decoded[1:_ID_TONE_DATA_SLOTS])),
+                      pos_s=None if pos_s is None else round(pos_s, 3))
 
 
 def decode_id_tone(video_path: str | Path,
@@ -459,7 +464,7 @@ def decode_id_tone(video_path: str | Path,
     (`_ID_TONE_RESCUE_MAX_CAND`). Nieczytelna sama checksuma = None (bez niej
     nie ma jak zweryfikować odczytu).
 
-    Zwraca `IdToneCode` albo None.
+    Zwraca `IdToneCode` (z `pos_s` = początek pierwszego wykrytego markera) albo None.
     """
     samples, sr = _load_audio(video_path)
 
@@ -514,6 +519,8 @@ def decode_id_tone(video_path: str | Path,
     e_max = max(r[2] for r in runs)
     runs = [r for r in runs if r[2] >= _ID_TONE_MARKER_ENERGY_FRAC * e_max]
     marker_starts = [offset_s + r[0] * win / sr for r in runs]
+    # pozycja ramki = pierwszy REALNY marker (duch sprzed niego to tylko hipoteza)
+    first_marker = min(marker_starts)
     marker_windows = [k for r in runs for k in range(r[0], r[1] + 1)]
 
     # Metryki względne (udział pasma) nie rozróżniają realnego tonu od śladów
@@ -589,7 +596,7 @@ def decode_id_tone(video_path: str | Path,
     if not empty:
         if _id_tone_checksum(decoded[:_ID_TONE_DATA_SLOTS]) != decoded[_ID_TONE_DATA_SLOTS]:
             return None
-        return _id_tone_code(decoded)
+        return _id_tone_code(decoded, first_marker)
 
     # Odzysk z checksumy (erasure recovery): dokładnie JEDEN nieczytelny slot
     # DANYCH da się odtworzyć z sumy kontrolnej. Wagi 1 i 3 są odwracalne
@@ -633,7 +640,7 @@ def decode_id_tone(video_path: str | Path,
                 or strength[ranked[0]] < _ID_TONE_RESCUE_RATIO * strength[ranked[1]]):
             return None
         decoded[gap_slot] = ranked[0]
-    return _id_tone_code(decoded)
+    return _id_tone_code(decoded, first_marker)
 
 
 def resolve_t0(anchor_time: float, mode: AnchorMode, first_shot_time: float) -> float:

@@ -380,10 +380,20 @@ def test_video_file_matches_exact_wildcard_siblings_and_misses():
     # proxy LRF i miniatura THM mają ten sam rdzeń co MP4
     assert sm.video_file_matches(VIDEO, "DJI_20260812195106_0035_D.LRF")
     assert sm.video_file_matches("DJI_20260812195106_0035_D.THM", VIDEO)
-    # licznik nieznany (predykcja z zegara kamery) — czas musi się zgadzać co do sekundy
+    # licznik nieznany (predykcja ESP z `rec_start`) — Δ = nazwa − predykcja ∈ [−2, +1] s
+    # (O1: predykcja wypada 0–1 s + BLE PÓŹNIEJ niż prawdziwy start)
     assert sm.video_file_matches("DJI_20260812195106_????_D.MP4", VIDEO)
     assert sm.video_file_matches("DJI_20260812195106_????_D.MP4", "DJI_20260812195106_0099_D.LRF")
-    assert not sm.video_file_matches("DJI_20260812195107_????_D.MP4", VIDEO)
+    assert sm.video_file_matches("DJI_20260812195107_????_D.MP4", VIDEO)       # Δ −1
+    assert sm.video_file_matches("DJI_20260812195108_????_D.MP4", VIDEO)       # Δ −2
+    assert sm.video_file_matches("DJI_20260812195105_????_D.MP4", VIDEO)       # Δ +1
+    assert not sm.video_file_matches("DJI_20260812195109_????_D.MP4", VIDEO)   # Δ −3
+    assert not sm.video_file_matches("DJI_20260812195104_????_D.MP4", VIDEO)   # Δ +2
+    # po odjęciu offsetu kamery (+69 s względem ESP)
+    assert sm.video_file_matches("DJI_20260812194957_????_D.MP4", VIDEO, offset_s=69)
+    assert not sm.video_file_matches("DJI_20260812194957_????_D.MP4", VIDEO)
+    assert sm.video_file_delta("DJI_20260812195107_????_D.MP4", VIDEO) == -1.0
+    assert sm.video_file_delta("DJI_20260812195106_0036_D.MP4", VIDEO) is None
     assert not sm.video_file_matches("DJI_20260812195106_0036_D.MP4", VIDEO)
     assert not sm.video_file_matches("DJI_20260812195106_????_D.MP4", "clip.mp4")
     assert not sm.video_file_matches("", VIDEO)
