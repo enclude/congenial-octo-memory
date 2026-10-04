@@ -248,16 +248,22 @@ class RenderWorker(QThread):
             kw = dict(self._kwargs)
             no_overlay = kw.pop("no_overlay", False)
             fmt = kw.pop("output_format", "mp4")
+            markers = kw.pop("markers", True)
             callbacks = dict(progress_cb=self.progress.emit,
                              on_encoder=self.encoder_used.emit,
                              on_warn=self.warn.emit,
                              cancel_check=self._is_cancelled,
                              on_process=self._on_process)
             if no_overlay:
+                style = kw.get("style")
                 render.trim_video(
                     video_path=kw["video_path"], out_path=kw["out_path"],
                     trim_start=kw.get("trim_start"), trim_end=kw.get("trim_end"),
-                    encoder=kw.get("encoder", "auto"), **callbacks)
+                    encoder=kw.get("encoder", "auto"),
+                    session=kw.get("session"), t0=kw.get("t0"), mode=kw.get("mode"),
+                    markers=markers,
+                    lang=style.lang if style is not None else Lang.PL,
+                    **callbacks)
             elif fmt == "gif":
                 render.render_gif(
                     video_path=kw["video_path"], session=kw["session"],
@@ -272,10 +278,11 @@ class RenderWorker(QThread):
                     t0=kw["t0"], style=kw["style"], mode=kw["mode"],
                     out_path=kw["out_path"],
                     trim_start=kw.get("trim_start"), trim_end=kw.get("trim_end"),
+                    markers=markers,
                     progress_cb=self.progress.emit, cancel_check=self._is_cancelled,
                     on_process=self._on_process)
             else:
-                render.render_video(**callbacks, **kw)
+                render.render_video(markers=markers, **callbacks, **kw)
             self.finished_ok.emit(str(self._kwargs["out_path"]))
         except render.RenderCancelled:
             # Usuń niedokończony plik wyjściowy (jest uszkodzony).
@@ -426,6 +433,7 @@ def _job_to_dict(job: "RenderJob") -> dict:
             "encoder": kw.get("encoder", "auto"),
             "no_overlay": kw.get("no_overlay", False),
             "output_format": kw.get("output_format", "mp4"),
+            "markers": bool(kw.get("markers", True)),
         },
     }
 
@@ -447,6 +455,7 @@ def _job_from_dict(d: dict) -> "RenderJob":
         encoder=k.get("encoder", "auto"),
         no_overlay=k.get("no_overlay", False),
         output_format=k.get("output_format", "mp4"),
+        markers=bool(k.get("markers", True)),
     )
     return RenderJob(id=d.get("id") or uuid.uuid4().hex,
                      label=d.get("label", ""), kwargs=kwargs,
@@ -2092,6 +2101,7 @@ class BatchDialog(QWidget):
                     trim_start=p["trim_start"] if p["trim_start"] > 0 else None,
                     trim_end=p["trim_end"] if p["trim_end"] > 0 else None,
                     encoder="auto", no_overlay=variant.no_overlay, output_format=fmt,
+                    markers=True,
                 )
                 job = RenderJob(
                     id=uuid.uuid4().hex,
@@ -4366,6 +4376,13 @@ class MainWindow(QMainWindow):
         self.no_overlay_chk.stateChanged.connect(self._on_no_overlay_toggled)
         sec.add_row("", self.no_overlay_chk)
 
+        self.markers_chk = QCheckBox(_TR("markers_chk"))
+        self.markers_chk.setToolTip(_TR("tip_markers"))
+        self.markers_chk.setChecked(QSettings().value("ui/markers", True, type=bool))
+        self.markers_chk.toggled.connect(
+            lambda on: QSettings().setValue("ui/markers", on))
+        sec.add_row("", self.markers_chk)
+
         self.gpu_chk = QCheckBox("Akceleracja GPU (NVENC)")
         self.gpu_chk.setChecked(True)
         sec.add_row("", self.gpu_chk)
@@ -6215,6 +6232,7 @@ class MainWindow(QMainWindow):
             encoder="auto" if self.gpu_chk.isChecked() else "cpu",
             no_overlay=no_overlay,
             output_format=self.format_combo.currentData(),
+            markers=self.markers_chk.isChecked(),
         )
 
     # --- zapamiętywanie ustawień per-plik ---
@@ -6235,6 +6253,7 @@ class MainWindow(QMainWindow):
             "tail": self.tail_spin.value(),
             "gpu": self.gpu_chk.isChecked(),
             "no_overlay": self.no_overlay_chk.isChecked(),
+            "markers": self.markers_chk.isChecked(),
             "format": self.format_combo.currentData(),
             "output": self.out_field.path(),
         }
@@ -6264,6 +6283,8 @@ class MainWindow(QMainWindow):
         self.tail_spin.setValue(float(data.get("tail", _TRIM_TAIL_S)))
         self.gpu_chk.setChecked(bool(data.get("gpu", True)))
         self.no_overlay_chk.setChecked(bool(data.get("no_overlay", False)))
+        if "markers" in data:
+            self.markers_chk.setChecked(bool(data["markers"]))
         fidx = self.format_combo.findData(data.get("format", "mp4"))
         if fidx >= 0:
             self.format_combo.setCurrentIndex(fidx)
@@ -6330,6 +6351,8 @@ class MainWindow(QMainWindow):
 
         if not self.gpu_chk.isChecked():
             parts += ["--encoder", "cpu"]
+        if not self.markers_chk.isChecked():
+            parts += ["--no-markers"]
 
         if no_overlay:
             parts += ["--no-overlay"]

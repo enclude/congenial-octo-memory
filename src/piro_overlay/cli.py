@@ -204,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
     # --- nakładka / zegar ---
     parser.add_argument("--no-overlay", action="store_true",
                         help="bez nakładki — tylko przytnij wideo")
+    parser.add_argument("--no-markers", action="store_true",
+                        help="nie zapisuj znaczników (rozdziałów) strzałów/T0 w pliku wyjściowym")
     parser.add_argument("--clock", action="store_true",
                         help="pokaż płynący czas od T0 nad nakładką")
     parser.add_argument("--clock-position", choices=["auto", *ANCHOR_POSITIONS],
@@ -244,7 +246,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.no_overlay:
         render.trim_video(args.video, output, trim_start=trim_start, trim_end=trim_end,
-                          encoder=args.encoder, progress_cb=on_progress)
+                          encoder=args.encoder, progress_cb=on_progress,
+                          session=session, t0=t0, mode=mode,
+                          markers=not args.no_markers, lang=Lang(args.lang))
     else:
         style = OverlayStyle(
             lang=Lang(args.lang),
@@ -255,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         render.render_video(args.video, session, t0, style, mode, output, on_progress,
                             trim_start=trim_start, trim_end=trim_end,
-                            encoder=args.encoder)
+                            encoder=args.encoder, markers=not args.no_markers)
     print(f"\nZapisano: {output}")
     return 0
 

@@ -149,6 +149,32 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Znaczniki w pliku wyjściowym dla DaVinci Resolve (v0.69.0):** start timera, sygnał
+  startu (T0) i każdy strzał trafiają do WYNIKOWEGO MP4/WebM jako **rozdziały kontenera**
+  — jedyny „jednoplikowy” format znaczników, który Resolve importuje jako markery klipu
+  bez EDL/CSV (potwierdzone na hybrydowych MP4/MOV z OBS, pisanych tym samym muxerem
+  FFmpeg; Premiere/FCP tego NIE czytają — tam trzeba by XMP/FCPXML). Mechanika w
+  `render.py`: `build_markers(session, t0, src_start, src_end, mode=, lang=)` (czysta;
+  czasy na osi WYJŚCIA, poza fragmentem odpadają, duplikaty co do 1 ms zlewają się,
+  start timera = T0 − `Session.start_delay` tylko gdy > 0, sygnał startu tylko przy
+  `START_SIGNAL`/`mode=None`; tytuły z i18n `marker_*`: „Strzał 3/8 — 1.23 s (+0.45 s)”)
+  → `write_chapter_metadata` (plik `ffmetadata`, `TIMEBASE=1/1000`, każdy rozdział od
+  swojego znacznika do następnego, ostatni do końca; `_ffmeta_escape` dla `=;#\`) →
+  `_chapter_args` dokłada wejście `-f ffmetadata -i …` NA KOŃCU listy wejść (bez
+  strumieni → indeksy w filtergrafie bez zmian) i zwraca `-map_chapters <idx>`. Muxer MP4
+  pisze z tego ścieżkę rozdziałów QuickTime + atom Nero `chpl`, Matroska własne
+  `Chapters`; GIF pomijany. `render_video`/`render_webm` mają `markers: bool = True`;
+  `trim_video` dostał `session`/`t0`/`mode`/`markers`/`lang` WYŁĄCZNIE dla znaczników
+  (nic nie rysuje; bez T0 — brak rozdziałów), więc wariant „trim” wsadu też je ma.
+  CLI `--no-markers`; GUI checkbox „Znaczniki w pliku (DaVinci Resolve)” w „Wyjście”
+  (`QSettings("ui/markers")`, domyślnie ON, pamięć per-plik `markers`, kolejka
+  serializuje kwarg, stary JSON → True, `_build_cli_command` emituje flagę); web zawsze ON.
+  NIE zrobione (świadomie): ścieżka timecode `tmcd` (`-timecode`) — Resolve i tak
+  liczy od 00:00:00:00, a drop-frame przy NTSC komplikuje; sidecar EDL/CSV — użytkownik
+  chciał jeden plik. Testy: `test_render.py` (`build_markers_*`, format ffmetadata
+  i escaping, `_chapter_args`, E2E MP4 z przycięciem i trim bez nakładki — rozdziały
+  czytane ze stderr `ffmpeg -i`, bo imageio-ffmpeg nie ma ffprobe), `test_cli.py`.
+
 - **Automatyczne wiązanie ujęć, kontrakt P5 (v0.68.0, ADR-063 w repo ESP):** O1
   `session_match.video_file_matches(name, path, offset_s)` — `????` pasuje przy `Δ = czas_nazwy
   − offset − czas(video_file) ∈ [−2, +1] s` (dotąd identyczna sekunda; ESP liczy `rec_start` z

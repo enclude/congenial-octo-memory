@@ -297,3 +297,121 @@ def test_make_preview_proxy_cancel_leaves_no_file(tiny_video, tmp_path):
                                   cancel_check=lambda: True)
     assert not out.exists()
     assert not out.with_suffix(".part.mp4").exists()
+
+
+# ---------------------------------------------------------------------------
+# Znaczniki (rozdziały kontenera) — DaVinci Resolve czyta je jako markery klipu
+# ---------------------------------------------------------------------------
+
+def _probe_chapters(path):
+    """Rozdziały z pliku przez stderr `ffmpeg -i` → [(start_s, end_s, title)].
+
+    (imageio-ffmpeg nie ma ffprobe; `ffmpeg -i` wypisuje każdy rozdział jako
+    `Chapter #0:N: start X, end Y` + wiersz `title : …` w metadanych.)"""
+    import re
+    from piro_overlay.ffmpeg import UNTRUSTED_INPUT_ARGS, ffmpeg_exe
+    err = subprocess.run([ffmpeg_exe(), *UNTRUSTED_INPUT_ARGS, "-i", str(path)],
+                         capture_output=True, text=True, encoding="utf-8",
+                         errors="replace").stderr
+    out = []
+    cur = None
+    for line in err.splitlines():
+        m = re.match(r"\s*Chapter #\d+:\d+: start ([\d.]+), end ([\d.]+)", line)
+        if m:
+            cur = [float(m.group(1)), float(m.group(2)), ""]
+            out.append(cur)
+            continue
+        if cur is not None:
+            mt = re.match(r"\s+title\s*:\s*(.*)$", line)
+            if mt:
+                cur[2] = mt.group(1).strip()
+                cur = None
+    return [tuple(c) for c in out]
+
+
+def test_build_markers_basic_pl():
+    sess = Session(shots=[Shot(1, 1.0), Shot(2, 2.5, 1.5)], start_delay=2.0)
+    ms = render.build_markers(sess, 5.0, 0.0, 20.0, mode=AnchorMode.START_SIGNAL)
+    assert [m.kind for m in ms] == ["timer_start", "beep", "shot", "shot"]
+    assert [m.time for m in ms] == [3.0, 5.0, 6.0, 7.5]
+    assert ms[0].title == "Start timera"
+    assert ms[1].title == "Sygnał startu (T0)"
+    assert ms[2].title == "Strzał 1/2 — 1.00 s"
+    assert ms[3].title == "Strzał 2/2 — 2.50 s (+1.50 s)"
+
+
+def test_build_markers_trim_shift_and_clip():
+    """Czas na osi WYJŚCIA (minus przycięcie); znaczniki poza fragmentem odpadają."""
+    sess = Session(shots=[Shot(1, 1.0), Shot(2, 2.5, 1.5), Shot(3, 30.0, 27.5)])
+    ms = render.build_markers(sess, 5.0, 4.0, 10.0)
+    assert [(m.kind, round(m.time, 3)) for m in ms] == [("beep", 1.0), ("shot", 2.0), ("shot", 3.5)]
+
+
+def test_build_markers_no_beep_for_first_shot_anchor_and_none_without_t0():
+    sess = Session(shots=[Shot(1, 1.0)])
+    ms = render.build_markers(sess, 5.0, 0.0, 20.0, mode=AnchorMode.FIRST_SHOT)
+    assert [m.kind for m in ms] == ["shot"]
+    assert render.build_markers(sess, None, 0.0, 20.0) == []
+    # bez sesji (samo przycięcie) zostaje sygnał startu
+    assert [m.kind for m in render.build_markers(None, 5.0, 0.0, 20.0)] == ["beep"]
+
+
+def test_build_markers_english_titles_and_duplicate_merge():
+    from piro_overlay.models import Lang
+    sess = Session(shots=[Shot(1, 0.0)], start_delay=0.0)
+    ms = render.build_markers(sess, 5.0, 0.0, 20.0, lang=Lang.EN)
+    # strzał w T0 (0.00 s) zlewa się z sygnałem startu; start_delay 0 → brak startu timera
+    assert [m.kind for m in ms] == ["beep"]
+    assert ms[0].title == "Start signal (T0)"
+
+
+def test_write_chapter_metadata_format_and_escaping(tmp_path):
+    ms = [render.Marker(1.0, "A=1;#x", "beep"), render.Marker(2.5, "B", "shot")]
+    text = render.write_chapter_metadata(ms, 10.0, tmp_path / "c.ffmeta").read_text(encoding="utf-8")
+    assert text.startswith(";FFMETADATA1\n")
+    assert "START=1000\nEND=2500\ntitle=A\\=1\\;\\#x" in text
+    assert "START=2500\nEND=10000\ntitle=B" in text
+
+
+def test_chapter_args_appends_input_and_maps_last_index(tmp_path):
+    inputs = ["-protocol_whitelist", "file", "-i", "a.mp4", "-i", "ev.png"]
+    args = render._chapter_args([render.Marker(1.0, "x", "beep")], 5.0, tmp_path, inputs)
+    assert args == ["-map_chapters", "2"]
+    assert inputs[-4:-1] == ["-f", "ffmetadata", "-i"]
+    assert render._chapter_args([], 5.0, tmp_path, ["-i", "a.mp4"]) == []
+
+
+def test_render_video_embeds_chapters(tiny_video, tmp_path):
+    """E2E: rozdziały trafiają do MP4 (start timera, T0, strzały) na osi wyjścia."""
+    sess = Session(shots=[Shot(1, 0.5), Shot(2, 1.0, 0.5)], start_delay=0.3)
+    out = tmp_path / "chapters.mp4"
+    render.render_video(tiny_video, sess, 0.5, OverlayStyle(), AnchorMode.START_SIGNAL, out,
+                        encoder="cpu", trim_start=0.1)
+    ch = _probe_chapters(out)
+    titles = [c[2] for c in ch]
+    assert titles[:2] == ["Start timera", "Sygnał startu (T0)"]
+    assert titles[2].startswith("Strzał 1/2") and titles[3].startswith("Strzał 2/2")
+    assert ch[1][0] == pytest.approx(0.4, abs=0.002)   # T0 0.5 − trim 0.1
+    assert ch[2][0] == pytest.approx(0.9, abs=0.002)
+    assert ch[3][1] > ch[3][0]                          # ostatni do końca pliku
+
+
+def test_render_video_markers_off(tiny_video, tmp_path):
+    sess = Session(shots=[Shot(1, 0.5)])
+    out = tmp_path / "nochap.mp4"
+    render.render_video(tiny_video, sess, 0.5, OverlayStyle(), AnchorMode.START_SIGNAL, out,
+                        encoder="cpu", markers=False)
+    assert _probe_chapters(out) == []
+
+
+def test_trim_video_embeds_chapters_without_overlay(tiny_video, tmp_path):
+    sess = Session(shots=[Shot(1, 0.5), Shot(2, 1.0, 0.5)])
+    out = tmp_path / "trim_chap.mp4"
+    render.trim_video(tiny_video, out, encoder="cpu", session=sess, t0=0.5,
+                      mode=AnchorMode.START_SIGNAL)
+    titles = [c[2] for c in _probe_chapters(out)]
+    assert titles[0] == "Sygnał startu (T0)" and len(titles) == 3
+    # bez T0 — zwykłe przycięcie bez rozdziałów
+    out2 = tmp_path / "trim_plain.mp4"
+    render.trim_video(tiny_video, out2, encoder="cpu")
+    assert _probe_chapters(out2) == []

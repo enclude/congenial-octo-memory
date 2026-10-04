@@ -27,6 +27,10 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "summary": {Lang.PL: "Podsumowanie", Lang.EN: "Summary"},
     # dopełniacz po liczbie w nakładce metadanych ("9 strzałów" / "9 shots")
     "shots_label": {Lang.PL: "strzałów", Lang.EN: "shots"},
+    # --- znaczniki (rozdziały) w pliku wyjściowym — czyta je np. DaVinci Resolve ---
+    "marker_timer_start": {Lang.PL: "Start timera", Lang.EN: "Timer start"},
+    "marker_beep": {Lang.PL: "Sygnał startu (T0)", Lang.EN: "Start signal (T0)"},
+    "marker_shot": {Lang.PL: "Strzał", Lang.EN: "Shot"},
     # --- GUI ---
     "app_title": {Lang.PL: "Piro Overlay", Lang.EN: "Piro Overlay"},
     "site_tooltip": {Lang.PL: "Strona projektu: shothud.com", Lang.EN: "Project website: shothud.com"},
@@ -150,6 +154,16 @@ _STRINGS: dict[str, dict[Lang, str]] = {
     "status_no_tone_match_time": {
         Lang.PL: "Brak ID z audio — dopasowuję po czasie nagrania…",
         Lang.EN: "No ID tone — matching by recording time…"},
+    "markers_chk": {
+        Lang.PL: "Znaczniki w pliku (DaVinci Resolve)",
+        Lang.EN: "Markers in file (DaVinci Resolve)"},
+    "tip_markers": {
+        Lang.PL: "Zapisuje start timera, sygnał startu (T0) i każdy strzał jako rozdziały "
+                 "kontenera MP4/WebM — DaVinci Resolve pokazuje je jako znaczniki klipu; "
+                 "GIF ich nie obsługuje.",
+        Lang.EN: "Writes the timer start, the start signal (T0) and every shot as "
+                 "MP4/WebM container chapters — DaVinci Resolve shows them as clip "
+                 "markers; GIF does not support them."},
     "opt_match_time": {
         Lang.PL: "Brak ID z audio → dopasuj po czasie",
         Lang.EN: "No ID tone → match by time"},

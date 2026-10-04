@@ -19,6 +19,7 @@ def _args(**overrides) -> argparse.Namespace:
         auto=False, auto_trim=False, auto_window=None,
         lead_in=5.0, tail=5.0,
         track_name=None, participant=None,
+        no_markers=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -151,3 +152,50 @@ def test_match_subcommand_prints_states(monkeypatch, capsys, tmp_path):
     assert "OK DJI_1.MP4" in out and "#12" in out
     assert "?? DJI_2.MP4" in out and "do decyzji: przewaga" in out
     assert "offset dji +69.0 s z 3 kotwic" in out and "pewne: 1, do decyzji: 1" in out
+
+
+def _patch_main_pipeline(monkeypatch, session):
+    """Zaślepia probe/T0/sesję, żeby `cli.main` doszedł do wywołania renderu bez FFmpeg."""
+    from types import SimpleNamespace
+    monkeypatch.setattr(cli.ffmpeg, "probe", lambda video: SimpleNamespace(duration=100.0))
+    monkeypatch.setattr(cli, "_build_session", lambda args: session)
+    monkeypatch.setattr(cli, "_resolve_t0", lambda args, session, mode: 12.5)
+    seen = {}
+
+    def fake_trim(video, out, **kw):
+        seen.update(kw, fn="trim")
+        return out
+
+    def fake_render(video, session, t0, style, mode, out, on_progress, **kw):
+        seen.update(kw, fn="render", t0=t0, session=session)
+        return out
+
+    monkeypatch.setattr(cli.render, "trim_video", fake_trim)
+    monkeypatch.setattr(cli.render, "render_video", fake_render)
+    return seen
+
+
+def test_main_no_overlay_passes_session_t0_to_trim_for_markers(monkeypatch, tmp_path):
+    from piro_overlay.models import AnchorMode, Lang
+    session = Session(shots=[Shot(1, 1.0, None)])
+    seen = _patch_main_pipeline(monkeypatch, session)
+    assert cli.main(["--video", "v.mp4", "--no-overlay", "--auto", "--timeline", "1: 1.0s",
+                     "-o", str(tmp_path / "out.mp4")]) == 0
+    assert seen["fn"] == "trim"
+    assert seen["session"] is session and seen["t0"] == 12.5
+    assert seen["mode"] is AnchorMode.START_SIGNAL and seen["lang"] is Lang.PL
+    assert seen["markers"] is True
+
+
+def test_main_no_markers_disables_markers_in_both_paths(monkeypatch, tmp_path):
+    session = Session(shots=[Shot(1, 1.0, None)])
+    seen = _patch_main_pipeline(monkeypatch, session)
+    out = str(tmp_path / "out.mp4")
+    assert cli.main(["--video", "v.mp4", "--timeline", "1: 1.0s", "--no-markers",
+                     "-o", out]) == 0
+    assert seen["fn"] == "render" and seen["markers"] is False
+    seen.clear()
+    assert cli.main(["--video", "v.mp4", "--no-overlay", "--no-markers", "-o", out]) == 0
+    assert seen["fn"] == "trim" and seen["markers"] is False
+    # bez --auto/--auto-trim trim dostaje t0=None — znaczników wtedy nie ma
+    assert seen["t0"] is None

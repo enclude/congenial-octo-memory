@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Callable
 
 from . import config, ffmpeg, overlay
-from .models import AnchorMode, OverlayStyle, Session
+from .i18n import get_translator
+from .models import AnchorMode, Lang, OverlayStyle, Session
 
 ProgressCb = Callable[[float], None]  # postęp 0.0–1.0
 CancelCheck = Callable[[], bool]      # zwraca True gdy render ma zostać przerwany
@@ -82,6 +83,113 @@ def _diag_metadata_args(kind: str, trim: tuple[float, float],
         payload["style"] = style.to_dict()
     comment = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return ["-metadata", f"comment={comment}"]
+
+
+# ---------------------------------------------------------------------------
+# Znaczniki w pliku wyjściowym (rozdziały kontenera)
+# ---------------------------------------------------------------------------
+#
+# DaVinci Resolve (i odtwarzacze: VLC, QuickTime, mpv) czytają ROZDZIAŁY
+# kontenera jako znaczniki klipu — to jedyny „jednoplikowy" format znaczników,
+# który Resolve importuje bez dodatkowego EDL/CSV (potwierdzone na hybrydowych
+# MP4/MOV z OBS, pisanych tym samym muxerem FFmpeg). Rozdziały przekazujemy
+# jako dodatkowe wejście `-f ffmetadata` + `-map_chapters`; muxer MP4 zapisuje
+# z nich ścieżkę rozdziałów QuickTime (tekst) i atom Nero `chpl`, Matroska
+# (WebM) własne `Chapters`. GIF nie ma kontenera z rozdziałami — pomijamy.
+#
+# Każdy znacznik to osobny rozdział od swojego czasu do czasu następnego
+# znacznika (ostatni — do końca pliku), bo rozdziały muszą być rozłączne
+# i wypełniać oś; Resolve i tak pokazuje je jako punkt na początku rozdziału.
+
+
+@dataclass(frozen=True)
+class Marker:
+    """Znacznik na osi WYJŚCIA (sekundy od początku przyciętego pliku)."""
+
+    time: float
+    title: str
+    kind: str   # "timer_start" | "beep" | "shot"
+
+
+def build_markers(session: Session | None, t0: float | None,
+                  src_start: float, src_end: float, *,
+                  mode: AnchorMode | None = None,
+                  lang: Lang = Lang.PL) -> list[Marker]:
+    """Lista znaczników: start timera, sygnał startu (T0) i każdy strzał.
+
+    Czasy są przeliczane na oś wyjścia (minus `src_start`); znaczniki poza
+    fragmentem `[src_start, src_end)` odpadają. Start timera = T0 − `start_delay`
+    (opóźnienie z API kalkulatora, patrz `Session.start_delay`) — tylko gdy znane
+    i dodatnie. Sygnał startu tylko przy kotwicy START_SIGNAL (albo gdy `mode`
+    nie podano) — przy FIRST_SHOT T0 jest wyliczone z przesunięcia, nie zmierzone.
+    Znaczniki o tym samym czasie (co do 1 ms) zlewają się — zostaje pierwszy."""
+    if t0 is None:
+        return []
+    tr = get_translator(lang)
+    raw: list[Marker] = []
+    if session is not None and session.start_delay and session.start_delay > 0:
+        raw.append(Marker(t0 - session.start_delay, tr("marker_timer_start"), "timer_start"))
+    if mode is None or mode == AnchorMode.START_SIGNAL:
+        raw.append(Marker(t0, tr("marker_beep"), "beep"))
+    if session is not None:
+        shot_word = tr("marker_shot")
+        total = session.total_shots
+        for shot in session.shots:
+            title = f"{shot_word} {shot.numer}/{total} — {shot.czas:.2f} s"
+            if shot.split is not None:
+                title += f" (+{shot.split:.2f} s)"
+            raw.append(Marker(t0 + shot.czas, title, "shot"))
+
+    out: list[Marker] = []
+    seen_ms: set[int] = set()
+    for m in sorted(raw, key=lambda m: m.time):
+        if m.time < src_start or m.time >= src_end:
+            continue
+        ms = int(round((m.time - src_start) * 1000))
+        if ms in seen_ms:
+            continue
+        seen_ms.add(ms)
+        out.append(Marker(m.time - src_start, m.title, m.kind))
+    return out
+
+
+def _ffmeta_escape(text: str) -> str:
+    # Format ffmetadata: `=`, `;`, `#`, `\` i nowa linia muszą być poprzedzone `\`.
+    text = text.replace("\\", "\\\\")
+    for ch in "=;#":
+        text = text.replace(ch, "\\" + ch)
+    return text.replace("\n", "\\\n")
+
+
+def write_chapter_metadata(markers: list[Marker], out_duration: float,
+                           path: Path) -> Path:
+    """Zapisuje znaczniki jako rozdziały w formacie `ffmetadata` (TIMEBASE 1/1000)."""
+    end_ms = max(int(round(out_duration * 1000)), 1)
+    lines = [";FFMETADATA1"]
+    for i, m in enumerate(markers):
+        start_ms = int(round(m.time * 1000))
+        nxt = (int(round(markers[i + 1].time * 1000)) if i + 1 < len(markers)
+               else end_ms)
+        nxt = max(nxt, start_ms + 1)
+        lines += ["[CHAPTER]", "TIMEBASE=1/1000", f"START={start_ms}", f"END={nxt}",
+                  f"title={_ffmeta_escape(m.title)}"]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _chapter_args(markers: list[Marker], out_duration: float, tmp_dir: Path,
+                  inputs: list[str]) -> list[str]:
+    """Dokłada wejście `ffmetadata` do `inputs` i zwraca `-map_chapters` na nie.
+
+    Wejście ffmetadata NIE ma strumieni, więc dodanie go NA KOŃCU listy wejść
+    nie przesuwa indeksów używanych w filtergrafie. Pusta lista → brak zmian
+    (bez `-map_chapters` FFmpeg skopiowałby rozdziały źródła, jeśli jakieś ma)."""
+    if not markers:
+        return []
+    meta = write_chapter_metadata(markers, out_duration, tmp_dir / "chapters.ffmeta")
+    idx = inputs.count("-i")
+    inputs += ["-f", "ffmetadata", "-i", str(meta)]
+    return ["-map_chapters", str(idx)]
 
 
 class RenderCancelled(Exception):
@@ -524,8 +632,12 @@ def render_video(video_path: str | Path, session: Session, t0: float,
                  on_encoder: Callable[[str], None] | None = None,
                  on_warn: Callable[[str], None] | None = None,
                  cancel_check: CancelCheck | None = None,
-                 on_process: ProcessCb | None = None) -> Path:
+                 on_process: ProcessCb | None = None,
+                 markers: bool = True) -> Path:
     """Renderuje wideo wynikowe z nakładką. Zwraca ścieżkę do pliku wyjściowego.
+
+    markers — zapisz znaczniki (start timera / T0 / strzały) jako rozdziały
+    kontenera (czyta je DaVinci Resolve), patrz `build_markers`.
 
     trim_start / trim_end — opcjonalny fragment źródła (s) do wycięcia. Eksportowany
     jest tylko ten zakres; oś czasu wyjścia startuje od 0, więc okna nakładki są
@@ -589,6 +701,9 @@ def render_video(video_path: str | Path, session: Session, t0: float,
                              info.fps,
                              session.shots[-1].czas if session.shots else None)
         filtergraph = ";".join(filter_parts)
+        chapter_args = _chapter_args(
+            build_markers(session, t0, src_start, src_end, mode=mode, lang=style.lang)
+            if markers else [], out_duration, tmp_dir, inputs)
 
         def build_cmd(enc: str) -> list[str]:
             hw = ["-hwaccel", "cuda"] if enc == "h264_nvenc" else []
@@ -596,7 +711,7 @@ def render_video(video_path: str | Path, session: Session, t0: float,
                 ffmpeg.ffmpeg_exe(), "-y", *hw, *inputs,
                 "-t", f"{out_duration:.3f}",
                 "-filter_complex", filtergraph,
-                "-map", f"[{cur}]", "-map", "0:a?",
+                "-map", f"[{cur}]", "-map", "0:a?", *chapter_args,
                 *_video_encoder_args(enc),
                 "-c:a", "aac", "-movflags", "+faststart",
                 # enc per próba — po fallbacku metadane niosą FAKTYCZNY enkoder
@@ -632,8 +747,11 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
                 trim_start: float | None = None,
                 trim_end: float | None = None,
                 cancel_check: CancelCheck | None = None,
-                on_process: ProcessCb | None = None) -> Path:
+                on_process: ProcessCb | None = None,
+                markers: bool = True) -> Path:
     """Renderuje WebM (VP9 + Opus) z wypalona nakładką.
+
+    markers — znaczniki jako rozdziały Matroska (jak w `render_video`).
 
     Nie wspiera NVENC — VP9 jest zawsze programowy (libvpx-vp9). Dobry do
     krótkich klipów na potrzeby Instagrama/Discord (mniejszy niż GIF, dobra jakość).
@@ -689,12 +807,15 @@ def render_webm(video_path: str | Path, session: Session, t0: float,
                              tmp_dir, inputs, filter_parts, cur, used + 1, use_drawtext,
                              info.fps,
                              session.shots[-1].czas if session.shots else None)
+        chapter_args = _chapter_args(
+            build_markers(session, t0, src_start, src_end, mode=mode, lang=style.lang)
+            if markers else [], out_duration, tmp_dir, inputs)
 
         cmd = [
             ffmpeg.ffmpeg_exe(), "-y", *inputs,
             "-t", f"{out_duration:.3f}",
             "-filter_complex", ";".join(filter_parts),
-            "-map", f"[{cur}]", "-map", "0:a?",
+            "-map", f"[{cur}]", "-map", "0:a?", *chapter_args,
             "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0", "-pix_fmt", "yuv420p",
             "-c:a", "libopus", "-b:a", "96k",
             *_diag_metadata_args("overlay", (src_start, src_end), session,
@@ -821,10 +942,17 @@ def trim_video(video_path: str | Path, out_path: str | Path,
                on_encoder: Callable[[str], None] | None = None,
                on_warn: Callable[[str], None] | None = None,
                cancel_check: CancelCheck | None = None,
-               on_process: ProcessCb | None = None) -> Path:
+               on_process: ProcessCb | None = None,
+               session: Session | None = None,
+               t0: float | None = None,
+               mode: AnchorMode | None = None,
+               markers: bool = True,
+               lang: Lang = Lang.PL) -> Path:
     """Przycina wideo bez nakładki. Zachowuje audio, re-enkoduje wideo.
 
     Parametry trim_start / trim_end i encoder działają tak samo jak w render_video.
+    `session`/`t0`/`mode` NIE rysują niczego — służą wyłącznie znacznikom
+    (rozdziałom) w pliku, gdy `markers` jest włączone; bez T0 znaczników nie ma.
     """
     video_path, out_path = str(video_path), Path(out_path)
     info = ffmpeg.probe(video_path)
@@ -836,34 +964,42 @@ def trim_video(video_path: str | Path, out_path: str | Path,
 
     seek = ["-ss", f"{src_start:.3f}"] if src_start > 0 else []
 
-    def build_cmd(enc: str) -> list[str]:
-        hw = ["-hwaccel", "cuda"] if enc == "h264_nvenc" else []
-        return [
-            ffmpeg.ffmpeg_exe(), "-y", *hw, *ffmpeg.UNTRUSTED_INPUT_ARGS, *seek, "-i", video_path,
-            "-t", f"{out_duration:.3f}",
-            "-map", "0:v:0", "-map", "0:a?",   # tylko 1. wideo (pomiń miniaturę MJPEG DJI)
-            *_video_encoder_args(enc),
-            "-c:a", "aac", "-movflags", "+faststart",
-            *_diag_metadata_args("trim", (src_start, src_end), encoder=enc),
-            str(out_path),
-        ]
+    with tempfile.TemporaryDirectory() as tmp:
+        inputs: list[str] = [*ffmpeg.UNTRUSTED_INPUT_ARGS, *seek, "-i", video_path]
+        chapter_args = _chapter_args(
+            build_markers(session, t0, src_start, src_end, mode=mode, lang=lang)
+            if markers else [], out_duration, Path(tmp), inputs)
 
-    chosen = _resolve_encoder(encoder)
-    try:
-        _run_with_progress(build_cmd(chosen), out_duration, progress_cb,
-                           cancel_check, on_process)
-        if on_encoder:
-            on_encoder(chosen)
-    except RuntimeError as exc:
-        if chosen == "libx264":
-            raise
-        if on_warn:
-            on_warn(f"Enkoder {chosen} zawiódł, używam CPU (x264).\n\n"
-                    f"Powód (z FFmpeg):\n{_short_err(exc)}")
-        _run_with_progress(build_cmd("libx264"), out_duration, progress_cb,
-                           cancel_check, on_process)
-        if on_encoder:
-            on_encoder("libx264")
+        def build_cmd(enc: str) -> list[str]:
+            hw = ["-hwaccel", "cuda"] if enc == "h264_nvenc" else []
+            return [
+                ffmpeg.ffmpeg_exe(), "-y", *hw, *inputs,
+                "-t", f"{out_duration:.3f}",
+                "-map", "0:v:0", "-map", "0:a?",   # tylko 1. wideo (pomiń miniaturę MJPEG DJI)
+                *chapter_args,
+                *_video_encoder_args(enc),
+                "-c:a", "aac", "-movflags", "+faststart",
+                *_diag_metadata_args("trim", (src_start, src_end), session, t0,
+                                     mode=mode, encoder=enc),
+                str(out_path),
+            ]
+
+        chosen = _resolve_encoder(encoder)
+        try:
+            _run_with_progress(build_cmd(chosen), out_duration, progress_cb,
+                               cancel_check, on_process)
+            if on_encoder:
+                on_encoder(chosen)
+        except RuntimeError as exc:
+            if chosen == "libx264":
+                raise
+            if on_warn:
+                on_warn(f"Enkoder {chosen} zawiódł, używam CPU (x264).\n\n"
+                        f"Powód (z FFmpeg):\n{_short_err(exc)}")
+            _run_with_progress(build_cmd("libx264"), out_duration, progress_cb,
+                               cancel_check, on_process)
+            if on_encoder:
+                on_encoder("libx264")
 
     return out_path
 

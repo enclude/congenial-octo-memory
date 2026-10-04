@@ -60,7 +60,8 @@ def run_render(job: Job, settings: Settings, loop: asyncio.AbstractEventLoop,
     try:
         if no_overlay:
             render.trim_video(job.video_path, out, encoder=settings.encoder,
-                              on_encoder=on_encoder, **common)
+                              on_encoder=on_encoder, session=job.session, t0=job.t0,
+                              mode=AnchorMode.START_SIGNAL, **common)
         elif fmt == "mp4":
             render.render_video(job.video_path, job.session, job.t0, style,
                                 AnchorMode.START_SIGNAL, out,
