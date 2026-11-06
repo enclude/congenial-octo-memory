@@ -25,6 +25,7 @@ TONE_DB_OTHER = -100   # kanał 0 czytelny, wskazuje INNY wpis
 TONE_TEMP_MATCH = 60   # kod tymczasowy równy `temp_id` wpisu i czas ≤ TEMP_MAX_AGE_S
 TONE_TEMP_OTHER = -60  # kod tymczasowy czytelny, wpis ma inny kod
 TEMP_MAX_AGE_S = 12 * 3600.0   # licznik kodów zawija się po 9999 — stary kod = nie dowód
+DB_MAX_AGE_S = 12 * 3600.0     # kanał 0: wpis dalej od nagrania = błędny odczyt (sprzeczność)
 
 # pozycja ramki w pliku DJI vs `idtone_at_ms − rec_start`
 TONE_POS_TOL_S = 1.0

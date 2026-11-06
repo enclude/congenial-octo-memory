@@ -122,7 +122,34 @@ def take_for_video(video: str | Path, *, t0: float | None = None,
 def resolve_id_tone(code: audio_sync.IdToneCode, video: str | Path, *,
                     t0: float | None = None,
                     info: ffmpeg.VideoInfo | None = None) -> IdToneResult:
-    """Zamienia ramkę ID-tone na ID wpisu w bazie kalkulatora.
+    """Zamienia ramkę (albo ramki — `code.others`) ID-tone na ID wpisu w bazie.
+
+    Kilka RÓŻNYCH ramek w jednym nagraniu (timer: kod tymczasowy, kalkulator po
+    zapisie: ID wpisu) rozwiązujemy osobno; muszą wskazać TEN SAM wpis. Ramka
+    nierozwiązana (np. kod tymczasowy jeszcze nie w bazie) nie przeczy pozostałym,
+    ale dwa różne wpisy = „do decyzji" — zgadywanie jest gorsze od braku ID.
+    """
+    if not code.others:
+        return _resolve_frame(code, video, t0=t0, info=info)
+    results = [_resolve_frame(f, video, t0=t0, info=info) for f in code.frames]
+    ids = sorted({r.session_id for r in results if r.session_id is not None})
+    summary = "; ".join(f"{r.code.label} → " + (f"#{r.session_id}" if r.session_id is not None
+                                                  else (r.info or "?"))
+                        for r in results)
+    if len(ids) == 1:
+        match = next((r.match for r in results if r.match is not None), None)
+        return IdToneResult(code, ids[0], f"ramki ID zgodne: {summary}", match)
+    if len(ids) > 1:
+        return IdToneResult(code, None,
+                            f"do decyzji: ramki ID wskazują różne wpisy: {summary}")
+    undecided = any(r.info.startswith("do decyzji") for r in results)
+    return IdToneResult(code, None, ("do decyzji: " if undecided else "") + f"ramki ID: {summary}")
+
+
+def _resolve_frame(code: audio_sync.IdToneCode, video: str | Path, *,
+                   t0: float | None = None,
+                   info: ffmpeg.VideoInfo | None = None) -> IdToneResult:
+    """Zamienia JEDNĄ ramkę ID-tone na ID wpisu w bazie kalkulatora.
 
     Kanał 0 → wartość JEST tym ID, ale wpis jest pobierany i sprawdzany pod kątem
     sprzeczności z plikiem (T0 ↔ pre-roll, beep na osi urządzenia, czas trwania —
@@ -517,7 +544,7 @@ def fetch_entries_for_takes(takes: list[matching.Take], *, tz=None) -> list[api.
             found = api.find_sessions_by_scan(frm, to)
         for c in found:
             out.setdefault(c.id, c)
-    for code in {t.tone for t in takes if t.tone is not None}:
+    for code in {f for t in takes if t.tone is not None for f in t.tone.frames}:
         try:
             if code.is_db_id:
                 if code.value not in out and (c := api.fetch_candidate(code.value)) is not None:

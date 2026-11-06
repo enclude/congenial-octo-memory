@@ -337,6 +337,51 @@ def test_resolve_id_tone_ambiguous_candidates_need_recording(monkeypatch):
     assert out.session_id is None and "2 wpis" in out.info
 
 
+def test_resolve_id_tone_frames_agree(monkeypatch, tmp_path):
+    # 0043: kod tymczasowy z timera + ID z kalkulatora → ten sam wpis = ID
+    from piro_overlay.audio_sync import IdToneCode
+    cand = _cand(496, "10005")
+    monkeypatch.setattr(pipeline.api, "find_sessions_by_temp_id", lambda t: [cand])
+    monkeypatch.setattr(pipeline.api, "fetch_candidate", lambda i: cand if i == 496 else None)
+    code = IdToneCode(1, 5, others=(IdToneCode(0, 496),))
+    out = pipeline.resolve_id_tone(code, _dji_file(tmp_path), info=_info())
+    assert out.session_id == 496 and out.info.startswith("ramki ID zgodne")
+
+
+def test_resolve_id_tone_frames_disagree(monkeypatch, tmp_path):
+    from piro_overlay.audio_sync import IdToneCode
+    monkeypatch.setattr(pipeline.api, "find_sessions_by_temp_id", lambda t: [_cand(496, "10005")])
+    monkeypatch.setattr(pipeline.api, "fetch_candidate", lambda i: _cand(i, ""))
+    code = IdToneCode(1, 5, others=(IdToneCode(0, 497),))
+    out = pipeline.resolve_id_tone(code, _dji_file(tmp_path), info=_info())
+    assert out.session_id is None
+    assert out.info.startswith("do decyzji: ramki ID wskazują różne wpisy")
+    assert "#496" in out.info and "#497" in out.info
+
+
+def test_resolve_id_tone_frames_one_unresolved(monkeypatch, tmp_path):
+    # kod tymczasowy jeszcze nie w bazie nie przeczy ID z kalkulatora
+    from piro_overlay.audio_sync import IdToneCode
+    monkeypatch.setattr(pipeline.api, "find_sessions_by_temp_id", lambda t: [])
+    monkeypatch.setattr(pipeline.api, "fetch_candidate", lambda i: _cand(i, ""))
+    code = IdToneCode(1, 5, others=(IdToneCode(0, 496),))
+    out = pipeline.resolve_id_tone(code, _dji_file(tmp_path), info=_info())
+    assert out.session_id == 496
+
+
+def test_resolve_id_tone_channel_zero_entry_months_away(monkeypatch, tmp_path):
+    # Błędny odczyt wskazał istniejący, ale stary wpis (realnie: #96 z marca dla
+    # nagrania z listopada) — pre-roll/beep milczą, bo stary wpis nie ma pól wideo.
+    from dataclasses import replace
+    from datetime import datetime, timezone
+    from piro_overlay.audio_sync import IdToneCode
+    old = replace(_cand(96, ""), data_zapisu=datetime(2026, 3, 11, 18, 44, tzinfo=timezone.utc))
+    monkeypatch.setattr(pipeline.api, "fetch_candidate", lambda i: old)
+    out = pipeline.resolve_id_tone(IdToneCode(0, 96), _dji_file(tmp_path), info=_info())
+    assert out.session_id is None
+    assert out.info.startswith("do decyzji: ID-tone #96") and "odległy" in out.info
+
+
 def test_batch_variants_order_and_flags():
     vs = pipeline.batch_variants(overlay=True, timer=True, trim=True)
     assert [v.key for v in vs] == ["overlay", "timer", "trim"]

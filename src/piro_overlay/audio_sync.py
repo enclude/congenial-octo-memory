@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import struct
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import numpy as np
@@ -270,7 +270,7 @@ def detect_dji_start(video_path: str | Path,
     win = max(1, int(sr * 0.05))  # okno 50 ms
     n_windows = chunk.size // win
     if n_windows == 0:
-        return None
+        return []
 
     seg = chunk[:n_windows * win].reshape(n_windows, win)
     spec = np.abs(np.fft.rfft(seg * np.hanning(win), axis=1)) ** 2
@@ -382,6 +382,15 @@ class IdToneCode:
     # − rec_start` z kalkulatora (test niezależny od zegarów). Poza równością: ta sama
     # ramka to ten sam kod niezależnie od miejsca, w którym ją złapano.
     pos_s: float | None = field(default=None, compare=False)
+    # Pozostałe RÓŻNE ramki z tego samego nagrania (np. timer zagrał kod tymczasowy,
+    # a po zapisie kalkulator ID wpisu). Rozstrzyga `pipeline.resolve_id_tone`:
+    # ramki muszą wskazać ten sam wpis. Poza równością, jak `pos_s`.
+    others: tuple["IdToneCode", ...] = field(default=(), compare=False)
+
+    @property
+    def frames(self) -> tuple["IdToneCode", ...]:
+        """Wszystkie różne ramki z nagrania (ta + `others`), w kolejności w pliku."""
+        return (replace(self, others=()),) + self.others
 
     @property
     def is_db_id(self) -> bool:
@@ -424,7 +433,20 @@ def _id_tone_code(decoded: list[int], pos_s: float | None = None) -> IdToneCode:
 def decode_id_tone(video_path: str | Path,
                    start: float | None = None,
                    end: float | None = None) -> IdToneCode | None:
-    """Dekoduje ramkę ID-tone v3 z sygnału nagranego przez kamerę.
+    """Pierwsza ramka ID-tone z nagrania; kolejne RÓŻNE ramki w `IdToneCode.others`.
+
+    None = brak czytelnej ramki. Szczegóły protokołu i dekodowania —
+    `decode_id_tones`."""
+    codes = decode_id_tones(video_path, start, end)
+    if not codes:
+        return None
+    return replace(codes[0], others=tuple(codes[1:]))
+
+
+def decode_id_tones(video_path: str | Path,
+                    start: float | None = None,
+                    end: float | None = None) -> list[IdToneCode]:
+    """Dekoduje ramki ID-tone v3 z sygnału nagranego przez kamerę.
 
     Protokół v3 (wspólny z `playIdToneFrame` w timerze www.timer.pifpaf.fun
     i `id_tone.js` w kalkulatorze — stałe MUSZĄ być identyczne we wszystkich
@@ -464,7 +486,19 @@ def decode_id_tone(video_path: str | Path,
     (`_ID_TONE_RESCUE_MAX_CAND`). Nieczytelna sama checksuma = None (bez niej
     nie ma jak zweryfikować odczytu).
 
-    Zwraca `IdToneCode` (z `pos_s` = początek pierwszego wykrytego markera) albo None.
+    W jednym nagraniu bywa KILKA RÓŻNYCH ramek (realny przypadek 0043 z 2026-11-04:
+    timer zagrał kod tymczasowy 1-0005, a kilka sekund później kalkulator po zapisie
+    ID wpisu #496). Głosowanie per-slot po wszystkich markerach składało z nich
+    chimerę `0,0,0,9,6 | 6`, która PRZESZŁA checksumę → #96, cudzy wpis sprzed
+    8 miesięcy. Dlatego markery są najpierw grupowane w ramki: kolejny marker
+    należy do tej samej ramki tylko w odstępie powtórzenia (± pół slotu), a grupa,
+    w której jeden slot ma dwie różne cyfry pełnej jakości z realnych markerów,
+    jest rozbijana na pojedyncze markery (dwie różne ramki zagrane dokładnie
+    w odstępie powtórzenia). Duch powtórzenia nie powstaje tam, gdzie zachodziłby
+    na ramkę innej grupy. Głosowanie, checksum i odzysk działają w obrębie grupy.
+
+    Zwraca listę RÓŻNYCH ramek w kolejności w pliku (`pos_s` = początek pierwszego
+    markera ramki); pusta lista = brak czytelnej ramki.
     """
     samples, sr = _load_audio(video_path)
 
@@ -478,7 +512,7 @@ def decode_id_tone(video_path: str | Path,
     win = max(1, int(sr * 0.05))  # okno 50 ms — jak detect_dji_start
     n_windows = chunk.size // win
     if n_windows == 0:
-        return None
+        return []
 
     seg = chunk[:n_windows * win].reshape(n_windows, win)
     spec = np.abs(np.fft.rfft(seg * np.hanning(win), axis=1)) ** 2
@@ -510,7 +544,7 @@ def decode_id_tone(video_path: str | Path,
         else:
             i += 1
     if not runs:
-        return None
+        return []
 
     # Fałszywe markery: cichy pisk ~5 kHz w tle potrafi mieć wysoki LOKALNY
     # SNR (w prawie-ciszy), zrobić run i wnosić śmieciowe głosy przez swoje
@@ -518,9 +552,7 @@ def decode_id_tone(video_path: str | Path,
     # wielokrotnie cichszy od najgłośniejszego odpada.
     e_max = max(r[2] for r in runs)
     runs = [r for r in runs if r[2] >= _ID_TONE_MARKER_ENERGY_FRAC * e_max]
-    marker_starts = [offset_s + r[0] * win / sr for r in runs]
-    # pozycja ramki = pierwszy REALNY marker (duch sprzed niego to tylko hipoteza)
-    first_marker = min(marker_starts)
+    marker_starts = sorted(offset_s + r[0] * win / sr for r in runs)
     marker_windows = [k for r in runs for k in range(r[0], r[1] + 1)]
 
     # Metryki względne (udział pasma) nie rozróżniają realnego tonu od śladów
@@ -528,16 +560,7 @@ def decode_id_tone(video_path: str | Path,
     # ułamek energii okien markera (= poziomu sygnału TEJ sekwencji) odpadają.
     energy_floor = _ID_TONE_ENERGY_FLOOR * float(np.median(in_range[marker_windows]))
 
-    # „Duchy" powtórzeń: odstęp powtórzeń jest znany, więc każdy wykryty marker
-    # wskazuje też pozycję sąsiedniego powtórzenia — czytamy jego sloty nawet,
-    # gdy TAMTEN marker nie zrobił własnego runu (głosowanie i checksum bronią
-    # przed śmieciowymi głosami z pustych miejsc).
     period = _ID_TONE_SLOT * (_ID_TONE_SLOTS + 1) + _ID_TONE_REPEAT_GAP
-    starts = sorted(marker_starts)
-    for t_marker in marker_starts:
-        for ghost in (t_marker - period, t_marker + period):
-            if all(abs(ghost - s) > _ID_TONE_SLOT / 2 for s in starts):
-                starts.append(ghost)
 
     digit_snr = [band_snr(f) for f in _ID_TONE_DIGIT_FREQS]
     win_s = win / sr
@@ -567,80 +590,126 @@ def decode_id_tone(video_path: str | Path,
     def slot_start(t_marker: float, slot: int) -> float:
         return t_marker + _ID_TONE_SLOT * (slot + 1)
 
-    slot_votes: list[dict[int, float]] = [{} for _ in range(_ID_TONE_SLOTS)]
-    slot_peak: list[dict[int, float]] = [{} for _ in range(_ID_TONE_SLOTS)]
-    slot_real: list[set[int]] = [set() for _ in range(_ID_TONE_SLOTS)]
-    real_starts = set(marker_starts)
-    for t_marker in starts:
-        for slot in range(_ID_TONE_SLOTS):
-            reading = read_slot(slot_start(t_marker, slot))
-            if reading is not None:
-                d, lvl = reading
-                slot_votes[slot][d] = slot_votes[slot].get(d, 0.0) + lvl
-                slot_peak[slot][d] = max(slot_peak[slot].get(d, 0.0), lvl)
-                if t_marker in real_starts:
-                    slot_real[slot].add(d)
+    def decode_group(group: list[float]) -> tuple[IdToneCode | None, bool]:
+        """(ramka albo None, konflikt) — konflikt = slot z dwiema różnymi cyframi
+        pełnej jakości z REALNYCH markerów grupy (dwie różne ramki w jednej grupie)."""
+        # „Duchy" powtórzeń: odstęp powtórzeń jest znany, więc każdy wykryty marker
+        # wskazuje też pozycję sąsiedniego powtórzenia — czytamy jego sloty nawet,
+        # gdy TAMTEN marker nie zrobił własnego runu (głosowanie i checksum bronią
+        # przed śmieciowymi głosami z pustych miejsc). Duch zachodzący na ramkę
+        # INNEJ grupy czytałby jej cyfry przesunięte o ułamek slotu — pomijamy go.
+        foreign = [m for m in marker_starts if m not in group]
+        starts = list(group)
+        for t_marker in group:
+            for ghost in (t_marker - period, t_marker + period):
+                if (all(abs(ghost - s) > _ID_TONE_SLOT / 2 for s in starts + foreign)
+                        and all(abs(ghost - m) >= period - _ID_TONE_SLOT / 2 for m in foreign)):
+                    starts.append(ghost)
 
-    empty = [s for s in range(_ID_TONE_SLOTS) if not slot_votes[s]]
-    decoded = [max(votes, key=votes.get) if votes else -1 for votes in slot_votes]
-
-    # Duchy mogą UZUPEŁNIAĆ odczyt, ale nie zastępować go w całości: gdy żaden
-    # zwycięski slot nie ma głosu z REALNEGO markera, "sekwencję" złożyły
-    # przypadkowe dźwięki tła wokół fałszywych markerów (realny przypadek:
-    # nagranie bez sygnału ID, pisk 5 kHz jako marker + obcy ton w slotach
-    # ducha → ID przechodzące checksumę). Prawdziwy sygnał zawsze niesie
-    # własne cyfry przy własnym markerze.
-    if not any(decoded[s] in slot_real[s] for s in range(_ID_TONE_SLOTS) if s not in empty):
-        return None
-
-    if not empty:
-        if _id_tone_checksum(decoded[:_ID_TONE_DATA_SLOTS]) != decoded[_ID_TONE_DATA_SLOTS]:
-            return None
-        return _id_tone_code(decoded, first_marker)
-
-    # Odzysk z checksumy (erasure recovery): dokładnie JEDEN nieczytelny slot
-    # DANYCH da się odtworzyć z sumy kontrolnej. Wagi 1 i 3 są odwracalne
-    # mod 10 (jednoznaczna cyfra); wagi 2 i 4 zostawiają dwóch kandydatów
-    # (d oraz d+5) — rozstrzyga energia pasm kandydatów w oknach tego slotu,
-    # ale tylko przy wyraźnym zwycięzcy (inaczej zgadywanie dałoby ID
-    # przechodzące checksumę mimo braku dowodu w audio). Nieczytelna sama
-    # checksuma = None (bez niej nie ma jak zweryfikować pozostałych cyfr).
-    if len(empty) != 1 or empty[0] >= _ID_TONE_DATA_SLOTS:
-        return None
-    # Rescue tylko na mocnych podstawach: każdy ODCZYTANY slot musi mieć co
-    # najmniej jeden odczyt pełnej jakości. Bez tego fałszywe markery + szum
-    # tła potrafią złożyć 4 słabe sloty, a odzyskana cyfra przechodzi
-    # checksumę Z KONSTRUKCJI — czyli rescue produkowałby wiarygodnie
-    # wyglądające, błędne ID (realny przypadek z nagrania bez sygnału).
-    if any(slot_peak[s][decoded[s]] < _ID_TONE_CONC_MIN
-           for s in range(_ID_TONE_SLOTS) if s not in empty):
-        return None
-    gap_slot = empty[0]
-    weight = gap_slot + 1
-    known = sum((i + 1) * decoded[i] for i in range(_ID_TONE_DATA_SLOTS) if i != gap_slot)
-    residual = (decoded[_ID_TONE_DATA_SLOTS] - known) % 10
-    candidates = [d for d in range(10) if (weight * d) % 10 == residual]
-    # Waga 5 (ostatnia cyfra wartości) zostawia aż 5 kandydatów — to już
-    # zgadywanie, nie odzysk, więc odmawiamy (`_ID_TONE_RESCUE_MAX_CAND`).
-    if not candidates or len(candidates) > _ID_TONE_RESCUE_MAX_CAND:
-        return None
-    if len(candidates) == 1:
-        decoded[gap_slot] = candidates[0]
-    else:
-        strength = {d: 0.0 for d in candidates}
+        slot_votes: list[dict[int, float]] = [{} for _ in range(_ID_TONE_SLOTS)]
+        slot_peak: list[dict[int, float]] = [{} for _ in range(_ID_TONE_SLOTS)]
+        slot_real: list[set[int]] = [set() for _ in range(_ID_TONE_SLOTS)]
+        slot_strong: list[set[int]] = [set() for _ in range(_ID_TONE_SLOTS)]
+        real_starts = set(group)
         for t_marker in starts:
-            lo_i, hi_i = slot_window_range(slot_start(t_marker, gap_slot))
-            for i in range(lo_i, hi_i):
-                if in_range[i] < energy_floor:
-                    continue
-                for d in candidates:
-                    strength[d] = max(strength[d], float(digit_snr[d][i]))
-        ranked = sorted(candidates, key=lambda d: strength[d], reverse=True)
-        if (strength[ranked[0]] < _ID_TONE_RESCUE_MIN
-                or strength[ranked[0]] < _ID_TONE_RESCUE_RATIO * strength[ranked[1]]):
-            return None
-        decoded[gap_slot] = ranked[0]
-    return _id_tone_code(decoded, first_marker)
+            for slot in range(_ID_TONE_SLOTS):
+                reading = read_slot(slot_start(t_marker, slot))
+                if reading is not None:
+                    d, lvl = reading
+                    slot_votes[slot][d] = slot_votes[slot].get(d, 0.0) + lvl
+                    slot_peak[slot][d] = max(slot_peak[slot].get(d, 0.0), lvl)
+                    if t_marker in real_starts:
+                        slot_real[slot].add(d)
+                        if lvl >= _ID_TONE_CONC_MIN:
+                            slot_strong[slot].add(d)
+        conflict = any(len(s) > 1 for s in slot_strong)
+        first_marker = min(group)
+
+        empty = [s for s in range(_ID_TONE_SLOTS) if not slot_votes[s]]
+        decoded = [max(votes, key=votes.get) if votes else -1 for votes in slot_votes]
+
+        # Duchy mogą UZUPEŁNIAĆ odczyt, ale nie zastępować go w całości: gdy żaden
+        # zwycięski slot nie ma głosu z REALNEGO markera, "sekwencję" złożyły
+        # przypadkowe dźwięki tła wokół fałszywych markerów (realny przypadek:
+        # nagranie bez sygnału ID, pisk 5 kHz jako marker + obcy ton w slotach
+        # ducha → ID przechodzące checksumę). Prawdziwy sygnał zawsze niesie
+        # własne cyfry przy własnym markerze.
+        if not any(decoded[s] in slot_real[s] for s in range(_ID_TONE_SLOTS) if s not in empty):
+            return None, conflict
+
+        if not empty:
+            if _id_tone_checksum(decoded[:_ID_TONE_DATA_SLOTS]) != decoded[_ID_TONE_DATA_SLOTS]:
+                return None, conflict
+            return _id_tone_code(decoded, first_marker), conflict
+
+        # Odzysk z checksumy (erasure recovery): dokładnie JEDEN nieczytelny slot
+        # DANYCH da się odtworzyć z sumy kontrolnej. Wagi 1 i 3 są odwracalne
+        # mod 10 (jednoznaczna cyfra); wagi 2 i 4 zostawiają dwóch kandydatów
+        # (d oraz d+5) — rozstrzyga energia pasm kandydatów w oknach tego slotu,
+        # ale tylko przy wyraźnym zwycięzcy (inaczej zgadywanie dałoby ID
+        # przechodzące checksumę mimo braku dowodu w audio). Nieczytelna sama
+        # checksuma = None (bez niej nie ma jak zweryfikować pozostałych cyfr).
+        if len(empty) != 1 or empty[0] >= _ID_TONE_DATA_SLOTS:
+            return None, conflict
+        # Rescue tylko na mocnych podstawach: każdy ODCZYTANY slot musi mieć co
+        # najmniej jeden odczyt pełnej jakości. Bez tego fałszywe markery + szum
+        # tła potrafią złożyć 4 słabe sloty, a odzyskana cyfra przechodzi
+        # checksumę Z KONSTRUKCJI — czyli rescue produkowałby wiarygodnie
+        # wyglądające, błędne ID (realny przypadek z nagrania bez sygnału).
+        if any(slot_peak[s][decoded[s]] < _ID_TONE_CONC_MIN
+               for s in range(_ID_TONE_SLOTS) if s not in empty):
+            return None, conflict
+        gap_slot = empty[0]
+        weight = gap_slot + 1
+        known = sum((i + 1) * decoded[i] for i in range(_ID_TONE_DATA_SLOTS) if i != gap_slot)
+        residual = (decoded[_ID_TONE_DATA_SLOTS] - known) % 10
+        candidates = [d for d in range(10) if (weight * d) % 10 == residual]
+        # Waga 5 (ostatnia cyfra wartości) zostawia aż 5 kandydatów — to już
+        # zgadywanie, nie odzysk, więc odmawiamy (`_ID_TONE_RESCUE_MAX_CAND`).
+        if not candidates or len(candidates) > _ID_TONE_RESCUE_MAX_CAND:
+            return None, conflict
+        if len(candidates) == 1:
+            decoded[gap_slot] = candidates[0]
+        else:
+            strength = {d: 0.0 for d in candidates}
+            for t_marker in starts:
+                lo_i, hi_i = slot_window_range(slot_start(t_marker, gap_slot))
+                for i in range(lo_i, hi_i):
+                    if in_range[i] < energy_floor:
+                        continue
+                    for d in candidates:
+                        strength[d] = max(strength[d], float(digit_snr[d][i]))
+            ranked = sorted(candidates, key=lambda d: strength[d], reverse=True)
+            if (strength[ranked[0]] < _ID_TONE_RESCUE_MIN
+                    or strength[ranked[0]] < _ID_TONE_RESCUE_RATIO * strength[ranked[1]]):
+                return None, conflict
+            decoded[gap_slot] = ranked[0]
+        return _id_tone_code(decoded, first_marker), conflict
+
+    # Grupy = ramki: kolejny marker w odstępie powtórzenia (± pół slotu) od
+    # poprzedniego to powtórzenie TEJ SAMEJ ramki; inny odstęp = nowa ramka.
+    groups: list[list[float]] = []
+    for m in marker_starts:
+        if groups and abs(m - groups[-1][-1] - period) <= _ID_TONE_SLOT / 2:
+            groups[-1].append(m)
+        else:
+            groups.append([m])
+
+    found: list[IdToneCode] = []
+    for group in groups:
+        code, conflict = decode_group(group)
+        if conflict and len(group) > 1:
+            # dwie różne ramki zagrane akurat w odstępie powtórzenia — czytamy
+            # każdy marker osobno, zamiast głosować między nimi
+            found.extend(c for c in (decode_group([m])[0] for m in group) if c is not None)
+        elif code is not None:
+            found.append(code)
+
+    out: list[IdToneCode] = []
+    for code in sorted(found, key=lambda c: c.pos_s or 0.0):
+        if code not in out:
+            out.append(code)
+    return out
 
 
 def resolve_t0(anchor_time: float, mode: AnchorMode, first_shot_time: float) -> float:

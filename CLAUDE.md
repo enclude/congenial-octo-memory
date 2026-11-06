@@ -149,6 +149,46 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
 
 ## Funkcje wprowadzone po MVP
 
+- **Kilka różnych ramek ID-tone w jednym nagraniu (v0.70.0):** realny przypadek
+  `DJI_20261104190701_0043_D` (folder `20261104 PiRO/raw`): timer zagrał kod tymczasowy
+  `1-0005` (2×, od 114,95 s), a ~6 s później kalkulator po zapisie ID wpisu `#496` (2×, od
+  120,75 s) — OBIE wskazują Rafała #496. Stary dekoder głosował per-slot po WSZYSTKICH
+  markerach (zakładał, że to powtórzenia jednej ramki) i złożył chimerę `0,0,0,9,6 | 6`,
+  która przeszła checksumę → **#96 (Szymi, wpis z marca)**; kontrola O3 kanału 0 milczała,
+  bo stary wpis nie ma pól wideo. Poprawki:
+  (1) `audio_sync.decode_id_tones` (lista RÓŻNYCH ramek w kolejności w pliku) — markery
+  grupowane w ramki: kolejny marker należy do grupy tylko w odstępie powtórzenia ± pół
+  slotu; grupa z dwiema różnymi cyframi pełnej jakości (≥`_ID_TONE_CONC_MIN`) w jednym
+  slocie z realnych markerów jest rozbijana na pojedyncze markery (ramki zagrane dokładnie
+  w odstępie powtórzenia); duch powtórzenia nie powstaje, gdy zachodziłby na ramkę innej
+  grupy. Głosowanie/checksum/odzysk/„duchy uzupełniają" działają w obrębie grupy, `pos_s`
+  = pierwszy marker RAMKI. `decode_id_tone` zostaje (zgodność wywołań GUI/web/wsadu):
+  zwraca pierwszą ramkę, a pozostałe w NOWYM polu `IdToneCode.others` (`compare=False`,
+  własność `frames`). Stałe protokołu BEZ zmian (timer/kalkulator nietknięte).
+  (2) `pipeline.resolve_id_tone` przy `others` rozwiązuje każdą ramkę osobno
+  (`_resolve_frame` = dawna logika): jeden wspólny wpis → ID („ramki ID zgodne: …"),
+  różne wpisy → `None` „do decyzji: ramki ID wskazują różne wpisy", ramka nierozwiązana
+  (kod jeszcze nie w bazie) nie przeczy pozostałym. `fetch_entries_for_takes` pyta
+  o wpisy wszystkich ramek.
+  (3) `matching._tone_evidence`: kanał 0 wskazujący wpis odległy od nagrania o >
+  `DB_MAX_AGE_S` (12 h, `matching_score.py`) = SPRZECZNOŚĆ (−100) — działa i w
+  `resolve_id_tone` (O3), i we wsadowym `match_takes`. Kamera z rozstawionym zegarem
+  (reset baterii) da wtedy „do decyzji" zamiast ID — świadomie, zgadywanie gorsze.
+  Przy kilku ramkach liczy się najlepszy dowód tonu + sprzeczności każdej ramki, poza
+  kodem tymczasowym przy wpisie BEZ `temp_id`, gdy inna ramka trafia w ten wpis.
+  Testy: `test_id_tone.py` (`two_frames_not_merged_into_chimera` — stary dekoder daje na
+  nim #96, `two_frames_at_exact_repeat_period`, `same_frame_twice_is_one_code`),
+  `test_pipeline.py` (`frames_agree/disagree/one_unresolved`,
+  `channel_zero_entry_months_away`), `test_matching.py`. Walidacja polowa (stary vs nowy
+  dekoder, 134 lokalne nagrania z 2026-10-07/10-14/11-04): 4 różnice, wszystkie naprawy —
+  0043 (#96 → `1-0005`+`#496`) oraz trzy dawne fałszywe odczyty BEZ wpisu w bazie
+  (`20261014` 0016 #3500, 0024 #7599, 0031 `2-9000`) → teraz brak ID; 9 pozostałych
+  odczytów bez zmian. Uwaga przy powtarzaniu: część folderów `Media` to pliki OneDrive
+  „tylko w chmurze" (atrybut ReparsePoint) — czytanie FFmpeg-iem je ściąga.
+  Blokada ręczna 0043 przestawiona
+  na #496 (była #501 — wpis ręczny bez danych z timera, w trakcie analizy zmieniał
+  uczestnika Daniel→Rafał).
+
 - **Znaczniki w pliku wyjściowym dla DaVinci Resolve (v0.69.0):** start timera, sygnał
   startu (T0) i każdy strzał trafiają do WYNIKOWEGO MP4/WebM jako **rozdziały kontenera**
   — jedyny „jednoplikowy” format znaczników, który Resolve importuje jako markery klipu
@@ -823,7 +863,7 @@ bez polegania na editable install w venv (nowe pip robią editable przez finder
   względna** — cyfra przechodzi też, gdy `conc ≥ 0.30` I `≥ 4×` drugi kandydat (słaby,
   ale jednoznaczny ton; pozostałe pasma ~0, więc brak ryzyka pomyłki); (2) **głosowanie
   per-slot** — każdy wykryty marker wnosi odczytane cyfry (ważone koncentracją) do
-  wspólnej puli per slot, NIE wymagamy kompletnego odczytu z jednego markera
+  wspólnej puli per slot (od v0.70.0 TYLKO w obrębie jednej ramki — patrz „Kilka różnych ramek ID-tone"), NIE wymagamy kompletnego odczytu z jednego markera
   (powtórzenia uzupełniają się nawzajem; wcześniej: najczęstszy PEŁNY odczyt).
   **Dekoder „polowy" (v0.34.0)** — pakiet zmian po pierwszej sesji polowej v2
   (35 nagrań DJI z 2026-07-15: 28/35 → po zmianach 33/35 = 100% plików, w których

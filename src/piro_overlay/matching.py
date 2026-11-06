@@ -205,6 +205,48 @@ def _clock_free_evidence(take: Take, c: SessionCandidate) -> list[Evidence]:
     return out
 
 
+def _tone_evidence(code: IdToneCode, c: SessionCandidate, start: float | None,
+                   tz: tzinfo, dji: bool) -> list[Evidence]:
+    """Dowody jednej ramki ID-tone dla wpisu (ton + jego pozycja w pliku)."""
+    ev: list[Evidence] = []
+    tone_ok = True
+    b = entry_beep(c)
+    ref = b[0] if b else wall_of(c.data_zapisu, tz)
+    if code.is_db_id:
+        if code.value != c.id:
+            tone_ok = False
+            ev.append(Evidence("tone", S.TONE_DB_OTHER, f"ID-tone wskazuje #{code.value}", True))
+        elif start is not None and abs(ref - start) > S.DB_MAX_AGE_S:
+            # Wpis sprzed miesięcy przy nagraniu z dziś = błędny odczyt, nie dowód
+            # (realny przypadek: chimera dwóch ramek → #96 z marca dla nagrania
+            # z listopada). Kontrole pre-roll/beep milczą przy starym wpisie bez pól
+            # wideo, więc bez tego ID przechodziło bez sprzeciwu.
+            tone_ok = False
+            days = abs(ref - start) / 86400.0
+            ev.append(Evidence("tone", S.TONE_DB_OTHER,
+                               f"ID-tone #{code.value} to wpis odległy o {days:.1f} dnia "
+                               "od nagrania", True))
+        else:
+            ev.append(Evidence("tone", S.TONE_DB_MATCH, f"ID-tone #{code.value}"))
+    elif c.temp_id and c.temp_id == code.temp_id:
+        if start is None:
+            ev.append(Evidence("tone", 0, f"kod {code.label}, czas nagrania nieznany"))
+        elif abs(ref - start) <= S.TEMP_MAX_AGE_S:
+            ev.append(Evidence("tone", S.TONE_TEMP_MATCH, f"kod tymczasowy {code.label}"))
+        else:
+            ev.append(Evidence("tone", 0, f"stary kod {code.label} (> 12 h od nagrania)"))
+    else:
+        tone_ok = False
+        ev.append(Evidence("tone", S.TONE_TEMP_OTHER,
+                           f"kod {code.label} ≠ wpisu ({c.temp_id or 'brak'})", True))
+    if tone_ok and dji and code.pos_s is not None and c.idtone_at_ms > 0 and c.rec_start > 0:
+        expected = c.idtone_at_ms / 1000.0 - c.rec_start
+        if abs(code.pos_s - expected) <= S.TONE_POS_TOL_S:
+            ev.append(Evidence("tone_pos", S.TONE_POS_MATCH,
+                               f"ton w {code.pos_s:.1f} s ≈ {expected:.1f} s"))
+    return ev
+
+
 def score_pair(take: Take, c: SessionCandidate, *, tz: tzinfo, offset: float = 0.0,
                offset_known: bool = False, stations: set[str] | None = None) -> PairScore:
     """Punkty pary (ujęcie, wpis) z §3.2 — bez odcisku strzałów i kolejności (te
@@ -223,35 +265,24 @@ def score_pair(take: Take, c: SessionCandidate, *, tz: tzinfo, offset: float = 0
     esp_trusted = c.clock_ok is not False
 
     # --- ID-tone ---
-    tone_ok = True
     if take.tone is not None:
-        code = take.tone
-        if code.is_db_id:
-            if code.value == c.id:
-                ev.append(Evidence("tone", S.TONE_DB_MATCH, f"ID-tone #{code.value}"))
-            else:
-                tone_ok = False
-                ev.append(Evidence("tone", S.TONE_DB_OTHER,
-                                   f"ID-tone wskazuje #{code.value}", True))
-        elif c.temp_id and c.temp_id == code.temp_id:
-            b = entry_beep(c)
-            ref = b[0] if b else wall_of(c.data_zapisu, tz)
-            if start is None:
-                ev.append(Evidence("tone", 0, f"kod {code.label}, czas nagrania nieznany"))
-            elif abs(ref - start) <= S.TEMP_MAX_AGE_S:
-                ev.append(Evidence("tone", S.TONE_TEMP_MATCH, f"kod tymczasowy {code.label}"))
-            else:
-                ev.append(Evidence("tone", 0, f"stary kod {code.label} (> 12 h od nagrania)"))
+        frames = [(f, _tone_evidence(f, c, start, tz, take.kind == "dji"))
+                  for f in take.tone.frames]
+        if len(frames) == 1:
+            ev.extend(frames[0][1])
         else:
-            tone_ok = False
-            ev.append(Evidence("tone", S.TONE_TEMP_OTHER,
-                               f"kod {code.label} ≠ wpisu ({c.temp_id or 'brak'})", True))
-        if (tone_ok and take.kind == "dji" and code.pos_s is not None
-                and c.idtone_at_ms > 0 and c.rec_start > 0):
-            expected = c.idtone_at_ms / 1000.0 - c.rec_start
-            if abs(code.pos_s - expected) <= S.TONE_POS_TOL_S:
-                ev.append(Evidence("tone_pos", S.TONE_POS_MATCH,
-                                   f"ton w {code.pos_s:.1f} s ≈ {expected:.1f} s"))
+            # Kilka różnych ramek (kod tymczasowy z timera + ID z kalkulatora): liczy
+            # się najlepszy dowód, a sprzeczność każdej ramki — poza kodem tymczasowym
+            # przy wpisie BEZ `temp_id` (wpis zapisany online, ramka nie ma z czym
+            # się zgadzać), gdy inna ramka wskazuje ten wpis.
+            best = max((e for _, f_ev in frames for e in f_ev if e.kind == "tone"),
+                       key=lambda e: e.points)
+            neutral = best.points > 0 and not c.temp_id
+            ev.append(best)
+            for f, f_ev in frames:
+                ev.extend(e for e in f_ev if e is not best and (
+                    e.kind == "tone_pos"
+                    or (e.contradiction and not (neutral and not f.is_db_id))))
 
     ev.extend(_clock_free_evidence(take, c))
 

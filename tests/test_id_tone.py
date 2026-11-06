@@ -17,6 +17,7 @@ from piro_overlay.audio_sync import (
     _ID_TONE_TONE_DUR,
     IdToneCode,
     decode_id_tone,
+    decode_id_tones,
 )
 
 from conftest import id_tone_expr as _id_tone_expr
@@ -231,3 +232,45 @@ def test_decode_id_tone_position_when_first_marker_missing(tmp_path):
     period = _ID_TONE_SLOT * (_ID_TONE_SLOTS + 1) + _ID_TONE_REPEAT_GAP
     assert code == IdToneCode(0, 4821)
     assert code.pos_s == pytest.approx(1.0 + period, abs=0.06)
+
+
+# --- kilka RÓŻNYCH ramek w jednym nagraniu (nagranie 0043 z 2026-11-04) ---
+
+def _two_frames(gap_extra: float, quiet_slot: int | None = None):
+    """Timer gra kod tymczasowy 1-0005, chwilę po nim kalkulator ID wpisu #496
+    (`gap_extra` = opóźnienie drugiej ramki ponad odstęp powtórzenia)."""
+    first, end_first = _id_tone_expr(5, channel=1)
+    amps = {quiet_slot: 0.12} if quiet_slot is not None else None
+    second, end = _id_tone_expr(496, t_start=end_first + gap_extra, slot_amps=amps)
+    return f"{first}+{second}", end
+
+
+def test_decode_id_tone_two_frames_not_merged_into_chimera(tmp_path):
+    # Realny przypadek 0043: druga ramka 0.3 s „za późno" na powtórzenie, cicha
+    # cyfra „4". Głosowanie po wszystkich markerach składało 0,0,0,9,6 | 6 →
+    # checksum OK → #96 (cudzy wpis sprzed 8 miesięcy).
+    expr, dur = _two_frames(0.3, quiet_slot=2)
+    wav = _render_wav(tmp_path, expr, dur + 0.3)
+    codes = decode_id_tones(wav)
+    assert codes == [IdToneCode(1, 5), IdToneCode(0, 496)]
+    code = decode_id_tone(wav)
+    assert code == IdToneCode(1, 5) and code.others == (IdToneCode(0, 496),)
+    assert code.frames == (IdToneCode(1, 5), IdToneCode(0, 496))
+    assert IdToneCode(0, 96) not in codes
+
+
+def test_decode_id_tone_two_frames_at_exact_repeat_period(tmp_path):
+    # Druga ramka DOKŁADNIE w odstępie powtórzenia — grupowanie po czasie ich nie
+    # rozdzieli; konflikt cyfr pełnej jakości rozbija grupę na pojedyncze markery.
+    expr, dur = _two_frames(0.0)
+    wav = _render_wav(tmp_path, expr, dur + 0.3)
+    assert decode_id_tones(wav) == [IdToneCode(1, 5), IdToneCode(0, 496)]
+
+
+def test_decode_id_tone_same_frame_twice_is_one_code(tmp_path):
+    # Ta sama ramka zagrana dwa razy z przerwą (np. ponowne „Zagraj ID") = jeden kod.
+    first, end_first = _id_tone_expr(496)
+    second, end = _id_tone_expr(496, t_start=end_first + 1.0)
+    wav = _render_wav(tmp_path, f"{first}+{second}", end + 0.3)
+    code = decode_id_tone(wav)
+    assert code == IdToneCode(0, 496) and code.others == ()

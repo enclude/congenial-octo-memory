@@ -101,6 +101,30 @@ def test_signal_tone_temp_window_and_other_code():
     assert kinds(other)["tone"] == S.TONE_TEMP_OTHER
 
 
+def test_signal_tone_db_entry_far_from_recording_is_contradiction():
+    c = entry(101, BASE - 200 * 86400, 5.5, 25, fields=False)
+    ps = score(dji_take(BASE, 5.5, 25, tone=IdToneCode(0, 101)), c)
+    ev = [e for e in ps.evidence if e.kind == "tone"][0]
+    assert ev.contradiction and ev.points == S.TONE_DB_OTHER and "odległy" in ev.reason
+    near = entry(101, BASE, 5.5, 25, fields=False)
+    assert kinds(score(dji_take(BASE, 5.5, 25, tone=IdToneCode(0, 101)), near))["tone"] == 100
+
+
+def test_signal_tone_multiple_frames():
+    # kod tymczasowy + ID wpisu: najlepszy dowód się liczy; kod przy wpisie BEZ
+    # `temp_id` (zapisany online) nie wetuje, ale ID innego wpisu — tak
+    tone = IdToneCode(1, 5, others=(IdToneCode(0, 101),))
+    c = entry(101, BASE, 5.5, 25)
+    ps = score(dji_take(BASE, 5.5, 25, tone=tone), c)
+    assert kinds(ps)["tone"] == 100 and not any(e.contradiction for e in ps.evidence)
+    with_code = entry(101, BASE, 5.5, 25, temp_id="10005")
+    ps = score(dji_take(BASE, 5.5, 25, tone=tone), with_code)
+    assert not any(e.contradiction for e in ps.evidence)
+    other = entry(102, BASE, 5.5, 25, temp_id="10005")
+    ps = score(dji_take(BASE, 5.5, 25, tone=tone), other)
+    assert any(e.contradiction and "#101" in e.reason for e in ps.evidence)
+
+
 def test_signal_tone_position():
     c = entry(101, BASE, 5.5, 25, idtone_after_stop=26.0)
     expected = c.idtone_at_ms / 1000 - c.rec_start
